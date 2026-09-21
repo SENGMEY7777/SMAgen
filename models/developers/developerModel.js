@@ -71,10 +71,23 @@ const verifyUserEmail = async (userId) => {
     return result.affectedRows > 0;
 };
 
+const updateVerificationToken = async (userId, token, expires) => {
+    const [result] = await pool.query(
+        `UPDATE users
+         SET verification_token = ?,
+             verification_expires = ?
+         WHERE id = ?
+           AND deleted_at IS NULL`,
+        [token, expires, userId],
+    );
+    return result.affectedRows > 0;
+};
+
 module.exports = {
     findUserById,
     findUserByEmail,
     findUserByVerificationToken,
     verifyUserEmail,
+    updateVerificationToken,
     register,
 };

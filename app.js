@@ -1,0 +1,19 @@
+const express = require('express');
+const dotenv = require('dotenv');
+const compression = require('compression');
+
+dotenv.config();
+const app = express();
+const authRoutes = require('./routes/admins/authRoutes');
+
+app.use(express.json({ limit: '10kb' }));
+app.use(compression({
+    threshold: '1kb',
+}));
+app.use('/api/v1/admin/auth', authRoutes);
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+});

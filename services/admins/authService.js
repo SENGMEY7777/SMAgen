@@ -1,0 +1,93 @@
+const crypto = require('crypto');
+const authModel = require('../../models/admins/authModel');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const { getJwtConfig } = require('../../configs/jwt');
+
+const invalidCredentialsError = () => {
+    const error = new Error('Invalid email or password');
+    error.code = 'INVALID_CREDENTIALS';
+    return error;
+};
+
+const login = async (email, password) => {
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const user = normalizedEmail ? await authModel.login(normalizedEmail) : null;
+    let isPasswordValid = false;
+
+    if (user && typeof password === 'string') {
+        isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    }
+
+    if (!isPasswordValid) {
+        throw invalidCredentialsError();
+    }
+
+    const { secret, algorithm, issuer, audience, expiresIn } = getJwtConfig();
+    const token = jwt.sign(
+        {
+            sub: String(user.id),
+            role: user.role,
+            token_version: Number(user.token_version),
+        },
+        secret,
+        {
+            algorithm,
+            expiresIn,
+            issuer,
+            audience,
+        },
+    );
+
+    return {
+        token,
+        user: {
+            id: user.id,
+            email: user.email,
+            full_name: user.full_name,
+            gender: user.gender,
+            avatar_url: user.avatar_url,
+            role: user.role,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        },
+    };
+};
+
+const register = async (body = {}) => {
+    const { email, password, fullName, role = 'DEVELOPER' } = body;
+
+    if (typeof email !== 'string' || typeof password !== 'string' || typeof fullName !== 'string') {
+        const error = new Error('Email, password, and full name are required');
+        error.code = 'VALIDATION_ERROR';
+        throw error;
+    }
+
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const secureUserId = crypto.randomUUID();
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    return authModel.createUser({
+        id: secureUserId,
+        email: normalizedEmail,
+        passwordHash,
+        fullName,
+        role,
+    });
+};
+
+const logout = async (userId) => {
+    const revoked = await authModel.revokeUserTokens(userId);
+
+    if (!revoked) {
+        const error = new Error('User not found');
+        error.code = 'USER_NOT_FOUND';
+        throw error;
+    }
+};
+
+module.exports = {
+    login,
+    register,
+    logout,
+};

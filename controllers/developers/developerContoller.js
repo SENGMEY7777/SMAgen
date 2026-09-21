@@ -31,8 +31,30 @@ const resendVerification = async (req, res) => {
     }
 };
 
+const logout = async (req, res) => {
+    try {
+        await developerService.logout(req.user.sub || req.user.id);
+        sendResponse(res, 200, true, 'Logout successfully!');
+    } catch (error) {
+        sendResponse(res, 500, false, error.message);
+    }
+};
+
+const login = async (req, res) => {
+    try {
+        const { email, password, password_hash } = req.body || {};
+        const result = await developerService.login(email, password || password_hash);
+        sendResponse(res, 200, true, 'Login successful', result);
+    } catch (error) {
+        const isAuthError = error.code === 'INVALID_CREDENTIALS' || error.code === 'ACCOUNT_INACTIVE';
+        sendResponse(res, isAuthError ? 401 : 500, false, error.message || 'Login failed');
+    }
+};
+
 module.exports = {
     register,
+    login,
     verifyEmail,
     resendVerification,
+    logout,
 };

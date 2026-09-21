@@ -2,8 +2,11 @@ const sendResponse = (res, statusCode, success, message, data = null, error = nu
     const body = {
         success: Boolean(success),
         message,
-        data,
     };
+
+    if (data !== null && data !== undefined) {
+        body.data = data;
+    }
 
     if (!success && error) {
         body.error = error;

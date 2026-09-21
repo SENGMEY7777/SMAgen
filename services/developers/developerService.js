@@ -62,7 +62,35 @@ const verifyEmail = async (token) => {
     };
 };
 
+const resendVerificationEmail = async (email) => {
+    if (!email || typeof email !== 'string') {
+        throw new Error('Email is required');
+    }
+
+    const user = await developerModel.findUserByEmail(email.trim().toLowerCase());
+    if (!user) {
+        throw new Error('User with this email does not exist');
+    }
+
+    if (user.is_verified) {
+        throw new Error('Email is already verified');
+    }
+
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await developerModel.updateVerificationToken(user.id, verificationToken, verificationExpires);
+
+    const userName = user.full_name || 'Developer';
+    await sendVerificationEmail(user.email, verificationToken, userName);
+
+    return {
+        message: 'Verification link resent successfully',
+    };
+};
+
 module.exports = {
     register,
     verifyEmail,
+    resendVerificationEmail,
 };

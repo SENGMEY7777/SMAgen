@@ -10,7 +10,8 @@ const register = async (body) => {
     }
 
     const secureUserId = crypto.randomUUID();
-    const passwordHash = body.password ? await bcrypt.hash(body.password, 10) : '';
+    const rawPassword = body.password || body.password_hash || '';
+    const passwordHash = rawPassword ? await bcrypt.hash(rawPassword, 10) : '';
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -89,8 +90,74 @@ const resendVerificationEmail = async (email) => {
     };
 };
 
+const logout = async (userId) => {
+    const revoked = await developerModel.revokeUserTokens(userId);
+    if (!revoked) {
+        throw new Error('User not found');
+    }
+};
+
+const jwt = require('jsonwebtoken');
+const { getJwtConfig } = require('../../configs/jwt');
+
+const login = async (email, password) => {
+    const normalizedEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    const user = normalizedEmail ? await developerModel.findUserByEmail(normalizedEmail) : null;
+    let isPasswordValid = false;
+
+    if (user && user.password_hash && typeof password === 'string') {
+        isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    }
+
+    if (!isPasswordValid || user.role !== 'DEVELOPER') {
+        const error = new Error('Invalid email or password');
+        error.code = 'INVALID_CREDENTIALS';
+        throw error;
+    }
+
+    if (Number(user.is_active) !== 1) {
+        const error = new Error('Your account is inactive');
+        error.code = 'ACCOUNT_INACTIVE';
+        throw error;
+    }
+
+    const { secret, algorithm, issuer, audience, expiresIn } = getJwtConfig();
+    const token = jwt.sign(
+        {
+            sub: String(user.id),
+            role: user.role,
+            token_version: Number(user.token_version),
+        },
+        secret,
+        {
+            algorithm,
+            expiresIn,
+            issuer,
+            audience,
+        },
+    );
+
+    return {
+        token,
+        user: {
+            id: user.id,
+            email: user.email,
+            full_name: user.full_name,
+            phone_number: user.phone_number,
+            gender: user.gender,
+            avatar_url: user.avatar_url,
+            role: user.role,
+            is_verified: user.is_verified,
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        },
+    };
+};
+
 module.exports = {
     register,
+    login,
     verifyEmail,
     resendVerificationEmail,
+    logout,
 };

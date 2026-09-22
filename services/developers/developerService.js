@@ -97,6 +97,26 @@ const logout = async (userId) => {
     }
 };
 
+const createApiKey = async (userId) => {
+    const apiKey = `sk_omni_${crypto.randomBytes(32).toString('hex')}`;
+    const apiKeyHash = crypto
+        .createHash('sha256')
+        .update(apiKey)
+        .digest('hex');
+
+    const updated = await developerModel.updateApiKeyHash(userId, apiKeyHash);
+
+    if (!updated) {
+        const error = new Error('Developer account not found');
+        error.code = 'DEVELOPER_NOT_FOUND';
+        throw error;
+    }
+
+    return {
+        apiKey,
+    };
+};
+
 const jwt = require('jsonwebtoken');
 const { getJwtConfig } = require('../../configs/jwt');
 
@@ -160,4 +180,5 @@ module.exports = {
     verifyEmail,
     resendVerificationEmail,
     logout,
+    createApiKey,
 };

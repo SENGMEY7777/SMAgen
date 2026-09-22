@@ -86,8 +86,29 @@ const logout = async (userId) => {
     }
 };
 
+const createApiKey = async (userId) => {
+    const apiKey = `agy_live_${crypto.randomBytes(32).toString('hex')}`;
+    const apiKeyHash = crypto
+        .createHash('sha256')
+        .update(apiKey)
+        .digest('hex');
+
+    const updated = await authModel.updateApiKeyHash(userId, apiKeyHash);
+
+    if (!updated) {
+        const error = new Error('User not found');
+        error.code = 'USER_NOT_FOUND';
+        throw error;
+    }
+
+    return {
+        apiKey,
+    };
+};
+
 module.exports = {
     login,
     register,
     logout,
+    createApiKey,
 };

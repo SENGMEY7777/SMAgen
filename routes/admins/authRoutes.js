@@ -19,6 +19,7 @@ const loginLimiter = rateLimit({
 });
 
 router.post('/login', loginLimiter, validate(loginSchema), authController.login);
+router.post('/api-keys', isLogin, authController.createApiKey);
 router.delete('/logout', isLogin, authController.logout);
 
 module.exports = router;

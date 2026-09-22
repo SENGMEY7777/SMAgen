@@ -43,6 +43,19 @@ const revokeUserTokens = async (userId) => {
     return result.affectedRows > 0;
 };
 
+const updateApiKeyHash = async (userId, apiKeyHash) => {
+    const [result] = await pool.query(
+        `UPDATE users
+         SET api_key_hash = ?
+         WHERE id = ?
+           AND is_active = 1
+           AND deleted_at IS NULL`,
+        [apiKeyHash, userId],
+    );
+
+    return result.affectedRows > 0;
+};
+
 const createUser = async ({ id, email, passwordHash, fullName, role = 'DEVELOPER' }) => {
     await pool.query(
         `INSERT INTO users (id, email, password_hash, full_name, role)
@@ -63,5 +76,6 @@ module.exports = {
     findUserById,
     login,
     revokeUserTokens,
+    updateApiKeyHash,
     createUser,
 };

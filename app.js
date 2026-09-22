@@ -6,6 +6,7 @@ dotenv.config();
 const app = express();
 const authRoutes = require('./routes/admins/authRoutes');
 const developersRoutes = require('./routes/developers/developerRoute');
+const workflowRoutes = require('./routes/workflow/workflowRoute');
 
 app.use(express.json({ limit: '10kb' }));
 app.use(compression({
@@ -13,7 +14,11 @@ app.use(compression({
 }));
 
 app.use('/api/v1/admin/auth', authRoutes);
+app.use('/api/v1/auth', authRoutes);
+app.use('/api/v1/developers', developersRoutes);
 app.use('/api/v1/developer/auth', developersRoutes);
+app.use('/api/v1/workflow', workflowRoutes);
+
 
 
 const PORT = process.env.PORT || 3000;

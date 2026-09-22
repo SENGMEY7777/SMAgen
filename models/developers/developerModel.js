@@ -96,6 +96,20 @@ const revokeUserTokens = async (userId) => {
     return result.affectedRows > 0;
 };
 
+const updateApiKeyHash = async (userId, apiKeyHash) => {
+    const [result] = await pool.query(
+        `UPDATE users
+         SET api_key_hash = ?
+         WHERE id = ?
+           AND role = 'DEVELOPER'
+           AND is_active = 1
+           AND deleted_at IS NULL`,
+        [apiKeyHash, userId],
+    );
+
+    return result.affectedRows > 0;
+};
+
 module.exports = {
     findUserById,
     findUserByEmail,
@@ -103,5 +117,6 @@ module.exports = {
     verifyUserEmail,
     updateVerificationToken,
     revokeUserTokens,
+    updateApiKeyHash,
     register,
 };

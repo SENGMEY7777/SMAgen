@@ -36,7 +36,32 @@ const logout = async (req, res) => {
     }
 };
 
+const createApiKey = async (req, res) => {
+    try {
+        const result = await authService.createApiKey(req.user.id);
+
+        return sendResponse(
+            res,
+            201,
+            true,
+            'API key created successfully. Store it securely; it will not be shown again.',
+            result,
+        );
+    } catch (error) {
+        if (error.code === 'USER_NOT_FOUND') {
+            return sendResponse(res, 404, false, 'User not found', null, {
+                code: error.code,
+            });
+        }
+
+        return sendResponse(res, 500, false, 'API key creation failed', null, {
+            code: 'INTERNAL_ERROR',
+        });
+    }
+};
+
 module.exports = {
     login,
     logout,
+    createApiKey,
 };

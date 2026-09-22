@@ -34,7 +34,7 @@ const getFromHeader = () => {
 // Send verification link email
 const sendVerificationEmail = async (to, token, userName = 'Developer') => {
   const appUrl = getAppUrl();
-  const verificationLink = `${appUrl}/api/v1/developer/auth/verify-email?token=${token}`;
+  const verificationLink = `${appUrl}/api/v1/developers/verify-email?token=${token}`;
   const transporter = createTransporter();
 
   if (!transporter) {

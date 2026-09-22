@@ -40,6 +40,30 @@ const logout = async (req, res) => {
     }
 };
 
+const createApiKey = async (req, res) => {
+    try {
+        const result = await developerService.createApiKey(req.user.id);
+
+        return sendResponse(
+            res,
+            201,
+            true,
+            'API key created successfully. Store it securely; it will not be shown again.',
+            result,
+        );
+    } catch (error) {
+        if (error.code === 'DEVELOPER_NOT_FOUND') {
+            return sendResponse(res, 404, false, 'Developer account not found', null, {
+                code: error.code,
+            });
+        }
+
+        return sendResponse(res, 500, false, 'API key creation failed', null, {
+            code: 'INTERNAL_ERROR',
+        });
+    }
+};
+
 const login = async (req, res) => {
     try {
         const { email, password, password_hash } = req.body || {};
@@ -57,4 +81,5 @@ module.exports = {
     verifyEmail,
     resendVerification,
     logout,
+    createApiKey,
 };

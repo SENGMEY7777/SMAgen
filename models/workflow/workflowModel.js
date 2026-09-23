@@ -148,6 +148,54 @@ const listLatestTaskNodesByRunId = async (runId) => {
     return rows;
 }
 
+const updateTaskNode = async (id, updates = {}) => {
+    const updateFields = [];
+    const values = [];
+
+    if (updates.status !== undefined) {
+        updateFields.push('status = ?');
+        values.push(updates.status);
+    }
+
+    if (updates.errorMessage !== undefined) {
+        updateFields.push('error_message = ?');
+        values.push(updates.errorMessage);
+    }
+
+    if (updates.toolOutput !== undefined) {
+        updateFields.push('tool_output = ?');
+        values.push(JSON.stringify(updates.toolOutput));
+    }
+
+    if (updates.executionTimeMs !== undefined) {
+        updateFields.push('execution_time_ms = ?');
+        values.push(updates.executionTimeMs);
+    }
+
+    if (updates.startedAt !== undefined) {
+        updateFields.push('started_at = ?');
+        values.push(updates.startedAt);
+    }
+
+    if (updates.completedAt !== undefined) {
+        updateFields.push('completed_at = ?');
+        values.push(updates.completedAt);
+    }
+
+    if (!updateFields.length) {
+        return {
+            affectedRows: 0,
+        };
+    }
+
+    values.push(id);
+
+    const sql = `UPDATE task_nodes SET ${updateFields.join(', ')} WHERE id = ?`;
+    const [result] = await pool.query(sql, values);
+
+    return result;
+}
+
 const bulkInsertTaskNodes = async (tasks) => {
     if (!tasks.length) {
         return {
@@ -199,5 +247,6 @@ module.exports = {
     listExecutionRunsByUser,
     listTaskNodesByRunId,
     listLatestTaskNodesByRunId,
+    updateTaskNode,
     bulkInsertTaskNodes,
 }

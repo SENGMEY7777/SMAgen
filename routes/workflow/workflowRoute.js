@@ -2,14 +2,33 @@ const router = require('express').Router();
 
 const workflowController = require('../../controllers/workflow/workflowController');
 const isLogin = require('../../middleware/authenticate');
+const validate = require('../../middleware/validate');
+const {validateParams} = require('../../middleware/validate');
+const {
+    workflowCreateSchema,
+    runWorkflowSchema,
+    resumeWorkflowSchema,
+    workflowRunParamsSchema,
+} = require('../../validators/workflow/workflowValidator');
 
-router.post('/create', isLogin, workflowController.create);
+router.post('/create', isLogin, validate(workflowCreateSchema), workflowController.create);
 router.get('/listWorkflows', isLogin, workflowController.list);
 
 // Workflow Runs
-router.post('/run', isLogin, workflowController.runWorkflow);
-router.post('/run/:runId', isLogin, workflowController.runWorkflow);
+router.post('/run', isLogin, validate(runWorkflowSchema), workflowController.runWorkflow);
+router.post(
+    '/run/:runId',
+    isLogin,
+    validateParams(workflowRunParamsSchema),
+    validate(resumeWorkflowSchema),
+    workflowController.runWorkflow,
+);
 router.get('/runs', isLogin, workflowController.listRuns);
-router.get('/runs/:runId', isLogin, workflowController.getWorkflowRun);
+router.get(
+    '/runs/:runId',
+    isLogin,
+    validateParams(workflowRunParamsSchema),
+    workflowController.getWorkflowRun,
+);
 
 module.exports = router;

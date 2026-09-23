@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
   gender                   ENUM('MALE', 'FEMALE', 'OTHER') NULL,
   avatar_url               VARCHAR(255)     NULL,
   password_hash            CHAR(60)         NOT NULL,
-  role                     ENUM('ADMIN', 'DEVELOPER', 'VIEWER') NOT NULL DEFAULT 'DEVELOPER',
+  role                     ENUM('ADMIN', 'OPERATOR', 'DEVELOPER', 'VIEWER') NOT NULL DEFAULT 'DEVELOPER',
   api_key_hash             CHAR(64)         NULL,
   
   -- Account Lifecycle & Security Gates

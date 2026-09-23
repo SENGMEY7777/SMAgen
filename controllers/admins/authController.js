@@ -3,8 +3,8 @@ const sendResponse = require('../../utils/responseHelper');
 
 const login = async (req, res) => {
     try {
-        let { email, password, password_hash } = req.body;
-        let result = await authService.login(email, password || password_hash);
+        const {email, password} = req.body;
+        const result = await authService.login(email, password);
         sendResponse(res, 200, true, 'Login successful', result);
     } catch (error) {
         const isInvalidCredentials = error.code === 'INVALID_CREDENTIALS';

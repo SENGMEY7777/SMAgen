@@ -10,7 +10,7 @@ const register = async (body) => {
     }
 
     const secureUserId = crypto.randomUUID();
-    const rawPassword = body.password || body.password_hash || '';
+    const rawPassword = body.password || '';
     const passwordHash = rawPassword ? await bcrypt.hash(rawPassword, 10) : '';
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);

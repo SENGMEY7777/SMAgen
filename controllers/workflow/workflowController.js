@@ -39,6 +39,7 @@ const runWorkflow = async (req, res) => {
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
             userId: req.user.id,
+            io: req.app.get('io'),
         });
 
         const statusCode = result.executionStarted ? 202 : 201;

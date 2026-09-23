@@ -1,9 +1,7 @@
 // models/taskNodeModel.js
 import { pool } from '../configs/db.js';
 
-/**
- * 1. Bulk insert task nodes for a workflow execution run
- */
+
 export async function bulkInsertTaskNodes(tasks) {
   if (!tasks || tasks.length === 0) return;
 

@@ -5,6 +5,7 @@ const compression = require('compression');
 dotenv.config();
 const app = express();
 const authRoutes = require('./routes/admins/authRoutes');
+const approveRoutes = require('./routes/admins/approveRoutes');
 const developersRoutes = require('./routes/developers/developerRoute');
 const workflowRoutes = require('./routes/workflow/workflowRoute');
 
@@ -14,6 +15,7 @@ app.use(compression({
 }));
 
 app.use('/api/v1/admin/auth', authRoutes);
+app.use('/api/v1/admin/approvals', approveRoutes);
 app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/developers', developersRoutes);
 app.use('/api/v1/developer/auth', developersRoutes);

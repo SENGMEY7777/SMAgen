@@ -4,7 +4,8 @@ const { planWorkflowRun } = require('../../core/planner');
 const { triggerScheduler } = require('../../core/scheduler');
 const { executeTaskNode } = require('../../core/executor');
 
-const startScheduler = (runId) => triggerScheduler(runId, {
+const startScheduler = (runId, io = null) => triggerScheduler(runId, {
+    io,
     executor: executeTaskNode,
 });
 
@@ -31,7 +32,7 @@ const list = async (userId) => {
     return workflowModel.listWorkflowsByUser(userId);
 }
 
-const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
+const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) => {
     let executionRun;
 
     if (runId) {
@@ -52,7 +53,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
         const existingTasks = await workflowModel.listTaskNodesByRunId(runId);
 
         if (existingTasks.length > 0) {
-            const execution = await startScheduler(runId);
+            const execution = await startScheduler(runId, io);
 
             return {
                 success: true,
@@ -104,7 +105,8 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
         runId: executionRun.id,
         goalPrompt: executionRun.goal_prompt,
         userId,
-        scheduler: startScheduler,
+        io,
+        scheduler: (plannedRunId) => startScheduler(plannedRunId, io),
     });
 }
 

@@ -19,7 +19,7 @@ const login = async (email, password) => {
         isPasswordValid = await bcrypt.compare(password, user.password_hash);
     }
 
-    if (!isPasswordValid || user.role !== 'ADMIN') {
+    if (!isPasswordValid || !['ADMIN', 'OPERATOR'].includes(user.role)) {
         throw invalidCredentialsError();
     }
 

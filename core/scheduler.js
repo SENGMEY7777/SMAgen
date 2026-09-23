@@ -6,6 +6,7 @@ const {
     updateExecutionRunStatus,
     updateTaskNode,
 } = require('../models/workflow/workflowModel');
+const {createRiskGate} = require('./riskEvaluation');
 
 const MAX_CONCURRENT_TASKS = Math.max(
     1,
@@ -64,7 +65,7 @@ const finishRun = async (runId, tasks, io) => {
 const triggerScheduler = async (runId, options = {}) => {
     const {
         io = null,
-        riskGate = null,
+        riskGate = createRiskGate(),
         executor = null,
     } = options;
 
@@ -100,6 +101,10 @@ const triggerScheduler = async (runId, options = {}) => {
                 const activeTasks = tasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task.status));
 
                 if (activeTasks.length) {
+                    if (activeTasks.some((task) => task.status === 'AWAITING_APPROVAL')) {
+                        await updateExecutionRunStatus(runId, 'AWAITING_APPROVAL');
+                    }
+
                     return {
                         runId,
                         status: 'WAITING',
@@ -224,6 +229,8 @@ const triggerScheduler = async (runId, options = {}) => {
             tasksProcessed += results.length;
 
             if (results.includes('WAITING')) {
+                await updateExecutionRunStatus(runId, 'AWAITING_APPROVAL');
+
                 return {
                     runId,
                     status: 'WAITING_APPROVAL',

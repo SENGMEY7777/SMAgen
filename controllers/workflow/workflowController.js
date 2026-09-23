@@ -41,13 +41,21 @@ const runWorkflow = async (req, res) => {
             userId: req.user.id,
         });
 
-        return sendResponse(res, 202, true, 'Workflow run started successfully', result);
+        const statusCode = result.executionStarted ? 202 : 201;
+        const message = result.executionStarted
+            ? 'Workflow run started successfully'
+            : 'Workflow plan created successfully';
+
+        return sendResponse(res, statusCode, true, message, result);
     } catch (error) {
         const statusCodeMap = {
             VALIDATION_ERROR: 400,
             WORKFLOW_NOT_FOUND: 404,
             RUN_NOT_FOUND: 404,
             INVALID_RUN_STATUS: 409,
+            RUN_ALREADY_PLANNED: 409,
+            LLM_UNAVAILABLE: 503,
+            PLANNER_ERROR: 502,
         };
         const statusCode = statusCodeMap[error.code] || 500;
 

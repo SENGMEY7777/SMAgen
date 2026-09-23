@@ -42,26 +42,46 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
             error.code = 'INVALID_RUN_STATUS';
             throw error;
         }
+
+        const existingTasks = await workflowModel.listTaskNodesByRunId(runId);
+
+        if (existingTasks.length > 0) {
+            const error = new Error('Workflow run has already been planned. Use GET /runs/:runId to view the existing plan.');
+            error.code = 'RUN_ALREADY_PLANNED';
+            throw error;
+        }
     } else {
-        if (!workflowId || !goalPrompt) {
-            const error = new Error('workflowId and goalPrompt are required');
+        if (typeof goalPrompt !== 'string' || !goalPrompt.trim()) {
+            const error = new Error('goalPrompt is required');
             error.code = 'VALIDATION_ERROR';
             throw error;
         }
 
-        const workflow = await workflowModel.getWorkflowById(workflowId, userId);
+        if (workflowId) {
+            const workflow = await workflowModel.getWorkflowById(workflowId, userId);
 
-        if (!workflow) {
-            const error = new Error('Workflow not found');
-            error.code = 'WORKFLOW_NOT_FOUND';
-            throw error;
+            if (!workflow) {
+                const error = new Error('Workflow not found');
+                error.code = 'WORKFLOW_NOT_FOUND';
+                throw error;
+            }
+        } else {
+            workflowId = uuidv4();
+
+            await workflowModel.create({
+                id: workflowId,
+                title: goalPrompt.trim().slice(0, 255),
+                description: 'Automatically created for this workflow run',
+                systemPrompt: 'You are OmniAgent. Execute the user goal as a safe, structured workflow.',
+                userId,
+            });
         }
 
         executionRun = await workflowModel.createExecutionRun({
             id: uuidv4(),
             workflowId,
             userId,
-            goalPrompt,
+            goalPrompt: goalPrompt.trim(),
         });
     }
 
@@ -85,7 +105,7 @@ const getWorkflowRun = async (runId, userId) => {
         throw error;
     }
 
-    const tasks = await workflowModel.listTaskNodesByRunId(runId);
+    const tasks = await workflowModel.listLatestTaskNodesByRunId(runId);
 
     return {
         ...executionRun,

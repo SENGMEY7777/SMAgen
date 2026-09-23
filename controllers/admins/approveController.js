@@ -49,9 +49,31 @@ const decide = async (req, res) => {
         const message = req.body.status === 'APPROVED'
             ? 'Approval request approved successfully'
             : 'Approval request rejected successfully';
+        const io = req.app.get('io');
+
+        if (io && approval.run_id) {
+            io.to(`run_${approval.run_id}`).emit('approval_decision', {
+                runId: approval.run_id,
+                approvalId: approval.id,
+                taskId: approval.task_id,
+                nodeKey: approval.node_key,
+                status: approval.status,
+                rejectionReason: approval.rejection_reason,
+            });
+
+            if (approval.status === 'REJECTED') {
+                io.to(`run_${approval.run_id}`).emit('node_skipped', {
+                    runId: approval.run_id,
+                    taskId: approval.task_id,
+                    nodeKey: approval.node_key,
+                    reason: approval.rejection_reason || 'Approval request was rejected',
+                });
+            }
+        }
 
         if (approval.run_id) {
             triggerScheduler(approval.run_id, {
+                io,
                 executor: executeTaskNode,
             }).catch((error) => {
                 console.error(`❌ [Approval Resume Error]:`, error.message);

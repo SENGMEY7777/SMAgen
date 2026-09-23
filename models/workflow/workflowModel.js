@@ -129,6 +129,25 @@ const listTaskNodesByRunId = async (runId) => {
     return rows;
 }
 
+const listLatestTaskNodesByRunId = async (runId) => {
+    const [rows] = await pool.query(
+        `SELECT id, run_id, node_key, title, instruction, dependencies, status,
+                assigned_tool, tool_input, tool_output, error_message, retry_count,
+                execution_time_ms, started_at, completed_at, created_at
+         FROM task_nodes
+         WHERE run_id = ?
+           AND created_at = (
+               SELECT MAX(created_at)
+               FROM task_nodes
+               WHERE run_id = ?
+           )
+         ORDER BY created_at ASC`,
+        [runId, runId],
+    );
+
+    return rows;
+}
+
 const bulkInsertTaskNodes = async (tasks) => {
     if (!tasks.length) {
         return {
@@ -179,5 +198,6 @@ module.exports = {
     getExecutionById,
     listExecutionRunsByUser,
     listTaskNodesByRunId,
+    listLatestTaskNodesByRunId,
     bulkInsertTaskNodes,
 }

@@ -13,7 +13,8 @@ const register = async (req, res) => {
 
 const verifyEmail = async (req, res) => {
     try {
-        const token = req.query.token || (req.body || {}).token;
+        const query = req.validated?.query || req.query || {};
+        const token = query.token || (req.body || {}).token;
         await developerService.verifyEmail(token);
         sendResponse(res, 200, true, 'Email verified successfully', null);
     } catch (error) {
@@ -23,7 +24,8 @@ const verifyEmail = async (req, res) => {
 
 const resendVerification = async (req, res) => {
     try {
-        const email = (req.body || {}).email || req.query.email;
+        const query = req.validated?.query || req.query || {};
+        const email = (req.body || {}).email || query.email;
         await developerService.resendVerificationEmail(email);
         sendResponse(res, 200, true, 'Verification link resent successfully');
     } catch (error) {
@@ -66,8 +68,8 @@ const createApiKey = async (req, res) => {
 
 const login = async (req, res) => {
     try {
-        const { email, password, password_hash } = req.body || {};
-        const result = await developerService.login(email, password || password_hash);
+        const {email, password} = req.body || {};
+        const result = await developerService.login(email, password);
         sendResponse(res, 200, true, 'Login successful', result);
     } catch (error) {
         const isAuthError = error.code === 'INVALID_CREDENTIALS' || error.code === 'ACCOUNT_INACTIVE';

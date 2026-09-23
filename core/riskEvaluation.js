@@ -11,8 +11,8 @@ const RISK_LEVELS = {
 };
 
 const READ_ONLY_ACTIONS = new Set(['read', 'list', 'search', 'get']);
+const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
 const HIGH_RISK_TOOLS = new Set([
-    'executeCommand',
     'databaseConnector',
     'httpRequester',
 ]);
@@ -23,6 +23,9 @@ const DANGEROUS_PATTERNS = [
     /\bdelete\s+from\b/i,
     /\bcurl\b[^\n|]*\|\s*(?:sh|bash|zsh)\b/i,
     /\bwget\b[^\n|]*\|\s*(?:sh|bash|zsh)\b/i,
+    /\b(?:bash|sh|zsh)\b/i,
+    /\bgit\s+(?:push|reset\s+--hard|clean\s+-f)/i,
+    /\b(?:insert|update|delete|alter|drop|truncate)\s+(?:into|from|table|database|schema)?/i,
     /\beval\s*\(/i,
     /\b(?:chmod\s+777|mkfs|shutdown|reboot)\b/i,
 ];
@@ -48,6 +51,8 @@ const getTaskText = (task, input) => {
         task.assignedTool,
         input.action,
         input.command,
+        input.sql,
+        input.script,
         input.query,
         input.url,
     ]
@@ -67,6 +72,17 @@ const evaluateTaskRisk = (task = {}) => {
     if (!assignedTool) {
         riskLevel = 'CRITICAL';
         reason = 'Task does not specify a tool';
+    } else if (assignedTool === 'executeCommand') {
+        const command = String(toolInput.command || '').trim();
+        const commandName = command.split(/\s+/, 1)[0];
+
+        if (SAFE_COMMANDS.has(commandName) && !DANGEROUS_PATTERNS.some((pattern) => pattern.test(command))) {
+            riskLevel = 'LOW';
+            reason = 'Read-only command can execute automatically';
+        } else {
+            riskLevel = 'HIGH';
+            reason = 'Shell commands require human approval unless they are read-only';
+        }
     } else if (HIGH_RISK_TOOLS.has(assignedTool)) {
         riskLevel = 'HIGH';
         reason = `${assignedTool} can access external systems or execute sensitive operations`;
@@ -129,7 +145,7 @@ const createRiskGate = ({model = approveModel, idFactory = crypto.randomUUID} = 
         }
 
         const approvalId = idFactory();
-        await model.createApprovalRequest({
+        const approval = await model.createApprovalRequest({
             id: approvalId,
             taskId: task.id,
             actionSummary: evaluation.actionSummary,
@@ -140,6 +156,7 @@ const createRiskGate = ({model = approveModel, idFactory = crypto.randomUUID} = 
             ...evaluation,
             canExecute: false,
             approvalId,
+            approval,
             reason: 'Human approval is required',
         };
     };

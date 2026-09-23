@@ -1,91 +1,61 @@
 const Joi = require('joi');
-
-
-const FULL_NAME_REGEX = /^[\p{L}]+(?:[' -][\p{L}]+)*$/u;
-const EMAIL_REGEX = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
+const {
+    email,
+    fullName,
+    password,
+    phone,
+    url,
+    verificationToken,
+} = require('../commonValidator');
 
 const registerSchema = Joi.object({
-  full_name: Joi.string()
-    .trim()
-    .min(2)
-    .max(70)
-    .pattern(FULL_NAME_REGEX, 'full name format')
-    .messages({
-      'string.empty': 'Full name is required',
-      'any.required': 'Full name is required',
-      'string.min': 'Full name must be at least 2 characters',
-      'string.max': 'Full name cannot exceed 70 characters',
-      'string.pattern.name': 'Full name can only contain letters, spaces, hyphens, and apostrophes'
+    full_name: fullName(),
+    fullName: fullName(),
+    email: email().required().messages({
+        'string.empty': 'Email is required',
+        'any.required': 'Email is required',
     }),
-
-  fullName: Joi.string()
-    .trim()
-    .min(2)
-    .max(70)
-    .pattern(FULL_NAME_REGEX, 'full name format'),
-
-  email: Joi.string()
-    .trim()
-    .lowercase()
-    .pattern(EMAIL_REGEX, 'email format')
-    .required()
-    .messages({
-      'string.empty': 'Email is required',
-      'any.required': 'Email is required',
-      'string.pattern.name': 'Email format is invalid'
+    password: password().required().messages({
+        'string.empty': 'Password is required',
+        'any.required': 'Password is required',
     }),
-
-  password: Joi.string()
-    .pattern(PASSWORD_REGEX, 'secure password format')
-    .messages({
-      'string.empty': 'Password is required',
-      'any.required': 'Password is required',
-      'string.pattern.name': 'Password must contain at least 8 characters, one uppercase letter, one lowercase letter, one number, and one special character (@$!%*?&)'
-    }),
-
-  password_hash: Joi.string()
-    .pattern(PASSWORD_REGEX, 'secure password format'),
-
-  phone_number: Joi.string().allow(null, ''),
-  phoneNumber: Joi.string().allow(null, ''),
-  gender: Joi.string().valid('MALE', 'FEMALE', 'OTHER').allow(null, ''),
-  avatar_url: Joi.string().allow(null, ''),
-  avatarUrl: Joi.string().allow(null, ''),
+    phone_number: phone().allow(null, ''),
+    phoneNumber: phone().allow(null, ''),
+    gender: Joi.string().valid('MALE', 'FEMALE', 'OTHER').allow(null, ''),
+    avatar_url: url().allow(null, ''),
+    avatarUrl: url().allow(null, ''),
 })
-.xor('full_name', 'fullName')
-.xor('password', 'password_hash')
-.messages({
-  'object.missing': 'Required fields missing',
-})
-.options({ stripUnknown: true });
+    .xor('full_name', 'fullName')
+    .unknown(false)
+    .messages({
+        'object.xor': 'Use exactly one of full_name or fullName',
+    });
 
 const loginSchema = Joi.object({
-  email: Joi.string()
-    .trim()
-    .lowercase()
-    .pattern(EMAIL_REGEX, 'email format')
-    .required()
-    .messages({
-      'string.empty': 'Email is required',
-      'any.required': 'Email is required',
-      'string.pattern.name': 'Email format is invalid'
+    email: email().required().messages({
+        'string.empty': 'Email is required',
+        'any.required': 'Email is required',
     }),
+    password: password().required().messages({
+        'string.empty': 'Password is required',
+        'any.required': 'Password is required',
+    }),
+}).unknown(false);
 
-  password: Joi.string().messages({
-    'string.empty': 'Password is required',
-    'any.required': 'Password is required'
-  }),
+const verificationTokenSchema = Joi.object({
+    token: verificationToken().required(),
+}).unknown(false);
 
-  password_hash: Joi.string()
-})
-.xor('password', 'password_hash')
-.messages({
-  'object.missing': 'Password is required',
-})
-.options({ stripUnknown: true });
+const resendVerificationSchema = Joi.object({
+    email: email().required().messages({
+        'string.empty': 'Email is required',
+        'any.required': 'Email is required',
+    }),
+}).unknown(false);
 
 module.exports = {
-  registerSchema,
-  loginSchema,
+    registerSchema,
+    loginSchema,
+    verificationTokenSchema,
+    resendVerificationSchema,
 };

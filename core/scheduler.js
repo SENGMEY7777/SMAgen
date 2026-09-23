@@ -136,6 +136,14 @@ const triggerScheduler = async (runId, options = {}) => {
                     errorMessage: 'Skipped because a dependency failed',
                     completedAt: new Date(),
                 })));
+
+                blockedTasks.forEach((task) => emitEvent(io, runId, 'node_skipped', {
+                    runId,
+                    taskId: task.id,
+                    nodeKey: task.node_key,
+                    reason: 'Skipped because a dependency failed',
+                }));
+
                 continue;
             }
 
@@ -162,6 +170,19 @@ const triggerScheduler = async (runId, options = {}) => {
                     await updateTaskNode(task.id, {
                         status: 'AWAITING_APPROVAL',
                         errorMessage: gateResult?.reason || 'Human approval is required',
+                    });
+
+                    emitEvent(io, runId, 'approval_required', {
+                        runId,
+                        approvalId: gateResult.approvalId,
+                        taskId: task.id,
+                        nodeKey: task.node_key,
+                        title: task.title,
+                        assignedTool: task.assigned_tool,
+                        toolInput: task.tool_input,
+                        riskLevel: gateResult.riskLevel,
+                        reason: gateResult.reason,
+                        actionSummary: gateResult.actionSummary,
                     });
 
                     emitEvent(io, runId, 'node_awaiting_approval', {

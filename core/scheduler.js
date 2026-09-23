@@ -1,0 +1,243 @@
+const pLimitModule = require('p-limit');
+
+const pLimit = pLimitModule.default || pLimitModule;
+const {
+    listLatestTaskNodesByRunId,
+    updateExecutionRunStatus,
+    updateTaskNode,
+} = require('../models/workflow/workflowModel');
+
+const MAX_CONCURRENT_TASKS = Math.max(
+    1,
+    Number.parseInt(process.env.MAX_CONCURRENT_TASKS || '4', 10) || 4,
+);
+
+const ACTIVE_TASK_STATUSES = [
+    'QUEUED',
+    'RUNNING',
+    'AWAITING_APPROVAL',
+];
+
+const parseJsonValue = (value, fallback) => {
+    if (typeof value !== 'string') {
+        return value ?? fallback;
+    }
+
+    try {
+        return JSON.parse(value);
+    } catch (error) {
+        return fallback;
+    }
+};
+
+const normalizeTask = (task) => ({
+    ...task,
+    dependencies: parseJsonValue(task.dependencies, []),
+    tool_input: parseJsonValue(task.tool_input, {}),
+});
+
+const emitEvent = (io, runId, event, payload) => {
+    if (io) {
+        io.to(`run_${runId}`).emit(event, payload);
+    }
+};
+
+const finishRun = async (runId, tasks, io) => {
+    const hasFailedTask = tasks.some((task) => ['FAILED', 'SKIPPED'].includes(task.status));
+    const finalStatus = hasFailedTask ? 'FAILED' : 'COMPLETED';
+
+    await updateExecutionRunStatus(runId, finalStatus);
+
+    emitEvent(io, runId, 'run_finished', {
+        runId,
+        status: finalStatus,
+        completedAt: new Date(),
+    });
+
+    return {
+        runId,
+        status: finalStatus,
+        tasksProcessed: tasks.length,
+    };
+};
+
+const triggerScheduler = async (runId, options = {}) => {
+    const {
+        io = null,
+        riskGate = null,
+        executor = null,
+    } = options;
+
+    if (typeof executor !== 'function') {
+        const error = new Error('Task executor is not configured');
+        error.code = 'EXECUTOR_NOT_CONFIGURED';
+        throw error;
+    }
+
+    const limit = pLimit(MAX_CONCURRENT_TASKS);
+    let tasksProcessed = 0;
+
+    console.log(`\n⚡ [Scheduler 2.0] Evaluating DAG state for Run: ${runId}`);
+
+    try {
+        await updateExecutionRunStatus(runId, 'RUNNING');
+
+        while (true) {
+            const rows = await listLatestTaskNodesByRunId(runId);
+            const tasks = rows.map(normalizeTask);
+
+            if (!tasks.length) {
+                return {
+                    runId,
+                    status: 'EMPTY',
+                    tasksProcessed: 0,
+                };
+            }
+
+            const pendingTasks = tasks.filter((task) => task.status === 'PENDING');
+
+            if (!pendingTasks.length) {
+                const activeTasks = tasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task.status));
+
+                if (activeTasks.length) {
+                    return {
+                        runId,
+                        status: 'WAITING',
+                        tasksProcessed,
+                    };
+                }
+
+                return finishRun(runId, tasks, io);
+            }
+
+            const successfulNodeKeys = new Set(
+                tasks
+                    .filter((task) => ['SUCCESS', 'COMPLETED'].includes(task.status))
+                    .map((task) => task.node_key),
+            );
+            const failedNodeKeys = new Set(
+                tasks
+                    .filter((task) => ['FAILED', 'SKIPPED'].includes(task.status))
+                    .map((task) => task.node_key),
+            );
+
+            const blockedTasks = pendingTasks.filter((task) => {
+                return task.dependencies.some((dependency) => failedNodeKeys.has(dependency));
+            });
+
+            if (blockedTasks.length) {
+                await Promise.all(blockedTasks.map((task) => updateTaskNode(task.id, {
+                    status: 'SKIPPED',
+                    errorMessage: 'Skipped because a dependency failed',
+                    completedAt: new Date(),
+                })));
+                continue;
+            }
+
+            const readyTasks = pendingTasks.filter((task) => {
+                return task.dependencies.every((dependency) => successfulNodeKeys.has(dependency));
+            });
+
+            if (!readyTasks.length) {
+                await Promise.all(pendingTasks.map((task) => updateTaskNode(task.id, {
+                    status: 'FAILED',
+                    errorMessage: 'Task dependencies could not be resolved',
+                    completedAt: new Date(),
+                })));
+
+                continue;
+            }
+
+            const results = await Promise.all(readyTasks.map((task) => limit(async () => {
+                const gateResult = typeof riskGate === 'function'
+                    ? await riskGate(task)
+                    : {canExecute: true};
+
+                if (!gateResult?.canExecute) {
+                    await updateTaskNode(task.id, {
+                        status: 'AWAITING_APPROVAL',
+                        errorMessage: gateResult?.reason || 'Human approval is required',
+                    });
+
+                    emitEvent(io, runId, 'node_awaiting_approval', {
+                        runId,
+                        taskId: task.id,
+                        nodeKey: task.node_key,
+                    });
+
+                    return 'WAITING';
+                }
+
+                const startedAt = new Date();
+                await updateTaskNode(task.id, {
+                    status: 'RUNNING',
+                    startedAt,
+                });
+
+                emitEvent(io, runId, 'node_running', {
+                    runId,
+                    taskId: task.id,
+                    nodeKey: task.node_key,
+                    title: task.title,
+                });
+
+                try {
+                    const output = await executor(task);
+                    const completedAt = new Date();
+
+                    await updateTaskNode(task.id, {
+                        status: 'SUCCESS',
+                        toolOutput: output ?? null,
+                        executionTimeMs: completedAt.getTime() - startedAt.getTime(),
+                        completedAt,
+                        errorMessage: null,
+                    });
+
+                    emitEvent(io, runId, 'node_completed', {
+                        runId,
+                        taskId: task.id,
+                        nodeKey: task.node_key,
+                    });
+
+                    return 'SUCCESS';
+                } catch (error) {
+                    const completedAt = new Date();
+
+                    await updateTaskNode(task.id, {
+                        status: 'FAILED',
+                        errorMessage: error.message || 'Task execution failed',
+                        executionTimeMs: completedAt.getTime() - startedAt.getTime(),
+                        completedAt,
+                    });
+
+                    emitEvent(io, runId, 'node_failed', {
+                        runId,
+                        taskId: task.id,
+                        nodeKey: task.node_key,
+                        error: error.message || 'Task execution failed',
+                    });
+
+                    return 'FAILED';
+                }
+            })));
+
+            tasksProcessed += results.length;
+
+            if (results.includes('WAITING')) {
+                return {
+                    runId,
+                    status: 'WAITING_APPROVAL',
+                    tasksProcessed,
+                };
+            }
+        }
+    } catch (error) {
+        await updateExecutionRunStatus(runId, 'FAILED');
+        console.error(`❌ [Scheduler Error]:`, error.message);
+        throw error;
+    }
+};
+
+module.exports = {
+    triggerScheduler,
+};

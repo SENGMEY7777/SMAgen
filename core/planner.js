@@ -5,8 +5,28 @@ const {
     bulkInsertTaskNodes,
     updateExecutionRunStatus,
 } = require('../models/workflow/workflowModel');
+const {dagPlanSchema} = require('../validators/workflow/workflowValidator');
 
 const validatePlan = (plan) => {
+    const schemaResult = dagPlanSchema.validate(plan, {
+        abortEarly: false,
+        allowUnknown: false,
+        convert: true,
+    });
+
+    if (schemaResult.error) {
+        return {
+            success: false,
+            error: {
+                message: schemaResult.error.details
+                    .map((detail) => detail.message.replace(/"/g, ''))
+                    .join(', '),
+            },
+        };
+    }
+
+    plan = schemaResult.value;
+
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
         return {
             success: false,
@@ -197,6 +217,7 @@ Rules:
     const maxAttempts = 3;
     let currentPrompt = `Goal:\n"${goalPrompt}"`;
     let validatedPlan = null;
+    let lastPlannerError = null;
 
     while (attempts < maxAttempts) {
         attempts++;
@@ -212,12 +233,14 @@ Rules:
             const parsed = validatePlan(rawResult.data);
 
             if (!parsed.success) {
+                lastPlannerError = new Error(parsed.error.message);
                 console.warn('⚠️ [Planner] Plan validation failed:', parsed.error.message);
                 currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${goalPrompt}`;
                 continue;
             }
 
             if (!validateAcyclicGraph(parsed.data.tasks)) {
+                lastPlannerError = new Error('The generated plan contains an invalid dependency graph');
                 console.warn('⚠️ [Planner] Invalid dependency graph. Re-planning...');
                 currentPrompt = `The task dependencies contain a missing dependency or circular dependency. Generate a valid acyclic plan for this goal:\n${goalPrompt}`;
                 continue;
@@ -226,6 +249,7 @@ Rules:
             validatedPlan = parsed.data;
             break;
         } catch (error) {
+            lastPlannerError = error;
             console.error(`❌ [Planner Attempt Error]:`, error.message);
             currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${goalPrompt}`;
         }
@@ -233,7 +257,13 @@ Rules:
 
     if (!validatedPlan) {
         await updateExecutionRunStatus(runId, 'FAILED');
-        throw new Error('Failed to generate a valid acyclic DAG plan after maximum attempts.');
+
+        const error = new Error('Failed to generate a valid acyclic DAG plan after maximum attempts.');
+        error.code = [500, 502, 503, 504].includes(Number(lastPlannerError?.code))
+            ? 'LLM_UNAVAILABLE'
+            : 'PLANNER_ERROR';
+        error.cause = lastPlannerError;
+        throw error;
     }
 
     const taskNodeRecords = validatedPlan.tasks.map((task) => ({
@@ -250,7 +280,12 @@ Rules:
     }));
 
     await bulkInsertTaskNodes(taskNodeRecords);
-    await updateExecutionRunStatus(runId, 'RUNNING');
+
+    const executionStarted = typeof scheduler === 'function';
+
+    if (executionStarted) {
+        await updateExecutionRunStatus(runId, 'RUNNING');
+    }
 
     if (io) {
         io.to(`run_${runId}`).emit('run_started', {
@@ -261,16 +296,23 @@ Rules:
         });
     }
 
-    if (typeof scheduler === 'function') {
+    if (executionStarted) {
         await scheduler(runId);
     }
 
-    console.log(`✅ [Planner 1.0 Complete] Plan created for Run: ${runId}`);
+    console.log(
+        `✅ [Planner 1.0 Complete] Plan created for Run: ${runId}. ` +
+        `Execution started: ${executionStarted}`,
+    );
 
     return {
         success: true,
         runId,
         userId,
+        status: executionStarted ? 'RUNNING' : 'PENDING',
+        phase: 'PLANNED',
+        executionStarted,
+        tasksCreated: taskNodeRecords.length,
         plan: validatedPlan,
     };
 };

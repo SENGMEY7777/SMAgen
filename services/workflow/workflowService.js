@@ -1,6 +1,12 @@
 const workflowModel = require('../../models/workflow/workflowModel');
 const { v4: uuidv4 } = require('uuid');
 const { planWorkflowRun } = require('../../core/planner');
+const { triggerScheduler } = require('../../core/scheduler');
+const { executeTaskNode } = require('../../core/executor');
+
+const startScheduler = (runId) => triggerScheduler(runId, {
+    executor: executeTaskNode,
+});
 
 const create = async ({title, description, systemPrompt, userId}) => {
     if (!title || !systemPrompt || !userId) {
@@ -37,7 +43,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
             throw error;
         }
 
-        if (executionRun.status !== 'PENDING') {
+        if (!['PENDING', 'AWAITING_APPROVAL'].includes(executionRun.status)) {
             const error = new Error(`Workflow run cannot be started from ${executionRun.status} status`);
             error.code = 'INVALID_RUN_STATUS';
             throw error;
@@ -46,9 +52,18 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
         const existingTasks = await workflowModel.listTaskNodesByRunId(runId);
 
         if (existingTasks.length > 0) {
-            const error = new Error('Workflow run has already been planned. Use GET /runs/:runId to view the existing plan.');
-            error.code = 'RUN_ALREADY_PLANNED';
-            throw error;
+            const execution = await startScheduler(runId);
+
+            return {
+                success: true,
+                runId,
+                userId,
+                status: execution.status,
+                phase: 'EXECUTION',
+                executionStarted: true,
+                tasksCreated: existingTasks.length,
+                execution,
+            };
         }
     } else {
         if (typeof goalPrompt !== 'string' || !goalPrompt.trim()) {
@@ -89,6 +104,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId}) => {
         runId: executionRun.id,
         goalPrompt: executionRun.goal_prompt,
         userId,
+        scheduler: startScheduler,
     });
 }
 

@@ -42,9 +42,13 @@ const runWorkflow = async (req, res) => {
         });
 
         const statusCode = result.executionStarted ? 202 : 201;
-        const message = result.executionStarted
-            ? 'Workflow run started successfully'
-            : 'Workflow plan created successfully';
+        const messageByStatus = {
+            AWAITING_APPROVAL: 'Workflow run is waiting for approval',
+            COMPLETED: 'Workflow run completed successfully',
+            FAILED: 'Workflow run failed',
+        };
+        const message = messageByStatus[result.status]
+            || (result.executionStarted ? 'Workflow run started successfully' : 'Workflow plan created successfully');
 
         return sendResponse(res, statusCode, true, message, result);
     } catch (error) {

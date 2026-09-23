@@ -282,6 +282,7 @@ Rules:
     await bulkInsertTaskNodes(taskNodeRecords);
 
     const executionStarted = typeof scheduler === 'function';
+    let execution = null;
 
     if (executionStarted) {
         await updateExecutionRunStatus(runId, 'RUNNING');
@@ -297,8 +298,12 @@ Rules:
     }
 
     if (executionStarted) {
-        await scheduler(runId);
+        execution = await scheduler(runId);
     }
+
+    const executionStatus = execution?.status === 'WAITING_APPROVAL'
+        ? 'AWAITING_APPROVAL'
+        : execution?.status;
 
     console.log(
         `✅ [Planner 1.0 Complete] Plan created for Run: ${runId}. ` +
@@ -309,11 +314,12 @@ Rules:
         success: true,
         runId,
         userId,
-        status: executionStarted ? 'RUNNING' : 'PENDING',
-        phase: 'PLANNED',
+        status: executionStatus || (executionStarted ? 'RUNNING' : 'PENDING'),
+        phase: executionStarted ? 'EXECUTION' : 'PLANNED',
         executionStarted,
         tasksCreated: taskNodeRecords.length,
         plan: validatedPlan,
+        execution,
     };
 };
 

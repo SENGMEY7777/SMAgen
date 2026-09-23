@@ -1,11 +1,16 @@
 const fs = require('fs/promises');
 const path = require('path');
 const axios = require('axios');
+const {execFile} = require('child_process');
+const {promisify} = require('util');
 
 const DEFAULT_WORKSPACE_ROOT = path.resolve(
     process.env.WORKSPACE_ROOT || path.join(process.cwd(), 'workspaces'),
 );
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT = 1024 * 1024;
+const execFileAsync = promisify(execFile);
+const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
 
 const parseToolInput = (value) => {
     if (typeof value !== 'string') {
@@ -189,9 +194,73 @@ const webSearch = async (input) => {
     };
 };
 
+const tokenizeCommand = (command) => {
+    const tokens = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g) || [];
+
+    return tokens.map((token) => {
+        if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
+            return token.slice(1, -1);
+        }
+
+        return token;
+    });
+};
+
+const executeCommand = async (input, workspacePath) => {
+    const command = typeof input.command === 'string' ? input.command.trim() : '';
+
+    if (!command) {
+        throw new Error('A command is required');
+    }
+
+    if (/[;&|`]|\$\(|>|<|\n/.test(command)) {
+        throw new Error('Shell operators and command chaining are not allowed');
+    }
+
+    const [commandName, ...args] = tokenizeCommand(command);
+
+    if (!SAFE_COMMANDS.has(commandName)) {
+        throw new Error(`Command is not allowed: ${commandName}`);
+    }
+
+    for (const argument of args) {
+        if (
+            path.isAbsolute(argument)
+            || argument.split(/[\\/]/).includes('..')
+            || /[;&|`$()]/.test(argument)
+        ) {
+            throw new Error('Command arguments must remain inside the task workspace');
+        }
+    }
+
+    try {
+        const result = await execFileAsync(commandName, args, {
+            cwd: workspacePath,
+            timeout: 10000,
+            maxBuffer: MAX_COMMAND_OUTPUT,
+            shell: false,
+        });
+
+        return {
+            command,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: 0,
+        };
+    } catch (error) {
+        return {
+            command,
+            stdout: error.stdout || '',
+            stderr: error.stderr || error.message,
+            exitCode: typeof error.code === 'number' ? error.code : 1,
+        };
+    }
+};
+
 const createToolRegistry = (tools = {}) => ({
     fileManager,
     webSearch,
+    executeCommand,
     ...tools,
 });
 
@@ -242,4 +311,5 @@ module.exports = {
     executeTaskNode,
     fileManager,
     webSearch,
+    executeCommand,
 };

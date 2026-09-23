@@ -5,6 +5,7 @@ const authController = require('../../controllers/admins/authController');
 const isLogin = require('../../middleware/authenticate');
 const validate = require('../../middleware/validate');
 const { loginSchema } = require('../../validators/admin/authValidator');
+const { emptyBodySchema } = require('../../validators/commonValidator');
 
 const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -19,7 +20,7 @@ const loginLimiter = rateLimit({
 });
 
 router.post('/login', loginLimiter, validate(loginSchema), authController.login);
-router.post('/api-keys', isLogin, authController.createApiKey);
-router.delete('/logout', isLogin, authController.logout);
+router.post('/api-keys', isLogin, validate(emptyBodySchema), authController.createApiKey);
+router.delete('/logout', isLogin, validate(emptyBodySchema), authController.logout);
 
 module.exports = router;

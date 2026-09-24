@@ -44,6 +44,12 @@ const revokeUserTokens = async (userId) => {
 };
 
 const updateApiKeyHash = async (userId, apiKeyHash) => {
+    if (typeof apiKeyHash !== 'string' || !/^[a-f0-9]{64}$/i.test(apiKeyHash)) {
+        const error = new Error('API key must be stored as a SHA-256 hash');
+        error.code = 'INVALID_API_KEY_HASH';
+        throw error;
+    }
+
     const [result] = await pool.query(
         `UPDATE users
          SET api_key_hash = ?

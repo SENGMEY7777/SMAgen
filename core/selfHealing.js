@@ -25,24 +25,16 @@ const createErrorTrace = ({runId, task, error, telemetry = {}}) => ({
     createdAt: new Date(),
 });
 
-/**
- * Publishes a failure trace for a self-healing worker. A future repair worker
- * can subscribe to this event without changing the scheduler's failure path.
- */
 const sendErrorTraceToSelfHealingEngine = async ({runId, task, error, telemetry, io}) => {
-    const trace = createErrorTrace({runId, task, error, telemetry});
+    const {reflectOnTaskFailure} = require('./reflection');
 
-    if (io) {
-        io.to(`run_${runId}`).emit('self_healing_required', trace);
-        io.to(`run_${runId}`).emit('node_error_trace', trace);
-    }
-
-    console.error(
-        `🩺 [Self-Healing] Error trace ${trace.traceId} queued for `
-        + `Run ${runId}, Node ${trace.nodeKey}: ${trace.error.message}`,
-    );
-
-    return trace;
+    return reflectOnTaskFailure({
+        runId,
+        task,
+        error,
+        telemetry,
+        io,
+    });
 };
 
 module.exports = {

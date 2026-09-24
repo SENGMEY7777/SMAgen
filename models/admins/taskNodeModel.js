@@ -1,8 +1,8 @@
-// models/taskNodeModel.js
-import { pool } from '../configs/db.js';
+// Legacy task-node model kept compatible with this CommonJS project.
+const pool = require('../../configs/db');
 
 
-export async function bulkInsertTaskNodes(tasks) {
+const bulkInsertTaskNodes = async (tasks) => {
   if (!tasks || tasks.length === 0) return;
 
   const sql = `
@@ -28,12 +28,12 @@ export async function bulkInsertTaskNodes(tasks) {
 
   const [result] = await pool.query(sql, [values]);
   return result;
-}
+};
 
 /**
  * 2. Get all task nodes for a specific execution run
  */
-export async function getTaskNodesByRunId(runId) {
+const getTaskNodesByRunId = async (runId) => {
   const sql = `
     SELECT id, run_id, node_key, title, instruction, dependencies,
            status, assigned_tool, tool_input, tool_output, error_message,
@@ -44,12 +44,12 @@ export async function getTaskNodesByRunId(runId) {
   `;
   const [rows] = await pool.query(sql, [runId]);
   return rows;
-}
+};
 
 /**
  * 3. Get single task node by ID
  */
-export async function getTaskNodeById(taskId) {
+const getTaskNodeById = async (taskId) => {
   const sql = `
     SELECT id, run_id, node_key, title, instruction, dependencies,
            status, assigned_tool, tool_input, tool_output, error_message,
@@ -60,12 +60,12 @@ export async function getTaskNodeById(taskId) {
   `;
   const [rows] = await pool.query(sql, [taskId]);
   return rows[0] || null;
-}
+};
 
 /**
  * 4. Update task node dynamically
  */
-export async function updateTaskNode(taskId, updates) {
+const updateTaskNode = async (taskId, updates = {}) => {
   const fields = [];
   const values = [];
 
@@ -106,15 +106,23 @@ export async function updateTaskNode(taskId, updates) {
   const sql = `UPDATE task_nodes SET ${fields.join(', ')} WHERE id = ?`;
   const [result] = await pool.query(sql, values);
   return result;
-}
+};
 
 /**
  * 5. Mark task as SUCCESS
  */
-export async function markTaskSuccess(taskId, output, executionTimeMs) {
-  return await updateTaskNode(taskId, {
+const markTaskSuccess = async (taskId, output, executionTimeMs) => {
+  return updateTaskNode(taskId, {
     status: 'SUCCESS',
     toolOutput: output,
     executionTimeMs
   });
-}
+};
+
+module.exports = {
+  bulkInsertTaskNodes,
+  getTaskNodesByRunId,
+  getTaskNodeById,
+  updateTaskNode,
+  markTaskSuccess,
+};

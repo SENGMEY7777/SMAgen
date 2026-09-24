@@ -103,6 +103,27 @@ const updateExecutionRunStatus = async (id, status, extra = {}) => {
     return result;
 }
 
+const incrementExecutionRunUsage = async (id, {totalTokens = 0, totalCostUsd = 0} = {}) => {
+    const tokens = Math.max(0, Number.parseInt(totalTokens, 10) || 0);
+    const cost = Math.max(0, Number(totalCostUsd) || 0);
+
+    if (tokens === 0 && cost === 0) {
+        return {
+            affectedRows: 0,
+        };
+    }
+
+    const [result] = await pool.query(
+        `UPDATE execution_runs
+         SET total_tokens = total_tokens + ?,
+             total_cost_usd = total_cost_usd + ?
+         WHERE id = ?`,
+        [tokens, cost, id],
+    );
+
+    return result;
+}
+
 const listExecutionRunsByUser = async (userId) => {
     const [rows] = await pool.query(
         `SELECT id, workflow_id, goal_prompt, status, started_at, completed_at, total_tokens, total_cost_usd, created_at
@@ -110,6 +131,26 @@ const listExecutionRunsByUser = async (userId) => {
          WHERE user_id = ?
          ORDER BY created_at DESC`,
         [userId],
+    );
+
+    return rows;
+}
+
+const createExecutionLog = async ({id, runId, level = 'INFO', source = 'SYSTEM', message}) => {
+    await pool.query(
+        `INSERT INTO execution_logs (id, run_id, level, source, message)
+         VALUES (?, ?, ?, ?, ?)`,
+        [id, runId, level, source, message],
+    );
+}
+
+const listExecutionLogsByRunId = async (runId) => {
+    const [rows] = await pool.query(
+        `SELECT id, run_id, level, source, message, created_at
+         FROM execution_logs
+         WHERE run_id = ?
+         ORDER BY created_at ASC`,
+        [runId],
     );
 
     return rows;
@@ -253,8 +294,11 @@ module.exports = {
     getWorkflowById,
     createExecutionRun,
     updateExecutionRunStatus,
+    incrementExecutionRunUsage,
     getExecutionById,
     listExecutionRunsByUser,
+    createExecutionLog,
+    listExecutionLogsByRunId,
     listTaskNodesByRunId,
     listLatestTaskNodesByRunId,
     updateTaskNode,

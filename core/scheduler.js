@@ -8,6 +8,7 @@ const {
 } = require('../models/workflow/workflowModel');
 const {createRiskGate} = require('./riskEvaluation');
 const {sendErrorTraceToSelfHealingEngine} = require('./selfHealing');
+const {emitWorkflowEvent} = require('./telemetry');
 
 const MAX_CONCURRENT_TASKS = Math.max(
     1,
@@ -39,9 +40,12 @@ const normalizeTask = (task) => ({
 });
 
 const emitEvent = (io, runId, event, payload) => {
-    if (io) {
-        io.to(`run_${runId}`).emit(event, payload);
-    }
+    emitWorkflowEvent({
+        io,
+        runId,
+        event,
+        payload,
+    });
 };
 
 const finishRun = async (runId, tasks, io) => {

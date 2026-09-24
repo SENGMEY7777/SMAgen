@@ -28,7 +28,10 @@ const DANGEROUS_PATTERNS = [
     /\bgit\s+(?:push|reset\s+--hard|clean\s+-f)/i,
     /\b(?:insert|update|delete|alter|drop|truncate)\s+(?:into|from|table|database|schema)?/i,
     /\beval\s*\(/i,
-    /\b(?:chmod\s+777|mkfs|shutdown|reboot)\b/i,
+    /\b(?:sudo|mkfs(?:\.[a-z0-9_-]+)?|shutdown|reboot)\b/i,
+    /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?/i,
+    /\b(?:nc|ncat|netcat)\b[^\n]*\s-e(?:\s|$)/i,
+    /\b(?:bash|sh|zsh)\s+-i(?:\s|$)/i,
 ];
 
 const parseToolInput = (value) => {

@@ -1,5 +1,29 @@
 const nodemailer = require('nodemailer');
-require('dotenv').config();
+const {parseBoolean} = require('../configs/env');
+
+const escapeHtml = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const isEmailSimulationAllowed = () => {
+  const nodeEnv = String(process.env.NODE_ENV || 'development').trim().toLowerCase();
+  const configured = parseBoolean(process.env.ALLOW_EMAIL_SIMULATION, nodeEnv !== 'production');
+
+  return nodeEnv !== 'production' && configured === true;
+};
+
+const handleMissingTransporter = () => {
+  if (!isEmailSimulationAllowed()) {
+    const error = new Error('Email delivery is not configured');
+    error.code = 'EMAIL_NOT_CONFIGURED';
+    throw error;
+  }
+
+  return {simulated: true};
+};
 
 const createTransporter = () => {
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
@@ -23,7 +47,7 @@ const createTransporter = () => {
 };
 
 const getAppUrl = () => {
-  return process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`;
+  return (process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, '');
 };
 
 const getFromHeader = () => {
@@ -34,14 +58,13 @@ const getFromHeader = () => {
 // Send verification link email
 const sendVerificationEmail = async (to, token, userName = 'Developer') => {
   const appUrl = getAppUrl();
-  const verificationLink = `${appUrl}/api/v1/developers/verify-email?token=${token}`;
+  const verificationLink = `${appUrl}/api/v1/developers/verify-email?token=${encodeURIComponent(token)}`;
+  const safeUserName = escapeHtml(userName);
+  const safeVerificationLink = escapeHtml(verificationLink);
   const transporter = createTransporter();
 
   if (!transporter) {
-    console.log(`[MAIL SERVICE - SIMULATION] Email verification for ${to}`);
-    console.log(`[MAIL SERVICE - SIMULATION] Link: ${verificationLink}`);
-    console.log(`[MAIL SERVICE - SIMULATION] Token: ${token}`);
-    return { simulated: true, verificationLink, token };
+    return handleMissingTransporter();
   }
 
   return transporter.sendMail({
@@ -84,11 +107,11 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
         <div class="header">
           <h2>Welcome to SMAgen!</h2>
         </div>
-        <p>Hi <strong>${userName}</strong>,</p>
+        <p>Hi <strong>${safeUserName}</strong>,</p>
         <p>Thanks for signing up! Please confirm your email address to activate your account and get started.</p>
         
         <div class="button-container">
-          <a href="${verificationLink}" class="button">Verify Email Address</a>
+          <a href="${safeVerificationLink}" class="button">Verify Email Address</a>
         </div>
         
         <p>This link will <strong>expire in 24 hours</strong>. If you did not create an account, no further action is required.</p>
@@ -96,7 +119,7 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
         <div class="footer">
           <p>&copy; ${new Date().getFullYear()} SMAgen AI Platform. All rights reserved.</p>
           <p class="link-alt">If the button doesn't work, copy and paste this link into your browser:<br>
-          ${verificationLink}</p>
+          ${safeVerificationLink}</p>
         </div>
       </div>
     </body>
@@ -107,11 +130,12 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
 
 // Send OTP email
 const sendOTPEmail = async (to, otp, userName = 'User') => {
+  const safeUserName = escapeHtml(userName);
+  const safeOtp = escapeHtml(otp);
   const transporter = createTransporter();
 
   if (!transporter) {
-    console.log(`[MAIL SERVICE - SIMULATION] OTP for ${to}: ${otp}`);
-    return { simulated: true, otp };
+    return handleMissingTransporter();
   }
 
   return transporter.sendMail({
@@ -146,11 +170,11 @@ const sendOTPEmail = async (to, otp, userName = 'User') => {
         <div class="header">
           <h1>Password Reset Request</h1>
         </div>
-        <h4>Hi <strong>${userName}</strong>,</h4>
+        <h4>Hi <strong>${safeUserName}</strong>,</h4>
         <p>You requested to reset your password. This code is valid for <strong>15 minutes</strong>.</p>
         
         <div class="otp-box">
-          ${otp}
+          ${safeOtp}
         </div>
         
         <p>If you did not request this, please ignore this email or contact support if you have concerns.</p>
@@ -168,12 +192,13 @@ const sendOTPEmail = async (to, otp, userName = 'User') => {
 // Send password reset link email
 const sendResetLinkEmail = async (to, token, userName = 'User') => {
   const appUrl = getAppUrl();
-  const resetLink = `${appUrl}/api/v1/developer/auth/verify-reset-password?token=${token}`;
+  const resetLink = `${appUrl}/api/v1/developer/auth/verify-reset-password?token=${encodeURIComponent(token)}`;
+  const safeUserName = escapeHtml(userName);
+  const safeResetLink = escapeHtml(resetLink);
   const transporter = createTransporter();
 
   if (!transporter) {
-    console.log(`[MAIL SERVICE - SIMULATION] Reset link for ${to}: ${resetLink}`);
-    return { simulated: true, resetLink, token };
+    return handleMissingTransporter();
   }
 
   return transporter.sendMail({
@@ -216,11 +241,11 @@ const sendResetLinkEmail = async (to, token, userName = 'User') => {
         <div class="header">
           <h2 style="color: #4F46E5;">Password Reset Request</h2>
         </div>
-        <p>Hello <strong>${userName}</strong>,</p>
+        <p>Hello <strong>${safeUserName}</strong>,</p>
         <p>We received a request to reset the password for your account. Click the button below to choose a new password:</p>
         
         <div class="button-container">
-          <a href="${resetLink}" class="button">Reset Password</a>
+          <a href="${safeResetLink}" class="button">Reset Password</a>
         </div>
         
         <p>This secure link will <strong>expire in 15 minutes</strong>. If you did not make this request, your password will remain secure and you can safely ignore this message.</p>
@@ -228,7 +253,7 @@ const sendResetLinkEmail = async (to, token, userName = 'User') => {
         <div class="footer">
           <p>&copy; ${new Date().getFullYear()} SMAgen AI Platform. All rights reserved.</p>
           <p class="link-alt">Trouble with the button? Copy and paste this URL into your browser:<br>
-          ${resetLink}</p>
+          ${safeResetLink}</p>
         </div>
       </div>
     </body>
@@ -239,11 +264,11 @@ const sendResetLinkEmail = async (to, token, userName = 'User') => {
 
 // Send password reset success alert
 const sendPasswordResetSuccessEmail = async (to, userName = 'User') => {
+  const safeUserName = escapeHtml(userName);
   const transporter = createTransporter();
 
   if (!transporter) {
-    console.log(`[MAIL SERVICE - SIMULATION] Password reset success alert for ${to}`);
-    return { simulated: true };
+    return handleMissingTransporter();
   }
 
   return transporter.sendMail({
@@ -282,7 +307,7 @@ const sendPasswordResetSuccessEmail = async (to, userName = 'User') => {
         <div class="header">
           <h2>Password Updated Successfully</h2>
         </div>
-        <p>Hello <strong>${userName}</strong>,</p>
+        <p>Hello <strong>${safeUserName}</strong>,</p>
         <p>This is a confirmation notice that the password for your account has been successfully changed.</p>
         <p>You can now use your new password to log in to your dashboard.</p>
         

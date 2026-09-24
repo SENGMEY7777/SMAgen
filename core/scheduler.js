@@ -7,6 +7,7 @@ const {
     updateTaskNode,
 } = require('../models/workflow/workflowModel');
 const {createRiskGate} = require('./riskEvaluation');
+const {sendErrorTraceToSelfHealingEngine} = require('./selfHealing');
 
 const MAX_CONCURRENT_TASKS = Math.max(
     1,
@@ -67,6 +68,7 @@ const triggerScheduler = async (runId, options = {}) => {
         io = null,
         riskGate = createRiskGate(),
         executor = null,
+        selfHealing = sendErrorTraceToSelfHealingEngine,
     } = options;
 
     if (typeof executor !== 'function') {
@@ -208,15 +210,37 @@ const triggerScheduler = async (runId, options = {}) => {
                 });
 
                 try {
-                    const output = await executor(task);
+                    const executionResult = await executor(task);
+                    const output = executionResult && Object.prototype.hasOwnProperty.call(executionResult, 'outputData')
+                        ? executionResult.outputData
+                        : executionResult;
+                    const telemetry = executionResult?.telemetry || {
+                        stdout: output?.stdout || '',
+                        stderr: output?.stderr || '',
+                        exitCode: Number.isInteger(output?.exitCode) ? output.exitCode : 0,
+                        latencyMs: null,
+                    };
                     const completedAt = new Date();
 
                     await updateTaskNode(task.id, {
                         status: 'SUCCESS',
                         toolOutput: output ?? null,
-                        executionTimeMs: completedAt.getTime() - startedAt.getTime(),
+                        executionTimeMs: telemetry.latencyMs ?? completedAt.getTime() - startedAt.getTime(),
                         completedAt,
                         errorMessage: null,
+                    });
+
+                    emitEvent(io, runId, 'node_success', {
+                        runId,
+                        taskId: task.id,
+                        nodeKey: task.node_key,
+                        status: 'SUCCESS',
+                        highlight: 'green',
+                        outputData: output ?? null,
+                        stdout: telemetry.stdout,
+                        stderr: telemetry.stderr,
+                        exitCode: telemetry.exitCode,
+                        latencyMs: telemetry.latencyMs ?? completedAt.getTime() - startedAt.getTime(),
                     });
 
                     emitEvent(io, runId, 'node_completed', {
@@ -228,19 +252,47 @@ const triggerScheduler = async (runId, options = {}) => {
                     return 'SUCCESS';
                 } catch (error) {
                     const completedAt = new Date();
+                    const telemetry = error.execution || {
+                        stdout: error.stdout || '',
+                        stderr: error.stderr || error.message || 'Task execution failed',
+                        exitCode: Number.isInteger(error.code) ? error.code : 1,
+                        latencyMs: completedAt.getTime() - startedAt.getTime(),
+                    };
 
                     await updateTaskNode(task.id, {
                         status: 'FAILED',
                         errorMessage: error.message || 'Task execution failed',
-                        executionTimeMs: completedAt.getTime() - startedAt.getTime(),
+                        executionTimeMs: telemetry.latencyMs ?? completedAt.getTime() - startedAt.getTime(),
                         completedAt,
                     });
+
+                    let errorTrace = null;
+
+                    try {
+                        errorTrace = await selfHealing({
+                            runId,
+                            task,
+                            error,
+                            telemetry,
+                            io,
+                        });
+                    } catch (selfHealingError) {
+                        console.error(
+                            `❌ [Self-Healing Dispatch Error]: ${selfHealingError.message}`,
+                        );
+                    }
 
                     emitEvent(io, runId, 'node_failed', {
                         runId,
                         taskId: task.id,
                         nodeKey: task.node_key,
+                        status: 'FAILED',
                         error: error.message || 'Task execution failed',
+                        stdout: telemetry.stdout,
+                        stderr: telemetry.stderr,
+                        exitCode: telemetry.exitCode,
+                        latencyMs: telemetry.latencyMs ?? completedAt.getTime() - startedAt.getTime(),
+                        errorTrace,
                     });
 
                     return 'FAILED';

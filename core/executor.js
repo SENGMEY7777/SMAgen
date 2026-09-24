@@ -344,6 +344,40 @@ const webSearch = async (input) => {
     };
 };
 
+const countSqlPlaceholders = (sql) => {
+    let count = 0;
+    let quote = null;
+
+    for (let index = 0; index < sql.length; index += 1) {
+        const character = sql[index];
+
+        if (quote) {
+            if (character === '\\') {
+                index += 1;
+                continue;
+            }
+
+            if (character === quote) {
+                if (sql[index + 1] === quote) {
+                    index += 1;
+                } else {
+                    quote = null;
+                }
+            }
+
+            continue;
+        }
+
+        if (character === "'" || character === '"' || character === '`') {
+            quote = character;
+        } else if (character === '?') {
+            count += 1;
+        }
+    }
+
+    return count;
+};
+
 const databaseConnector = async (input) => {
     const sql = typeof input.sql === 'string'
         ? input.sql.trim()
@@ -355,10 +389,34 @@ const databaseConnector = async (input) => {
         throw new Error('A parameterized SQL query is required');
     }
 
+    if (/\$\{[^}]+\}/.test(sql)) {
+        throw new Error('SQL string interpolation is not allowed; use ? placeholders');
+    }
+
+    if (sql.includes(';')) {
+        throw new Error('Multiple SQL statements are not allowed');
+    }
+
     const params = input.params ?? input.parameters ?? [];
 
     if (!Array.isArray(params)) {
         throw new Error('SQL parameters must be an array');
+    }
+
+    if (params.some((parameter) => parameter === undefined)) {
+        throw new Error('SQL parameters cannot contain undefined values');
+    }
+
+    const placeholderCount = countSqlPlaceholders(sql);
+
+    if (placeholderCount === 0) {
+        throw new Error('SQL must contain at least one ? placeholder');
+    }
+
+    if (placeholderCount !== params.length) {
+        throw new Error(
+            `SQL placeholder count (${placeholderCount}) must match parameter count (${params.length})`,
+        );
     }
 
     const [rows, fields] = await databasePool.execute(sql, params);

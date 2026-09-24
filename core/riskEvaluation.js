@@ -24,6 +24,7 @@ const DANGEROUS_PATTERNS = [
     /\bcurl\b[^\n|]*\|\s*(?:sh|bash|zsh)\b/i,
     /\bwget\b[^\n|]*\|\s*(?:sh|bash|zsh)\b/i,
     /\b(?:bash|sh|zsh)\b/i,
+    /\bfind\b[^\n]*(?:-exec(?:dir)?|-delete|-ok(?:dir)?)/i,
     /\bgit\s+(?:push|reset\s+--hard|clean\s+-f)/i,
     /\b(?:insert|update|delete|alter|drop|truncate)\s+(?:into|from|table|database|schema)?/i,
     /\beval\s*\(/i,

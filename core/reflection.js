@@ -5,6 +5,7 @@ const {
 } = require('../models/workflow/workflowModel');
 const {secureObject} = require('../validators/commonValidator');
 const {createErrorTrace} = require('./selfHealing');
+const {emitWorkflowEvent} = require('./telemetry');
 
 const MAX_SELF_HEAL_RETRIES = Math.max(
     0,
@@ -12,9 +13,13 @@ const MAX_SELF_HEAL_RETRIES = Math.max(
 );
 
 const emitEvent = (io, runId, event, payload) => {
-    if (io) {
-        io.to(`run_${runId}`).emit(event, payload);
-    }
+    emitWorkflowEvent({
+        io,
+        runId,
+        event,
+        source: 'AGENT',
+        payload,
+    });
 };
 
 const parseJsonValue = (value, fallback) => {
@@ -247,7 +252,11 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
 
     try {
         const prompt = buildReflectionPrompt({task, errorTrace});
-        reflectionResult = await generateStructureClient(prompt);
+        reflectionResult = await generateStructureClient({
+            ...prompt,
+            runId,
+            io,
+        });
     } catch (reflectionError) {
         const reflectionTrace = {
             ...errorTrace,

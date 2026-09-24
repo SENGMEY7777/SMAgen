@@ -6,6 +6,8 @@ const {
 } = require('../models/workflow/workflowModel');
 
 const MAX_STRING_LENGTH = 20000;
+const MAX_OBJECT_KEYS = 100;
+const MAX_ARRAY_ITEMS = 100;
 const SENSITIVE_KEY_PATTERN = /password|passwd|secret|authorization|bearer|cookie|set-cookie|token|api[-_]?key/i;
 const SENSITIVE_VALUE_PATTERNS = [
     /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
@@ -59,16 +61,31 @@ const maskSensitiveData = (value, depth = 0, seen = new WeakSet()) => {
     seen.add(value);
 
     if (Array.isArray(value)) {
-        return value.map((item) => maskSensitiveData(item, depth + 1, seen));
+        const maskedItems = value
+            .slice(0, MAX_ARRAY_ITEMS)
+            .map((item) => maskSensitiveData(item, depth + 1, seen));
+
+        if (value.length > MAX_ARRAY_ITEMS) {
+            maskedItems.push('[TRUNCATED]');
+        }
+
+        return maskedItems;
     }
 
-    return Object.fromEntries(Object.entries(value).map(([key, childValue]) => {
+    const entries = Object.entries(value);
+    const maskedEntries = entries.slice(0, MAX_OBJECT_KEYS).map(([key, childValue]) => {
         if (SENSITIVE_KEY_PATTERN.test(key)) {
             return [key, '[MASKED]'];
         }
 
         return [key, maskSensitiveData(childValue, depth + 1, seen)];
-    }));
+    });
+
+    if (entries.length > MAX_OBJECT_KEYS) {
+        maskedEntries.push(['_telemetryTruncated', true]);
+    }
+
+    return Object.fromEntries(maskedEntries);
 };
 
 const normalizeUsage = (usage = {}) => {
@@ -187,6 +204,48 @@ const createTelemetryEnvelope = ({
     };
 };
 
+const emitTelemetry = (io, envelope) => {
+    if (io) {
+        io.to(`run_${envelope.runId}`).emit('telemetry', envelope);
+    }
+};
+
+const persistTelemetry = async (envelope) => {
+    const message = JSON.stringify({
+        event: envelope.event,
+        type: envelope.type,
+        payload: envelope.payload,
+        usage: envelope.usage,
+        cost: envelope.cost,
+    });
+
+    try {
+        const persistenceTasks = [createExecutionLog({
+            id: envelope.telemetryId,
+            runId: envelope.runId,
+            level: envelope.level,
+            source: envelope.source,
+            message,
+        })];
+
+        if (envelope.type === 'llm_completion') {
+            persistenceTasks.push(incrementExecutionRunUsage(envelope.runId, {
+                totalTokens: envelope.usage.totalTokens,
+                totalCostUsd: envelope.cost.totalCostUsd,
+            }));
+        }
+
+        const results = await Promise.allSettled(persistenceTasks);
+        const failedPersistence = results.find((result) => result.status === 'rejected');
+
+        if (failedPersistence) {
+            throw failedPersistence.reason;
+        }
+    } catch (error) {
+        console.error('❌ [Telemetry Persistence Error]');
+    }
+};
+
 const recordExecutionTelemetry = async ({
     runId,
     event,
@@ -208,53 +267,28 @@ const recordExecutionTelemetry = async ({
         usage,
         model,
     });
-    const message = JSON.stringify({
-        event: envelope.event,
-        type: envelope.type,
-        payload: envelope.payload,
-        usage: envelope.usage,
-        cost: envelope.cost,
-    });
 
-    try {
-        await createExecutionLog({
-            id: envelope.telemetryId,
-            runId,
-            level: envelope.level,
-            source: envelope.source,
-            message,
-        });
-
-        if (isLlmCompletion) {
-            await incrementExecutionRunUsage(runId, {
-                totalTokens: envelope.usage.totalTokens,
-                totalCostUsd: envelope.cost.totalCostUsd,
-            });
-        }
-    } catch (error) {
-        console.error('❌ [Telemetry Persistence Error]');
-    }
-
-    if (io) {
-        io.to(`run_${runId}`).emit('telemetry', envelope);
-    }
+    emitTelemetry(io, envelope);
+    await persistTelemetry(envelope);
 
     return envelope;
 };
 
 const emitWorkflowEvent = ({io, runId, event, payload = null, source, level}) => {
-    if (io) {
-        io.to(`run_${runId}`).emit(event, maskSensitiveData(payload));
-    }
-
-    void recordExecutionTelemetry({
+    const envelope = createTelemetryEnvelope({
         runId,
         event,
         payload,
         source,
         level,
-        io,
     });
+
+    if (io) {
+        io.to(`run_${runId}`).emit(event, envelope.payload);
+    }
+
+    emitTelemetry(io, envelope);
+    void persistTelemetry(envelope);
 };
 
 module.exports = {

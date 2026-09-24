@@ -9,8 +9,13 @@ const MAX_STRING_LENGTH = 20000;
 const SENSITIVE_KEY_PATTERN = /password|passwd|secret|authorization|bearer|cookie|set-cookie|token|api[-_]?key/i;
 const SENSITIVE_VALUE_PATTERNS = [
     /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi,
-    /\bsk-[A-Za-z0-9_-]{8,}\b/g,
-    /\b(?:AIza|ghp_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_-]{8,}\b/g,
+    /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g,
+    /\bsk-[A-Za-z0-9_-]{8,}\b/gi,
+    /\bsk_(?:live|test|omni)_[A-Za-z0-9_-]{8,}\b/gi,
+    /\bAIzaSy[A-Za-z0-9_-]{20,}\b/g,
+    /\b(?:ghp_|github_pat_|xox[baprs]-|AKIA)[A-Za-z0-9_-]{8,}\b/gi,
+    /\b(?:password|passwd|pwd|db[_-]?password)\s*[:=]\s*["']?[^\s"',;&]+/gi,
+    /\b(?:mysql|postgres(?:ql)?|mongodb(?:\+srv)?:\/\/)[^\s]+/gi,
     /-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z]+)? PRIVATE KEY-----/gi,
 ];
 
@@ -227,7 +232,7 @@ const recordExecutionTelemetry = async ({
             });
         }
     } catch (error) {
-        console.error(`❌ [Telemetry Persistence Error]: ${error.message}`);
+        console.error('❌ [Telemetry Persistence Error]');
     }
 
     if (io) {

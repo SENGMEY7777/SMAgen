@@ -1,5 +1,9 @@
 const { GoogleGenAI } = require('@google/genai');
-require('dotenv').config();
+const {
+    normalizeUsage,
+    recordExecutionTelemetry,
+} = require('../core/telemetry');
+require('./env');
 
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite';
@@ -82,6 +86,10 @@ const getResponseText = (response) => {
     return typeof response.text === 'function' ? response.text() : response.text;
 };
 
+const getResponseUsage = (response) => {
+    return normalizeUsage(response?.usageMetadata || response?.usage_metadata || {});
+};
+
 const parseJsonResponse = (rawText) => {
     const text = String(rawText || '')
         .trim()
@@ -117,7 +125,13 @@ const skGemini = async (prompt) => {
     }
 }
 
-const generateStructureClient = async ({systemPrompt, userPrompt, model = process.env.GEMINI_MODEL || DEFAULT_MODEL}) => {
+const generateStructureClient = async ({
+    systemPrompt,
+    userPrompt,
+    model = process.env.GEMINI_MODEL || DEFAULT_MODEL,
+    runId = null,
+    io = null,
+}) => {
     try {
         const response = await generateContentWithRetry({
             model,
@@ -134,11 +148,56 @@ const generateStructureClient = async ({systemPrompt, userPrompt, model = proces
         });
 
         const rawText = getResponseText(response);
-        const data = parseJsonResponse(rawText);
+        const usage = getResponseUsage(response);
+        let data;
+
+        try {
+            data = parseJsonResponse(rawText);
+        } catch (error) {
+            if (runId) {
+                void recordExecutionTelemetry({
+                    runId,
+                    io,
+                    event: 'llm_completion',
+                    source: 'AGENT',
+                    level: 'ERROR',
+                    isLlmCompletion: true,
+                    model,
+                    usage,
+                    payload: {
+                        model,
+                        responseLength: String(rawText || '').length,
+                        validJson: false,
+                    },
+                });
+            }
+
+            throw error;
+        }
+
+        if (runId) {
+            void recordExecutionTelemetry({
+                runId,
+                io,
+                event: 'llm_completion',
+                source: 'AGENT',
+                level: 'INFO',
+                isLlmCompletion: true,
+                model,
+                usage,
+                payload: {
+                    model,
+                    responseLength: String(rawText || '').length,
+                    validJson: true,
+                },
+            });
+        }
 
         return {
             data,
             rawText,
+            usage,
+            model,
         };
     } catch (error) {
         console.error('❌ Gemini Structured JSON Error:', error.message);
@@ -149,4 +208,5 @@ const generateStructureClient = async ({systemPrompt, userPrompt, model = proces
 module.exports = {
     skGemini,
     generateStructureClient,
+    getResponseUsage,
 };

@@ -1,7 +1,7 @@
 const Joi = require('joi');
 
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
-const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^\w\s]).{8,128}$/;
+const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&]).{8,128}$/;
 const FULL_NAME_REGEX = /^[\p{L}]+(?:[' -][\p{L}]+)*$/u;
 const PHONE_REGEX = /^\+?[1-9]\d{7,14}$/;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -72,7 +72,7 @@ const password = () => Joi.string()
     .max(128)
     .pattern(PASSWORD_REGEX)
     .messages({
-        'string.pattern.base': '{{#label}} must contain uppercase, lowercase, number, and special character',
+        'string.pattern.base': '{{#label}} must contain uppercase, lowercase, number, and one of @$!%*?&',
     });
 
 const uuid = () => Joi.string()

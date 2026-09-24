@@ -5,6 +5,7 @@ const {emitWorkflowEvent} = require('../../core/telemetry');
 const sendResponse = require('../../utils/responseHelper');
 
 const getApprovalErrorStatus = (code) => ({
+    FORBIDDEN: 403,
     APPROVAL_NOT_FOUND: 404,
     APPROVAL_ALREADY_RESOLVED: 409,
     INVALID_APPROVAL_STATUS: 400,
@@ -45,6 +46,7 @@ const decide = async (req, res) => {
             status: req.body.status,
             rejectionReason: req.body.rejectionReason,
             resolverUserId: req.user.id,
+            resolverRole: req.user.role,
         });
 
         const message = req.body.status === 'APPROVED'

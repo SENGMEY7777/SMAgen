@@ -2,6 +2,7 @@ const router = require('express').Router();
 
 const isLogin = require('../../middleware/authenticate');
 const requireRole = require('../../middleware/authorize');
+const {authAttemptLimiter} = require('../../middleware/rateLimiters');
 const developerController = require('../../controllers/developers/developerContoller');
 const validate = require('../../middleware/validate');
 const { validateQuery } = require('../../middleware/validate');
@@ -13,8 +14,8 @@ const {
 } = require('../../validators/developer/authValidator');
 const {emptyBodySchema} = require('../../validators/commonValidator');
 
-router.post('/register', validate(registerSchema), developerController.register);
-router.post('/login', validate(loginSchema), developerController.login);
+router.post('/register', authAttemptLimiter, validate(registerSchema), developerController.register);
+router.post('/login', authAttemptLimiter, validate(loginSchema), developerController.login);
 router.post('/api-keys', isLogin, requireRole('DEVELOPER'), validate(emptyBodySchema), developerController.createApiKey);
 
 // Verification routes

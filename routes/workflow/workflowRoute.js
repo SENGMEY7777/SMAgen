@@ -2,6 +2,7 @@ const router = require('express').Router();
 
 const workflowController = require('../../controllers/workflow/workflowController');
 const isLogin = require('../../middleware/authenticate');
+const {workflowRunLimiter} = require('../../middleware/rateLimiters');
 const validate = require('../../middleware/validate');
 const {validateParams} = require('../../middleware/validate');
 const {
@@ -15,10 +16,17 @@ router.post('/create', isLogin, validate(workflowCreateSchema), workflowControll
 router.get('/listWorkflows', isLogin, workflowController.list);
 
 // Workflow Runs
-router.post('/run', isLogin, validate(runWorkflowSchema), workflowController.runWorkflow);
+router.post(
+    '/run',
+    isLogin,
+    workflowRunLimiter,
+    validate(runWorkflowSchema),
+    workflowController.runWorkflow,
+);
 router.post(
     '/run/:runId',
     isLogin,
+    workflowRunLimiter,
     validateParams(workflowRunParamsSchema),
     validate(resumeWorkflowSchema),
     workflowController.runWorkflow,

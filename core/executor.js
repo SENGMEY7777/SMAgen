@@ -21,6 +21,44 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
 const execFileAsync = promisify(execFile);
 const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
 const SENSITIVE_HEADER_PATTERN = /authorization|cookie|set-cookie|token|secret|api[-_]?key|password/i;
+const SAFE_WORKSPACE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
+
+const isPathInside = (rootPath, targetPath) => {
+    const normalizedRoot = path.resolve(rootPath);
+    const normalizedTarget = path.resolve(targetPath);
+
+    return normalizedTarget === normalizedRoot
+        || normalizedTarget.startsWith(`${normalizedRoot}${path.sep}`);
+};
+
+const assertRealPathInsideWorkspace = async (workspacePath, requestedPath) => {
+    const realWorkspacePath = await fs.realpath(workspacePath);
+    let probePath = path.resolve(requestedPath);
+
+    while (true) {
+        try {
+            const realProbePath = await fs.realpath(probePath);
+
+            if (!isPathInside(realWorkspacePath, realProbePath)) {
+                throw new Error('Path must remain inside the task workspace');
+            }
+
+            return;
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                throw error;
+            }
+
+            const parentPath = path.dirname(probePath);
+
+            if (parentPath === probePath) {
+                throw new Error('Unable to validate workspace path');
+            }
+
+            probePath = parentPath;
+        }
+    }
+};
 
 const parseToolInput = (value) => {
     if (typeof value !== 'string') {
@@ -42,6 +80,10 @@ const getWorkspacePath = async (runId, workspaceRoot = DEFAULT_WORKSPACE_ROOT) =
         throw new Error('Task run_id is required');
     }
 
+    if (!SAFE_WORKSPACE_SEGMENT.test(runId)) {
+        throw new Error('Task run_id must be a single safe workspace directory name');
+    }
+
     const rootPath = path.resolve(workspaceRoot);
     const workspacePath = path.resolve(rootPath, runId);
     const rootPrefix = `${rootPath}${path.sep}`;
@@ -51,11 +93,12 @@ const getWorkspacePath = async (runId, workspaceRoot = DEFAULT_WORKSPACE_ROOT) =
     }
 
     await fs.mkdir(workspacePath, {recursive: true});
+    await assertRealPathInsideWorkspace(rootPath, workspacePath);
 
     return workspacePath;
 };
 
-const resolveWorkspaceFile = (workspacePath, requestedPath, {allowWorkspaceRoot = false} = {}) => {
+const resolveWorkspaceFile = async (workspacePath, requestedPath, {allowWorkspaceRoot = false} = {}) => {
     if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
         throw new Error('A relative file path is required');
     }
@@ -76,6 +119,8 @@ const resolveWorkspaceFile = (workspacePath, requestedPath, {allowWorkspaceRoot 
         throw new Error('The task workspace root is not a file');
     }
 
+    await assertRealPathInsideWorkspace(workspacePath, resolvedPath);
+
     return resolvedPath;
 };
 
@@ -91,7 +136,7 @@ const validateContent = (content) => {
 
 const fileManager = async (input, workspacePath) => {
     const action = input.action || 'read';
-    const filePath = resolveWorkspaceFile(workspacePath, input.path, {
+    const filePath = await resolveWorkspaceFile(workspacePath, input.path, {
         allowWorkspaceRoot: action === 'list',
     });
 
@@ -410,6 +455,15 @@ const executeCommand = async (input, workspacePath) => {
         ) {
             throw new Error('Command arguments must remain inside the task workspace');
         }
+
+        if (argument.startsWith('-')) {
+            continue;
+        }
+
+        await assertRealPathInsideWorkspace(
+            workspacePath,
+            path.resolve(workspacePath, argument),
+        );
     }
 
     try {

@@ -6,6 +6,7 @@ const {
     updateExecutionRunStatus,
 } = require('../models/workflow/workflowModel');
 const {dagPlanSchema} = require('../validators/workflow/workflowValidator');
+const {emitWorkflowEvent} = require('./telemetry');
 
 const validatePlan = (plan) => {
     const schemaResult = dagPlanSchema.validate(plan, {
@@ -228,6 +229,8 @@ Rules:
             const rawResult = await generateStructureClient({
                 systemPrompt,
                 userPrompt: currentPrompt,
+                runId,
+                io,
             });
 
             const parsed = validatePlan(rawResult.data);
@@ -288,14 +291,18 @@ Rules:
         await updateExecutionRunStatus(runId, 'RUNNING');
     }
 
-    if (io) {
-        io.to(`run_${runId}`).emit('run_started', {
+    emitWorkflowEvent({
+        io,
+        runId,
+        event: 'run_started',
+        source: 'PLANNER',
+        payload: {
             runId,
             title: validatedPlan.workflowTitle,
             summary: validatedPlan.summary,
             tasks: validatedPlan.tasks,
-        });
-    }
+        },
+    });
 
     if (executionStarted) {
         execution = await scheduler(runId);

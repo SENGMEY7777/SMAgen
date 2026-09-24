@@ -167,6 +167,16 @@ const updateTaskNode = async (id, updates = {}) => {
         values.push(JSON.stringify(updates.toolOutput));
     }
 
+    if (updates.toolInput !== undefined) {
+        updateFields.push('tool_input = ?');
+        values.push(JSON.stringify(updates.toolInput));
+    }
+
+    if (updates.retryCount !== undefined) {
+        updateFields.push('retry_count = ?');
+        values.push(updates.retryCount);
+    }
+
     if (updates.executionTimeMs !== undefined) {
         updateFields.push('execution_time_ms = ?');
         values.push(updates.executionTimeMs);

@@ -4,6 +4,7 @@ const {Server} = require('socket.io');
 const authModel = require('../models/admins/authModel');
 const workflowModel = require('../models/workflow/workflowModel');
 const {getJwtConfig} = require('../configs/jwt');
+const {getCorsOrigins} = require('../configs/env');
 
 const getSocketToken = (socket) => {
     const authorization = socket.handshake.headers.authorization || '';
@@ -59,9 +60,18 @@ const canAccessRun = async (socket, runId) => {
 };
 
 const initializeWebSocket = (server) => {
+    const allowedOrigins = getCorsOrigins();
+
     const io = new Server(server, {
         cors: {
-            origin: process.env.CORS_ORIGIN || '*',
+            origin: (origin, callback) => {
+                if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+                    return callback(null, true);
+                }
+
+                return callback(new Error('CORS origin is not allowed'));
+            },
+            credentials: true,
         },
     });
 

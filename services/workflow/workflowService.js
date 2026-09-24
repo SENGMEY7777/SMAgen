@@ -124,10 +124,12 @@ const getWorkflowRun = async (runId, userId) => {
     }
 
     const tasks = await workflowModel.listLatestTaskNodesByRunId(runId);
+    const logs = await workflowModel.listExecutionLogsByRunId(runId);
 
     return {
         ...executionRun,
         tasks,
+        logs,
     };
 }
 

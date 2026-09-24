@@ -10,9 +10,14 @@ const DEFAULT_WORKSPACE_ROOT = path.resolve(
 );
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
+const MAX_COMMAND_TIMEOUT_MS = 30_000;
 const COMMAND_TIMEOUT_MS = Math.max(
     1000,
-    Number.parseInt(process.env.COMMAND_TIMEOUT_MS || '30000', 10) || 30000,
+    Math.min(
+        MAX_COMMAND_TIMEOUT_MS,
+    Number.parseInt(process.env.COMMAND_TIMEOUT_MS || String(MAX_COMMAND_TIMEOUT_MS), 10)
+            || MAX_COMMAND_TIMEOUT_MS,
+    ),
 );
 const HTTP_REQUEST_TIMEOUT_MS = Math.max(
     1000,
@@ -20,6 +25,15 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
 );
 const execFileAsync = promisify(execFile);
 const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
+const COMMAND_BLACKLIST_PATTERNS = [
+    /\bsudo(?:\s|$)/i,
+    /\bmkfs(?:\.[a-z0-9_-]+)?(?:\s|$)/i,
+    /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?/i,
+    /\b(?:shutdown|reboot)(?:\s|$)/i,
+    /\b(?:nc|ncat|netcat)\b[^\n]*\s-e(?:\s|$)/i,
+    /\b(?:bash|sh|zsh)\s+-i(?:\s|$)/i,
+    /\bfind\b[^\n]*(?:-exec(?:dir)?|-delete|-ok(?:dir)?)/i,
+];
 const SENSITIVE_HEADER_PATTERN = /authorization|cookie|set-cookie|token|secret|api[-_]?key|password/i;
 const SAFE_WORKSPACE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -435,6 +449,10 @@ const executeCommand = async (input, workspacePath) => {
 
     if (!command) {
         throw new Error('A command is required');
+    }
+
+    if (COMMAND_BLACKLIST_PATTERNS.some((pattern) => pattern.test(command))) {
+        throw new Error('Command is permanently blocked by the security policy');
     }
 
     if (/[;&|`]|\$\(|>|<|\n/.test(command)) {

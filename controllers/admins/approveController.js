@@ -1,6 +1,7 @@
 const approveService = require('../../services/admins/approveService');
 const {triggerScheduler} = require('../../core/scheduler');
 const {executeTaskNode} = require('../../core/executor');
+const {emitWorkflowEvent} = require('../../core/telemetry');
 const sendResponse = require('../../utils/responseHelper');
 
 const getApprovalErrorStatus = (code) => ({
@@ -52,21 +53,33 @@ const decide = async (req, res) => {
         const io = req.app.get('io');
 
         if (io && approval.run_id) {
-            io.to(`run_${approval.run_id}`).emit('approval_decision', {
+            emitWorkflowEvent({
+                io,
                 runId: approval.run_id,
-                approvalId: approval.id,
-                taskId: approval.task_id,
-                nodeKey: approval.node_key,
-                status: approval.status,
-                rejectionReason: approval.rejection_reason,
+                event: 'approval_decision',
+                source: 'HITL',
+                payload: {
+                    runId: approval.run_id,
+                    approvalId: approval.id,
+                    taskId: approval.task_id,
+                    nodeKey: approval.node_key,
+                    status: approval.status,
+                    rejectionReason: approval.rejection_reason,
+                },
             });
 
             if (approval.status === 'REJECTED') {
-                io.to(`run_${approval.run_id}`).emit('node_skipped', {
+                emitWorkflowEvent({
+                    io,
                     runId: approval.run_id,
-                    taskId: approval.task_id,
-                    nodeKey: approval.node_key,
-                    reason: approval.rejection_reason || 'Approval request was rejected',
+                    event: 'node_skipped',
+                    source: 'HITL',
+                    payload: {
+                        runId: approval.run_id,
+                        taskId: approval.task_id,
+                        nodeKey: approval.node_key,
+                        reason: approval.rejection_reason || 'Approval request was rejected',
+                    },
                 });
             }
         }

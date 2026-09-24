@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const developerModel = require('../../models/developers/developerModel');
 const { sendVerificationEmail } = require('../../utils/mailService');
+const { PASSWORD_REGEX } = require('../../validators/commonValidator');
 
 const register = async (body) => {
     const checkUser = await developerModel.findUserByEmail(body.email);
@@ -11,6 +12,15 @@ const register = async (body) => {
 
     const secureUserId = crypto.randomUUID();
     const rawPassword = body.password || '';
+
+    if (!PASSWORD_REGEX.test(rawPassword)) {
+        const error = new Error(
+            'Password must be 8-128 characters and contain uppercase, lowercase, number, and one of @$!%*?&',
+        );
+        error.code = 'VALIDATION_ERROR';
+        throw error;
+    }
+
     const passwordHash = rawPassword ? await bcrypt.hash(rawPassword, 10) : '';
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);

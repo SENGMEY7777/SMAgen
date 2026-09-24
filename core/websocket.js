@@ -28,12 +28,16 @@ const authenticateSocket = async (socket, next) => {
             audience,
         });
         const user = await authModel.findUserById(tokenUser.sub);
+        const tokenVersion = Number(tokenUser.token_version);
+        const currentTokenVersion = Number(user?.token_version);
 
         if (
             !user
             || Number(user.is_active) !== 1
             || user.deleted_at
-            || Number(user.token_version) !== Number(tokenUser.token_version)
+            || !Number.isInteger(tokenVersion)
+            || tokenVersion < 1
+            || currentTokenVersion !== tokenVersion
         ) {
             throw new Error('Invalid user session');
         }

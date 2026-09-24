@@ -25,6 +25,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/developers', developersRoutes);
 app.use('/api/v1/developer/auth', developersRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
+app.use('/api/v1/workflows', workflowRoutes);
 
 const PORT = process.env.PORT || 3000;
 

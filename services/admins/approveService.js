@@ -25,7 +25,21 @@ const listPendingApprovals = async (runId = null) => {
     return approveModel.listPendingApprovals(runId);
 }
 
-const decideApproval = async ({id, status, resolverUserId, rejectionReason = null}) => {
+const decideApproval = async ({
+    id,
+    status,
+    resolverUserId,
+    resolverRole,
+    rejectionReason = null,
+}) => {
+    const normalizedRole = String(resolverRole || '').trim().toUpperCase();
+
+    if (!['ADMIN', 'OPERATOR'].includes(normalizedRole)) {
+        const error = new Error('Only ADMIN or OPERATOR users can approve or reject tasks');
+        error.code = 'FORBIDDEN';
+        throw error;
+    }
+
     if (!['APPROVED', 'REJECTED'].includes(status)) {
         const error = new Error('Approval status must be APPROVED or REJECTED');
         error.code = 'INVALID_APPROVAL_STATUS';

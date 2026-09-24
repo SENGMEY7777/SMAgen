@@ -1,11 +1,19 @@
+const {validateEnvironment} = require('./configs/env');
+
+const config = validateEnvironment();
+
 const express = require('express');
-const dotenv = require('dotenv');
 const compression = require('compression');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const http = require('http');
 const {initializeWebSocket} = require('./core/websocket');
 
-dotenv.config();
 const app = express();
+app.disable('x-powered-by');
+app.set('json escape', true);
+
 const server = http.createServer(app);
 const io = initializeWebSocket(server);
 app.set('io', io);
@@ -14,6 +22,36 @@ const approveRoutes = require('./routes/admins/approveRoutes');
 const developersRoutes = require('./routes/developers/developerRoute');
 const workflowRoutes = require('./routes/workflow/workflowRoute');
 
+const corsOrigin = (origin, callback) => {
+    if (!origin || config.corsOrigins.includes('*') || config.corsOrigins.includes(origin)) {
+        return callback(null, true);
+    }
+
+    const error = new Error('CORS origin is not allowed');
+    error.statusCode = 403;
+    return callback(error);
+};
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 300,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: {
+        success: false,
+        message: 'Too many requests. Please try again later.',
+        error: {code: 'RATE_LIMITED'},
+    },
+});
+
+app.use(helmet());
+app.use(cors({
+    origin: corsOrigin,
+    credentials: true,
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+app.use('/api', apiLimiter);
 app.use(express.json({ limit: '10kb' }));
 app.use(compression({
     threshold: '1kb',
@@ -27,7 +65,33 @@ app.use('/api/v1/developer/auth', developersRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
 app.use('/api/v1/workflows', workflowRoutes);
 
-const PORT = process.env.PORT || 3000;
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        message: 'Route not found',
+        error: {code: 'NOT_FOUND'},
+    });
+});
+
+app.use((error, req, res, next) => {
+    if (res.headersSent) {
+        return next(error);
+    }
+
+    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
+
+    if (statusCode >= 500) {
+        console.error('[HTTP Error]', error.message);
+    }
+
+    return res.status(statusCode).json({
+        success: false,
+        message: statusCode === 500 ? 'Internal server error' : 'Request rejected',
+        error: {code: statusCode === 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR'},
+    });
+});
+
+const PORT = config.port;
 
 server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);

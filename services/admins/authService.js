@@ -3,6 +3,7 @@ const authModel = require('../../models/admins/authModel');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { getJwtConfig } = require('../../configs/jwt');
+const { PASSWORD_REGEX } = require('../../validators/commonValidator');
 
 const invalidCredentialsError = () => {
     const error = new Error('Invalid email or password');
@@ -59,6 +60,14 @@ const register = async (body = {}) => {
 
     if (typeof email !== 'string' || typeof password !== 'string' || typeof fullName !== 'string') {
         const error = new Error('Email, password, and full name are required');
+        error.code = 'VALIDATION_ERROR';
+        throw error;
+    }
+
+    if (!PASSWORD_REGEX.test(password)) {
+        const error = new Error(
+            'Password must be 8-128 characters and contain uppercase, lowercase, number, and one of @$!%*?&',
+        );
         error.code = 'VALIDATION_ERROR';
         throw error;
     }

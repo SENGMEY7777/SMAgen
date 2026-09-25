@@ -29,7 +29,20 @@ const workflowRunLimiter = rateLimit({
     ),
 });
 
+const chatLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 60,
+    keyGenerator: (req) => String(req.user.id),
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: rateLimitMessage(
+        'Chat limit reached. Please try again later.',
+        'CHAT_RATE_LIMITED',
+    ),
+});
+
 module.exports = {
     authAttemptLimiter,
     workflowRunLimiter,
+    chatLimiter,
 };

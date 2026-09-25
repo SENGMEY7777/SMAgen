@@ -21,9 +21,18 @@ const authRoutes = require('./routes/admins/authRoutes');
 const approveRoutes = require('./routes/admins/approveRoutes');
 const developersRoutes = require('./routes/developers/developerRoute');
 const workflowRoutes = require('./routes/workflow/workflowRoute');
+const chatRoutes = require('./routes/chatRoute');
 
 const corsOrigin = (origin, callback) => {
-    if (!origin || config.corsOrigins.includes('*') || config.corsOrigins.includes(origin)) {
+    const allowUnconfiguredDevelopmentOrigin = config.nodeEnv !== 'production'
+        && config.corsOrigins.length === 0;
+
+    if (
+        !origin
+        || allowUnconfiguredDevelopmentOrigin
+        || config.corsOrigins.includes('*')
+        || config.corsOrigins.includes(origin)
+    ) {
         return callback(null, true);
     }
 
@@ -64,6 +73,7 @@ app.use('/api/v1/developers', developersRoutes);
 app.use('/api/v1/developer/auth', developersRoutes);
 app.use('/api/v1/workflow', workflowRoutes);
 app.use('/api/v1/workflows', workflowRoutes);
+app.use('/api/v1/chat', chatRoutes);
 
 app.use((req, res) => {
     res.status(404).json({

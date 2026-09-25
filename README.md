@@ -63,6 +63,18 @@ The API runs at:
 http://localhost:3000
 ```
 
+The same server now serves the OmniAgent dashboard at `http://localhost:3000/`.
+Sign in with a developer account, then use `Auto` mode for normal Q&A or
+`Workflow` mode for a DAG plan with task status and telemetry. The general chat
+API is available at:
+
+```http
+POST /api/v1/chat
+```
+
+It requires the same Bearer JWT as the workflow endpoints and accepts a
+`message` plus an optional short `history` array.
+
 ## Authentication
 
 Send the JWT in the request header:

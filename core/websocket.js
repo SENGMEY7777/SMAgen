@@ -69,7 +69,15 @@ const initializeWebSocket = (server) => {
     const io = new Server(server, {
         cors: {
             origin: (origin, callback) => {
-                if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+                const allowUnconfiguredDevelopmentOrigin = String(process.env.NODE_ENV || 'development').toLowerCase() !== 'production'
+                    && allowedOrigins.length === 0;
+
+                if (
+                    !origin
+                    || allowUnconfiguredDevelopmentOrigin
+                    || allowedOrigins.includes('*')
+                    || allowedOrigins.includes(origin)
+                ) {
                     return callback(null, true);
                 }
 

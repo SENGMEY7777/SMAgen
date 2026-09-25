@@ -35,7 +35,30 @@ const getErrorCode = (error) => {
 };
 
 const isRetryableError = (error) => {
-    return [408, 429, 500, 502, 503, 504].includes(getErrorCode(error));
+    return [404, 408, 429, 500, 502, 503, 504].includes(getErrorCode(error));
+};
+
+const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
+const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
+    ? configuredTimeout
+    : 10000;
+
+const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
+    let timeoutId;
+
+    const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+            const timeoutError = new Error(`LLM call timed out after ${timeoutMs}ms`);
+            timeoutError.code = 408;
+            timeoutError.status = 408;
+            reject(timeoutError);
+        }, timeoutMs);
+    });
+
+    return Promise.race([
+        promise,
+        timeoutPromise,
+    ]).finally(() => clearTimeout(timeoutId));
 };
 
 const generateContentWithRetry = async ({model, contents, config}) => {
@@ -45,11 +68,14 @@ const generateContentWithRetry = async ({model, contents, config}) => {
     for (const currentModel of models) {
         for (let attempt = 0; attempt < 2; attempt++) {
             try {
-                return await ai.models.generateContent({
-                    model: currentModel,
-                    contents,
-                    config,
-                });
+                return await withTimeout(
+                    ai.models.generateContent({
+                        model: currentModel,
+                        contents,
+                        config,
+                    }),
+                    LLM_TIMEOUT_MS
+                );
             } catch (error) {
                 lastError = error;
 
@@ -83,6 +109,10 @@ const generateContentWithRetry = async ({model, contents, config}) => {
 };
 
 const getResponseText = (response) => {
+    if (!response) {
+        return '';
+    }
+
     return typeof response.text === 'function' ? response.text() : response.text;
 };
 
@@ -111,19 +141,28 @@ const parseJsonResponse = (rawText) => {
     }
 };
 
-const skGemini = async (prompt) => {
+const skGemini = async (contents, {model, config} = {}) => {
     try {
         const response = await generateContentWithRetry({
-            model: process.env.GEMINI_MODEL || DEFAULT_MODEL,
-            contents: prompt,
+            model: model || process.env.GEMINI_MODEL || DEFAULT_MODEL,
+            contents,
+            config,
         });
 
-        return getResponseText(response);
+        const text = getResponseText(response);
+
+        if (typeof text !== 'string' || !text.trim()) {
+            const error = new Error('Gemini returned an empty response');
+            error.code = 'LLM_EMPTY_RESPONSE';
+            throw error;
+        }
+
+        return text.trim();
     } catch (error) {
-        console.error('❌ Gemini Error:', error.message);
+        console.error('❌ Gemini Error:', error?.message || error);
         throw error;
     }
-}
+};
 
 const generateStructureClient = async ({
     systemPrompt,

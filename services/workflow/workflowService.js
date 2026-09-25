@@ -53,17 +53,21 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) =
         const existingTasks = await workflowModel.listTaskNodesByRunId(runId);
 
         if (existingTasks.length > 0) {
-            const execution = await startScheduler(runId, io);
+            setImmediate(() => {
+                startScheduler(runId, io).catch((error) => {
+                    console.error(`❌ [Workflow Resume Error] ${runId}:`, error.message);
+                });
+            });
 
             return {
                 success: true,
                 runId,
                 userId,
-                status: execution.status,
+                status: 'RUNNING',
                 phase: 'EXECUTION',
                 executionStarted: true,
                 tasksCreated: existingTasks.length,
-                execution,
+                execution: null,
             };
         }
     } else {
@@ -101,13 +105,26 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) =
         });
     }
 
-    return planWorkflowRun({
+    const plan = await planWorkflowRun({
         runId: executionRun.id,
         goalPrompt: executionRun.goal_prompt,
         userId,
         io,
-        scheduler: (plannedRunId) => startScheduler(plannedRunId, io),
     });
+
+    setImmediate(() => {
+        startScheduler(executionRun.id, io).catch((error) => {
+            console.error(`❌ [Workflow Execution Error] ${executionRun.id}:`, error.message);
+        });
+    });
+
+    return {
+        ...plan,
+        status: 'RUNNING',
+        phase: 'EXECUTION',
+        executionStarted: true,
+        execution: null,
+    };
 }
 
 const listRuns = async (userId) => {

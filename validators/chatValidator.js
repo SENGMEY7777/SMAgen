@@ -1,15 +1,14 @@
 const Joi = require('joi');
-const {secureText} = require('./commonValidator');
 
 const chatMessageSchema = Joi.object({
     role: Joi.string().valid('user', 'assistant').required(),
-    content: secureText({min: 1, max: 20000}).required(),
-}).unknown(false);
+    content: Joi.string().trim().min(1).max(50000).required(),
+}).unknown(true);
 
 const chatSchema = Joi.object({
-    message: secureText({min: 1, max: 20000}).required(),
-    history: Joi.array().items(chatMessageSchema).max(12).default([]),
-}).unknown(false);
+    message: Joi.string().trim().min(1).max(50000).required(),
+    history: Joi.array().items(chatMessageSchema).max(20).default([]),
+}).unknown(true);
 
 module.exports = {
     chatSchema,

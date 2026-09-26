@@ -34,8 +34,8 @@ const decideApproval = async ({
 }) => {
     const normalizedRole = String(resolverRole || '').trim().toUpperCase();
 
-    if (!['ADMIN', 'OPERATOR'].includes(normalizedRole)) {
-        const error = new Error('Only ADMIN or OPERATOR users can approve or reject tasks');
+    if (!['ADMIN', 'OPERATOR', 'DEVELOPER'].includes(normalizedRole)) {
+        const error = new Error('Only ADMIN, OPERATOR, or DEVELOPER users can approve or reject tasks');
         error.code = 'FORBIDDEN';
         throw error;
     }

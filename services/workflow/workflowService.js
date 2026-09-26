@@ -92,7 +92,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) =
                 id: workflowId,
                 title: goalPrompt.trim().slice(0, 255),
                 description: 'Automatically created for this workflow run',
-                systemPrompt: 'You are OmniAgent. Execute the user goal as a safe, structured workflow.',
+                systemPrompt: 'You are SMAgen. Execute the user goal as a safe, structured workflow.',
                 userId,
             });
         }

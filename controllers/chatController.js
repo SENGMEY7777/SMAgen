@@ -5,7 +5,7 @@ const MAX_HISTORY_MESSAGES = 12;
 const CHAT_MAX_OUTPUT_TOKENS = 2048;
 
 const CHAT_SYSTEM_INSTRUCTION = `
-You are OmniAgent, a helpful AI assistant inside a developer workflow dashboard.
+You are SMAgen, a helpful AI assistant inside a developer workflow dashboard.
 
 Answer the user's latest question directly, accurately, and with enough detail to
 be useful. Support English and Khmer, and reply in the language the user uses
@@ -84,11 +84,15 @@ const chat = async (req, res) => {
             ? 503
             : 500;
         const errorCode = statusCode === 503 ? 'CHAT_LLM_UNAVAILABLE' : 'CHAT_ERROR';
-
         console.error('[Chat Error]', error?.message || error);
+        const errorDetail = error?.cause?.message || error?.message || 'Unable to connect to LLM provider';
+        const userFriendlyMessage = statusCode === 503
+            ? `AI model service is currently unavailable (${errorDetail}). Please check your Gemini API key or network connection.`
+            : `Unable to generate a chat response: ${errorDetail}`;
 
-        return sendResponse(res, statusCode, false, 'Unable to generate a chat response', null, {
+        return sendResponse(res, statusCode, false, userFriendlyMessage, null, {
             code: errorCode,
+            details: errorDetail,
         });
     }
 };

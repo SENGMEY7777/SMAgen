@@ -185,7 +185,7 @@ const planWorkflowRun = async ({
     console.log(`\n🧠 [Planner 1.0] Starting Goal Decomposition for Run: ${runId}`);
 
     const systemPrompt = `
-You are OmniAgent, an autonomous AI workflow planner.
+You are SMAgen, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
 1. 'executeCommand' - Run shell commands, tests, or scripts (in sandboxed workspace).

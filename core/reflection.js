@@ -51,7 +51,7 @@ const buildReflectionPrompt = ({task, errorTrace}) => {
 
     return {
         systemPrompt: `
-You are the OmniAgent reflection and repair engine.
+You are the SMAgen reflection and repair engine.
 Analyze one failed workflow task and produce a corrected tool_input that can be retried safely.
 Return JSON only, using exactly this shape:
 {

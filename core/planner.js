@@ -175,6 +175,13 @@ const validateAcyclicGraph = (tasks) => {
     return visitedCount === tasks.length;
 };
 
+const planCache = new Map();
+const MAX_CACHE_SIZE = 100;
+
+const getCacheKey = (goalPrompt) => {
+    return String(goalPrompt || '').trim().toLowerCase().replace(/\s+/g, ' ');
+};
+
 const planWorkflowRun = async ({
     runId,
     goalPrompt,
@@ -184,7 +191,29 @@ const planWorkflowRun = async ({
 }) => {
     console.log(`\n🧠 [Planner 1.0] Starting Goal Decomposition for Run: ${runId}`);
 
-    const systemPrompt = `
+    emitWorkflowEvent({
+        io,
+        runId,
+        event: 'planning_started',
+        source: 'PLANNER',
+        payload: {
+            runId,
+            goalPrompt,
+            status: 'PLANNING',
+        },
+    });
+
+    const cacheKey = getCacheKey(goalPrompt);
+    let validatedPlan = null;
+
+    if (planCache.has(cacheKey)) {
+        console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
+        const cached = planCache.get(cacheKey);
+        validatedPlan = JSON.parse(JSON.stringify(cached));
+    }
+
+    if (!validatedPlan) {
+        const systemPrompt = `
 You are SMAgen, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
@@ -193,6 +222,7 @@ Available Tools:
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
+6. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, and toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3').
 
 Rules:
 - Assign dependencies logically (for example, task_2 depends on ['task_1']).
@@ -214,59 +244,62 @@ Rules:
   ]
 }`;
 
-    let attempts = 0;
-    const maxAttempts = 3;
-    let currentPrompt = `Goal:\n"${goalPrompt}"`;
-    let validatedPlan = null;
-    let lastPlannerError = null;
+        let attempts = 0;
+        const maxAttempts = 3;
+        let currentPrompt = `Goal:\n"${goalPrompt}"`;
+        let lastPlannerError = null;
 
-    while (attempts < maxAttempts) {
-        attempts++;
+        while (attempts < maxAttempts) {
+            attempts++;
 
-        try {
-            console.log(`📡 [Planner] Invoking LLM Planner (Attempt ${attempts}/${maxAttempts})...`);
+            try {
+                console.log(`📡 [Planner] Invoking LLM Planner (Attempt ${attempts}/${maxAttempts})...`);
 
-            const rawResult = await generateStructureClient({
-                systemPrompt,
-                userPrompt: currentPrompt,
-                runId,
-                io,
-            });
+                const rawResult = await generateStructureClient({
+                    systemPrompt,
+                    userPrompt: currentPrompt,
+                    runId,
+                    io,
+                });
 
-            const parsed = validatePlan(rawResult.data);
+                const parsed = validatePlan(rawResult.data);
 
-            if (!parsed.success) {
-                lastPlannerError = new Error(parsed.error.message);
-                console.warn('⚠️ [Planner] Plan validation failed:', parsed.error.message);
-                currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${goalPrompt}`;
-                continue;
+                if (!parsed.success) {
+                    lastPlannerError = new Error(parsed.error.message);
+                    console.warn('⚠️ [Planner] Plan validation failed:', parsed.error.message);
+                    currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${goalPrompt}`;
+                    continue;
+                }
+
+                if (!validateAcyclicGraph(parsed.data.tasks)) {
+                    lastPlannerError = new Error('The generated plan contains an invalid dependency graph');
+                    console.warn('⚠️ [Planner] Invalid dependency graph. Re-planning...');
+                    currentPrompt = `The task dependencies contain a missing dependency or circular dependency. Generate a valid acyclic plan for this goal:\n${goalPrompt}`;
+                    continue;
+                }
+
+                validatedPlan = parsed.data;
+                if (planCache.size < MAX_CACHE_SIZE) {
+                    planCache.set(cacheKey, validatedPlan);
+                }
+                break;
+            } catch (error) {
+                lastPlannerError = error;
+                console.error(`❌ [Planner Attempt Error]:`, error.message);
+                currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${goalPrompt}`;
             }
-
-            if (!validateAcyclicGraph(parsed.data.tasks)) {
-                lastPlannerError = new Error('The generated plan contains an invalid dependency graph');
-                console.warn('⚠️ [Planner] Invalid dependency graph. Re-planning...');
-                currentPrompt = `The task dependencies contain a missing dependency or circular dependency. Generate a valid acyclic plan for this goal:\n${goalPrompt}`;
-                continue;
-            }
-
-            validatedPlan = parsed.data;
-            break;
-        } catch (error) {
-            lastPlannerError = error;
-            console.error(`❌ [Planner Attempt Error]:`, error.message);
-            currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${goalPrompt}`;
         }
-    }
 
-    if (!validatedPlan) {
-        await updateExecutionRunStatus(runId, 'FAILED');
+        if (!validatedPlan) {
+            await updateExecutionRunStatus(runId, 'FAILED');
 
-        const error = new Error('Failed to generate a valid acyclic DAG plan after maximum attempts.');
-        error.code = [500, 502, 503, 504].includes(Number(lastPlannerError?.code))
-            ? 'LLM_UNAVAILABLE'
-            : 'PLANNER_ERROR';
-        error.cause = lastPlannerError;
-        throw error;
+            const error = new Error('Failed to generate a valid acyclic DAG plan after maximum attempts.');
+            error.code = [500, 502, 503, 504].includes(Number(lastPlannerError?.code))
+                ? 'LLM_UNAVAILABLE'
+                : 'PLANNER_ERROR';
+            error.cause = lastPlannerError;
+            throw error;
+        }
     }
 
     const taskNodeRecords = validatedPlan.tasks.map((task) => ({

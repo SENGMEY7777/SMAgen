@@ -12,8 +12,8 @@ const {
 
 router.use(authenticate);
 
-router.get('/pending', requireRole('ADMIN', 'OPERATOR'), validate.validateQuery(pendingApprovalsQuerySchema), approveController.listPending);
-router.get('/:id', requireRole('ADMIN', 'OPERATOR'), validate.validateParams(approvalIdParamsSchema), approveController.getById);
-router.post('/:id/decision', requireRole('ADMIN', 'OPERATOR'), validate.validateParams(approvalIdParamsSchema), validate(approvalDecisionSchema), approveController.decide);
+router.get('/pending', requireRole('ADMIN', 'OPERATOR', 'DEVELOPER'), validate.validateQuery(pendingApprovalsQuerySchema), approveController.listPending);
+router.get('/:id', requireRole('ADMIN', 'OPERATOR', 'DEVELOPER'), validate.validateParams(approvalIdParamsSchema), approveController.getById);
+router.post('/:id/decision', requireRole('ADMIN', 'OPERATOR', 'DEVELOPER'), validate.validateParams(approvalIdParamsSchema), validate(approvalDecisionSchema), approveController.decide);
 
 module.exports = router;

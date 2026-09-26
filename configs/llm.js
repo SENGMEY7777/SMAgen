@@ -5,8 +5,8 @@ const {
 } = require('../core/telemetry');
 require('./env');
 
-const DEFAULT_MODEL = 'gemini-3.6-flash';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite';
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash';
 const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 
 const ai = new GoogleGenAI({
@@ -41,7 +41,7 @@ const isRetryableError = (error) => {
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
-    : 10000;
+    : 30000;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     let timeoutId;
@@ -62,7 +62,19 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
 };
 
 const generateContentWithRetry = async ({model, contents, config}) => {
-    const models = [...new Set([model || DEFAULT_MODEL, FALLBACK_MODEL])];
+    const candidates = [
+        model,
+        process.env.GEMINI_MODEL,
+        'gemini-3.8-flash',
+        'gemini-3.6-flash',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-3.7-flash',
+        'gemini-flash-latest',
+        'gemini-flash-lite-latest',
+        FALLBACK_MODEL,
+    ].filter(Boolean);
+    const models = [...new Set(candidates)];
     let lastError;
 
     for (const currentModel of models) {
@@ -90,10 +102,12 @@ const generateContentWithRetry = async ({model, contents, config}) => {
                     break;
                 }
 
-                const delay = (1000 * (2 ** attempt)) + Math.floor(Math.random() * 500);
+                const errorCode = getErrorCode(error);
+                const baseDelay = errorCode === 429 ? 2500 : 1200;
+                const delay = (baseDelay * (2 ** attempt)) + Math.floor(Math.random() * 500);
 
                 console.warn(
-                    `⚠️ Gemini ${currentModel} returned ${getErrorCode(error)}. Retrying in ${delay}ms...`,
+                    `⚠️ Gemini ${currentModel} returned ${errorCode || 'ERROR'}. Retrying in ${delay}ms...`,
                 );
                 await wait(delay);
             }

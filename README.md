@@ -63,7 +63,7 @@ The API runs at:
 http://localhost:3000
 ```
 
-The same server now serves the OmniAgent dashboard at `http://localhost:3000/`.
+The same server now serves the SMAgen dashboard at `http://localhost:3000/`.
 Sign in with a developer account, then use `Auto` mode for normal Q&A or
 `Workflow` mode for a DAG plan with task status and telemetry. The general chat
 API is available at:

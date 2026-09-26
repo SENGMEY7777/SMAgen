@@ -4,6 +4,7 @@ const axios = require('axios');
 const {execFile} = require('child_process');
 const {promisify} = require('util');
 const databasePool = require('../configs/db');
+const {imageGenerator: rawImageGenerator} = require('../tools/imageGenerator');
 
 const DEFAULT_WORKSPACE_ROOT = path.resolve(
     process.env.WORKSPACE_ROOT || path.join(process.cwd(), 'workspaces'),
@@ -567,12 +568,17 @@ const executeCommand = async (input, workspacePath) => {
     }
 };
 
+const imageGenerator = async (input, workspacePath) => {
+    return rawImageGenerator(input, workspacePath);
+};
+
 const createToolRegistry = (tools = {}) => ({
     fileManager,
     webSearch,
     executeCommand,
     databaseConnector,
     httpRequester,
+    imageGenerator,
     ...tools,
 });
 

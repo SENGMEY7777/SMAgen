@@ -276,7 +276,7 @@ const webSearch = async (input) => {
     const response = await axios.get('https://html.duckduckgo.com/html/', {
         params: {q: query},
         headers: {
-            'User-Agent': 'OmniAgent/1.0',
+            'User-Agent': 'SMAgen/1.0',
         },
         timeout: 10000,
         maxContentLength: 2 * 1024 * 1024,
@@ -310,7 +310,7 @@ const webSearch = async (input) => {
             try {
                 const pageResponse = await axios.get(result.url, {
                     headers: {
-                        'User-Agent': 'OmniAgent/1.0',
+                        'User-Agent': 'SMAgen/1.0',
                     },
                     timeout: 10000,
                     maxContentLength: 2 * 1024 * 1024,

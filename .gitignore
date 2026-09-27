@@ -5,7 +5,6 @@ node_modules/
 .env
 .env.*
 !.env.example
-/configs/env.js
 
 # Logs
 *.log

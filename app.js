@@ -112,7 +112,7 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'success',
-    message: 'CI/CD pipeline deployed successfully via GitHub Actions!',
+    message: 'CI/CD pipeline deployed successfully via GitHub Actions!c and testing',
     timestamp: new Date().toISOString()
   });
 });

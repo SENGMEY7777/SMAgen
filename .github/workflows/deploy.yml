@@ -20,7 +20,7 @@ jobs:
 
       - name: Package Application Artifact
         run: |
-          zip -r deploy.zip . -x "node_modules/*" ".env" ".git/*" ".github/*" "Dockerfile.backup"
+          zip -r deploy.zip . -x "node_modules/*" ".env*" ".git/*" ".github/*" "Dockerfile.backup" "*.test.*" "tests/*" "coverage/*" ".vscode/*" ".idea/*"
 
       - name: Generate Build Timestamp
         id: vars
@@ -36,3 +36,6 @@ jobs:
           version_label: "deploy-${{ steps.vars.outputs.timestamp }}"
           region: ap-southeast-2
           deployment_package: deploy.zip
+          use_existing_version_if_available: false
+          wait_for_deployment: true
+          wait_for_environment_recovery: 180

@@ -1,4 +1,4 @@
-const {validateEnvironment} = require('./configs/env');
+const { validateEnvironment } = require('./configs/env.js');
 
 const config = validateEnvironment();
 

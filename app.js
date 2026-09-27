@@ -101,6 +101,22 @@ app.use((error, req, res, next) => {
     });
 });
 
+app.get('/', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Kairo Backend API is live and operational',
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'CI/CD pipeline deployed successfully via GitHub Actions!',
+    timestamp: new Date().toISOString()
+  });
+});
+
 const PORT = config.port;
 
 server.listen(PORT, () => {

@@ -1,0 +1,38 @@
+name: Deploy Kairo Backend to AWS Elastic Beanstalk
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Package Application Artifact
+        run: |
+          zip -r deploy.zip . -x "node_modules/*" ".env" ".git/*" ".github/*" "Dockerfile.backup"
+
+      - name: Generate Build Timestamp
+        id: vars
+        run: echo "timestamp=$(date +'%Y%m%d%H%M%S')" >> $GITHUB_OUTPUT
+
+      - name: Deploy to Elastic Beanstalk
+        uses: einaregilsson/beanstalk-deploy@v22
+        with:
+          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          application_name: Kairo-backend
+          environment_name: Kairo-backend-env
+          version_label: "deploy-${{ steps.vars.outputs.timestamp }}"
+          region: ap-southeast-2
+          deployment_package: deploy.zip

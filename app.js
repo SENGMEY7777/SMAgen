@@ -9,6 +9,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const http = require('http');
 const {initializeWebSocket} = require('./core/websocket');
+const dbPool = require('./configs/db');
 
 const app = express();
 app.disable('x-powered-by');
@@ -75,6 +76,14 @@ app.use('/api/v1/workflow', workflowRoutes);
 app.use('/api/v1/workflows', workflowRoutes);
 app.use('/api/v1/chat', chatRoutes);
 
+app.get('/', (req, res) => {
+    res.status(200).json({
+        success: true,
+        message: 'Kairo Backend API is live and operational',
+        timestamp: new Date().toISOString(),
+    });
+});
+
 app.use((req, res) => {
     res.status(404).json({
         success: false,
@@ -101,17 +110,54 @@ app.use((error, req, res, next) => {
     });
 });
 
-app.get('/', (req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Kairo Backend API is live and operational',
-    timestamp: new Date().toISOString()
-  });
-});
-
 
 const PORT = process.env.PORT || 5000;
 
+let isShuttingDown = false;
+
+const shutdown = async (signal) => {
+    if (isShuttingDown) {
+        return;
+    }
+
+    isShuttingDown = true;
+    console.log(`[Shutdown] ${signal} received; draining connections`);
+
+    const forceExit = setTimeout(() => {
+        console.error('[Shutdown] Graceful shutdown timed out');
+        process.exit(1);
+    }, 30000);
+    forceExit.unref();
+
+    try {
+        await io.close();
+        await dbPool.end();
+        clearTimeout(forceExit);
+        console.log('[Shutdown] Complete');
+        process.exit(0);
+    } catch (error) {
+        console.error('[Shutdown] Failed', error);
+        process.exit(1);
+    }
+};
+
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+process.once('SIGINT', () => void shutdown('SIGINT'));
+process.on('message', (message) => {
+    if (message === 'shutdown') {
+        void shutdown('PM2 shutdown message');
+    }
+});
+
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server is running on port ${PORT}`);
+    if (typeof process.send === 'function') {
+        process.send('ready');
+    }
 });
+
+module.exports = {
+    app,
+    server,
+    shutdown,
+};

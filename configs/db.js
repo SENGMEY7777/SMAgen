@@ -10,7 +10,7 @@ const getSslOptions = () => {
     }
 
     const sslOptions = {
-        rejectUnauthorized: process.env.DB_SSL_REJECT_UNAUTHORIZED === 'true' ? true : false,
+        rejectUnauthorized: config.database.sslRejectUnauthorized,
     };
 
     if (process.env.DB_SSL_CA) {

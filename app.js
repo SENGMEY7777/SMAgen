@@ -10,10 +10,14 @@ const rateLimit = require('express-rate-limit');
 const http = require('http');
 const {initializeWebSocket} = require('./core/websocket');
 const dbPool = require('./configs/db');
+const correlationMiddleware = require('./middleware/correlation');
+const errorHandler = require('./middleware/errorHandler');
+const { NotFoundError } = require('./utils/errors');
 
 const app = express();
 app.disable('x-powered-by');
 app.set('json escape', true);
+app.use(correlationMiddleware);
 
 const server = http.createServer(app);
 const io = initializeWebSocket(server);
@@ -84,31 +88,11 @@ app.get('/', (req, res) => {
     });
 });
 
-app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        message: 'Route not found',
-        error: {code: 'NOT_FOUND'},
-    });
+app.use((req, res, next) => {
+    next(new NotFoundError(`Route ${req.method} ${req.originalUrl} not found`));
 });
 
-app.use((error, req, res, next) => {
-    if (res.headersSent) {
-        return next(error);
-    }
-
-    const statusCode = Number.isInteger(error.statusCode) ? error.statusCode : 500;
-
-    if (statusCode >= 500) {
-        console.error('[HTTP Error]', error.message);
-    }
-
-    return res.status(statusCode).json({
-        success: false,
-        message: statusCode === 500 ? 'Internal server error' : 'Request rejected',
-        error: {code: statusCode === 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR'},
-    });
-});
+app.use(errorHandler);
 
 
 const PORT = process.env.PORT || 5000;

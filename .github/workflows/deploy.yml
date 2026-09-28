@@ -1,4 +1,4 @@
-name: Deploy to AWS Elastic Beanstalk
+name: Deploy to Elastic Beanstalk
 
 on:
   push:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Source Code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -32,4 +32,5 @@ jobs:
           version_label: "deploy-${{ github.sha }}"
           region: ap-southeast-2
           deployment_package: deploy_package.zip
+          use_existing_version_if_available: true
           wait_for_deployment: true

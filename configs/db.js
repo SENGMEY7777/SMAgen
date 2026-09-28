@@ -1,6 +1,7 @@
 'use strict';
 
-const fs = require('fs');
+const fs = require('node:fs');
+const path = require('node:path');
 const mysql = require('mysql2/promise');
 const { validateEnvironment } = require('./env');
 
@@ -11,12 +12,25 @@ const getSslOptions = () => {
     return undefined;
   }
 
+  const bundledCaPath = path.resolve(__dirname, '../certs/rds-ca.pem');
+  const configuredCaPath = process.env.DB_SSL_CA;
+
+  let caContent = null;
+  if (configuredCaPath && fs.existsSync(configuredCaPath)) {
+    caContent = fs.readFileSync(configuredCaPath, 'utf8');
+  } else if (fs.existsSync(bundledCaPath)) {
+    caContent = fs.readFileSync(bundledCaPath, 'utf8');
+  }
+
   const sslOptions = {
     rejectUnauthorized: config.database.sslRejectUnauthorized,
   };
 
-  if (process.env.DB_SSL_CA && fs.existsSync(process.env.DB_SSL_CA)) {
-    sslOptions.ca = fs.readFileSync(process.env.DB_SSL_CA, 'utf8');
+  if (caContent) {
+    sslOptions.ca = caContent;
+  } else if (config.nodeEnv !== 'production') {
+    // In local development, avoid self-signed chain errors if no CA bundle is present
+    sslOptions.rejectUnauthorized = false;
   }
 
   return sslOptions;

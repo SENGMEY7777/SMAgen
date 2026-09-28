@@ -88,6 +88,14 @@ app.get('/', (req, res) => {
     });
 });
 
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'UP',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+    });
+});
+
 app.use((req, res, next) => {
     next(new NotFoundError(`Route ${req.method} ${req.originalUrl} not found`));
 });

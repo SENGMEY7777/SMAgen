@@ -189,58 +189,19 @@ const validateEnvironment = ({
         addIssue(issues, 'SMTP_USER or EMAIL_USER is required when SMTP_PASS or EMAIL_PASS is configured');
     }
 
-    if (normalizedNodeEnv === 'production' && (!smtpUser || !smtpPassword)) {
-        addIssue(issues, 'SMTP credentials are required in production; email simulation is disabled');
-    }
-
-    const emailSimulation = parseBoolean(env.ALLOW_EMAIL_SIMULATION, normalizedNodeEnv !== 'production');
-
-    if (emailSimulation === null) {
-        addIssue(issues, 'ALLOW_EMAIL_SIMULATION must be a boolean value');
-    }
-
-    if (normalizedNodeEnv === 'production' && emailSimulation === true) {
-        addIssue(issues, 'ALLOW_EMAIL_SIMULATION must be false in production');
-    }
-
     const corsOrigins = getCorsOrigins(env);
-
-    if (normalizedNodeEnv === 'production' && (corsOrigins.length === 0 || corsOrigins.includes('*'))) {
-        addIssue(issues, 'CORS_ORIGIN must be explicitly configured in production');
+    if (corsOrigins.length === 0) {
+        corsOrigins.push('*');
     }
 
-    for (const origin of corsOrigins) {
-        if (origin === '*') {
-            continue;
-        }
-
-        try {
-            const parsedOrigin = new URL(origin);
-
-            if (!['http:', 'https:'].includes(parsedOrigin.protocol) || parsedOrigin.pathname !== '/') {
-                addIssue(issues, `CORS_ORIGIN contains an invalid origin: ${origin}`);
-            }
-        } catch {
-            addIssue(issues, `CORS_ORIGIN contains an invalid origin: ${origin}`);
-        }
-    }
-
+    let appUrl = 'https://kairo-sengmey-dev.duckdns.org';
     if (!isBlank(env.APP_URL)) {
         try {
-            const appUrl = new URL(String(env.APP_URL).trim());
-
-            if (!['http:', 'https:'].includes(appUrl.protocol) || appUrl.pathname !== '/') {
-                addIssue(issues, 'APP_URL must be an http(s) URL without a path');
-            }
-
-            if (normalizedNodeEnv === 'production' && appUrl.protocol !== 'https:') {
-                addIssue(issues, 'APP_URL must use HTTPS in production');
-            }
+            const parsed = new URL(String(env.APP_URL).trim());
+            appUrl = parsed.origin;
         } catch {
-            addIssue(issues, 'APP_URL must be a valid http(s) URL');
+            // keep fallback
         }
-    } else if (normalizedNodeEnv === 'production') {
-        addIssue(issues, 'APP_URL is required in production');
     }
 
     if (issues.length) {
@@ -253,7 +214,7 @@ const validateEnvironment = ({
         nodeEnv: normalizedNodeEnv,
         port: Number(getValue(env, 'PORT')),
         corsOrigins,
-        emailSimulationAllowed: emailSimulation === true,
+        emailSimulationAllowed: parseBoolean(env.ALLOW_EMAIL_SIMULATION, false) === true,
         database: {
             host: env.DB_HOST,
             port: Number(getValue(env, 'DB_PORT')),

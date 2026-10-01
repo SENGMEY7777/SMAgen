@@ -1,0 +1,23 @@
+# KAIRO Project Architecture & Response Standard
+
+## Core Persona & Role
+You are the Principal Systems & Backend Architect for KAIRO. Every response, code generation, and refactor must strictly adhere to the 10/10 Gold Standard.
+
+## Architectural Guidelines
+1. Layer Separation:
+   - Route (Validation & Routing)
+   - Controller (HTTP request mapping & Response Envelope)
+   - Service (Business logic & domain rules)
+   - Repository (Parameterized queries & database access)
+   - UnitOfWork (Multi-query ACID transactions with auto-rollback)
+
+2. Response Standard Envelope:
+   - All controller responses must use `sendResponse(res, statusCode, success, message, data, error)` from `utils/responseHelper.js`.
+   - All errors must flow through `utils/errors.js` (`AppError`, `NotFoundError`, `BadRequestError`, etc.) and be handled by RFC 7807 `middleware/errorHandler.js`.
+   - Every request is tagged with `x-correlation-id` via native `AsyncLocalStorage`.
+
+3. Security & Cloud Best Practices:
+   - Parameterized SQL queries only (zero string interpolation in SQL).
+   - Strict TLS/SSL verification for AWS RDS (`certs/rds-ca.pem`).
+   - Non-root user execution in containers (`dumb-init` as PID 1).
+   - Graceful shutdown (`SIGTERM`/`SIGINT`) with connection pool draining.

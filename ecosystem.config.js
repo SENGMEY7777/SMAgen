@@ -4,7 +4,7 @@ module.exports = {
   apps: [
     {
       name: 'kairo-backend',
-      script: 'app.js',
+      script: './app.js',
       instances: 'max',
       exec_mode: 'cluster',
       wait_ready: true,
@@ -14,11 +14,11 @@ module.exports = {
       exp_backoff_restart_delay: 100,
       merge_logs: true,
       time: true,
-      max_memory_restart: '800M',
+      max_memory_restart: '300M',
       node_args: '--max-old-space-size=1024',
-      env: {
+      env_production: {
         NODE_ENV: 'production',
-        PORT: process.env.PORT || 5000,
+        PORT: 5000,
       },
     },
   ],

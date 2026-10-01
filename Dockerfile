@@ -82,4 +82,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Intercept and propagate signals to Node.js cleanly
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
-CMD ["node", "app.js"]
+CMD ["npm", "start"]

@@ -4,7 +4,7 @@
   "description": "",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js",
+    "start": "pm2-runtime start ecosystem.config.js --env production",
     "loadtest:smoke": "node load-tests/autocannon-smoke.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

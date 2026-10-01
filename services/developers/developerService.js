@@ -4,6 +4,16 @@ const developerModel = require('../../models/developers/developerModel');
 const { sendVerificationEmail } = require('../../utils/mailService');
 const { PASSWORD_REGEX } = require('../../validators/commonValidator');
 
+const BCRYPT_SALT_ROUNDS = 10;
+
+const hashPassword = async (plainPassword) => {
+    return bcrypt.hash(plainPassword, BCRYPT_SALT_ROUNDS);
+};
+
+const verifyPassword = async (plainPassword, hashedPassword) => {
+    return bcrypt.compare(plainPassword, hashedPassword);
+};
+
 const register = async (body) => {
     const checkUser = await developerModel.findUserByEmail(body.email);
     if (checkUser) {
@@ -21,7 +31,7 @@ const register = async (body) => {
         throw error;
     }
 
-    const passwordHash = rawPassword ? await bcrypt.hash(rawPassword, 10) : '';
+    const passwordHash = rawPassword ? await hashPassword(rawPassword) : '';
     const verificationToken = crypto.randomBytes(32).toString('hex');
     const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
@@ -136,7 +146,7 @@ const login = async (email, password) => {
     let isPasswordValid = false;
 
     if (user && user.password_hash && typeof password === 'string') {
-        isPasswordValid = await bcrypt.compare(password, user.password_hash);
+        isPasswordValid = await verifyPassword(password, user.password_hash);
     }
 
     if (!isPasswordValid || user.role !== 'DEVELOPER') {

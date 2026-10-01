@@ -4,16 +4,6 @@ const { sendVerificationEmail } = require('../../utils/mailService');
 const { PASSWORD_REGEX } = require('../../validators/commonValidator');
 const { hashPassword, verifyPassword } = require('../../utils/password');
 
-const BCRYPT_SALT_ROUNDS = 10;
-
-const hashPassword = async (plainPassword) => {
-    return bcrypt.hash(plainPassword, BCRYPT_SALT_ROUNDS);
-};
-
-const verifyPassword = async (plainPassword, hashedPassword) => {
-    return bcrypt.compare(plainPassword, hashedPassword);
-};
-
 const register = async (body) => {
     const checkUser = await developerModel.findUserByEmail(body.email);
     if (checkUser) {

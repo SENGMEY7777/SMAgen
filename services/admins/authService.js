@@ -5,16 +5,6 @@ const { getJwtConfig } = require('../../configs/jwt');
 const { PASSWORD_REGEX } = require('../../validators/commonValidator');
 const { hashPassword, verifyPassword } = require('../../utils/password');
 
-const BCRYPT_SALT_ROUNDS = 10;
-
-const hashPassword = async (plainPassword) => {
-    return bcrypt.hash(plainPassword, BCRYPT_SALT_ROUNDS);
-};
-
-const verifyPassword = async (plainPassword, hashedPassword) => {
-    return bcrypt.compare(plainPassword, hashedPassword);
-};
-
 const invalidCredentialsError = () => {
     const error = new Error('Invalid email or password');
     error.code = 'INVALID_CREDENTIALS';

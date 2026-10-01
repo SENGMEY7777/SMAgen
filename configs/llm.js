@@ -5,8 +5,8 @@ const {
 } = require('../core/telemetry');
 require('./env');
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash';
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash';
 
 const getAiClient = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -74,6 +74,8 @@ const generateContentWithRetry = async ({model, contents, config}) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
+        'gemini-3.8-flash',
+        'gemini-3.5-flash',
         'gemini-2.5-flash',
         'gemini-2.0-flash',
         'gemini-1.5-flash',
@@ -97,7 +99,7 @@ const generateContentWithRetry = async ({model, contents, config}) => {
                 lastError = error;
 
                 if (!isRetryableError(error)) {
-                    // Non-retryable (e.g., 404 model not found) -> break to try next model immediately
+                    // Non-retryable (e.g., 404 model not found) -> break to try next candidate immediately
                     break;
                 }
 

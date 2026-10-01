@@ -69,8 +69,8 @@ const getAppUrl = () => {
 };
 
 const getFromHeader = () => {
-  const sender = process.env.SMTP_USER || process.env.EMAIL_USER || 'noreply@smagen.com';
-  return process.env.SMTP_FROM || `SMAgen <${sender}>`;
+  const sender = process.env.SMTP_USER || process.env.EMAIL_USER || 'noreply@kairo.com';
+  return process.env.SMTP_FROM || `KAIRO <${sender}>`;
 };
 
 // Send verification link email
@@ -88,7 +88,7 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
   return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
-    subject: 'Confirm your email address - SMAgen',
+    subject: 'Confirm your email address - KAIRO',
     html: `
     <!DOCTYPE html>
     <html>
@@ -123,7 +123,7 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
     <body>
       <div class="container">
         <div class="header">
-          <h2>Welcome to SMAgen!</h2>
+          <h2>Welcome to KAIRO!</h2>
         </div>
         <p>Hi <strong>${safeUserName}</strong>,</p>
         <p>Thanks for signing up! Please confirm your email address to activate your account and get started.</p>
@@ -135,7 +135,7 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
         <p>This link will <strong>expire in 24 hours</strong>. If you did not create an account, no further action is required.</p>
         
         <div class="footer">
-          <p>&copy; ${new Date().getFullYear()} SMAgen AI Platform. All rights reserved.</p>
+          <p>&copy; ${new Date().getFullYear()} KAIRO AI Platform. All rights reserved.</p>
           <p class="link-alt">If the button doesn't work, copy and paste this link into your browser:<br>
           ${safeVerificationLink}</p>
         </div>
@@ -159,7 +159,7 @@ const sendOTPEmail = async (to, otp, userName = 'User') => {
   return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
-    subject: 'Your Password Reset Code - SMAgen',
+    subject: 'Your Password Reset Code - KAIRO',
     html: `
     <!DOCTYPE html>
     <html>
@@ -198,7 +198,7 @@ const sendOTPEmail = async (to, otp, userName = 'User') => {
         <p>If you did not request this, please ignore this email or contact support if you have concerns.</p>
         
         <div class="footer">
-          <p>&copy; ${new Date().getFullYear()} SMAgen AI Platform. All rights reserved.</p>
+          <p>&copy; ${new Date().getFullYear()} KAIRO AI Platform. All rights reserved.</p>
         </div>
       </div>
     </body>
@@ -222,7 +222,7 @@ const sendResetLinkEmail = async (to, token, userName = 'User') => {
   return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
-    subject: 'Reset your password - SMAgen',
+    subject: 'Reset your password - KAIRO',
     html: `
     <!DOCTYPE html>
     <html>
@@ -269,7 +269,7 @@ const sendResetLinkEmail = async (to, token, userName = 'User') => {
         <p>This secure link will <strong>expire in 15 minutes</strong>. If you did not make this request, your password will remain secure and you can safely ignore this message.</p>
         
         <div class="footer">
-          <p>&copy; ${new Date().getFullYear()} SMAgen AI Platform. All rights reserved.</p>
+          <p>&copy; ${new Date().getFullYear()} KAIRO AI Platform. All rights reserved.</p>
           <p class="link-alt">Trouble with the button? Copy and paste this URL into your browser:<br>
           ${safeResetLink}</p>
         </div>
@@ -292,7 +292,7 @@ const sendPasswordResetSuccessEmail = async (to, userName = 'User') => {
   return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
-    subject: 'Security Notice: Password Changed Successfully - SMAgen',
+    subject: 'Security Notice: Password Changed Successfully - KAIRO',
     html: `
     <!DOCTYPE html>
     <html>
@@ -337,7 +337,7 @@ const sendPasswordResetSuccessEmail = async (to, userName = 'User') => {
         </div>
         
         <div class="footer">
-          <p>&copy; ${new Date().getFullYear()} SMAgen AI Platform. All rights reserved.</p>
+          <p>&copy; ${new Date().getFullYear()} KAIRO AI Platform. All rights reserved.</p>
         </div>
       </div>
     </body>

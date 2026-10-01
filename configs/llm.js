@@ -5,8 +5,8 @@ const {
 } = require('../core/telemetry');
 require('./env');
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash';
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash';
 
 const getAiClient = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -42,7 +42,6 @@ const getErrorCode = (error) => {
 
 const isRetryableError = (error) => {
     const code = getErrorCode(error);
-    // 401, 403, 404 are non-retryable fatal errors (bad key or bad model name)
     return [408, 429, 500, 502, 503, 504].includes(code);
 };
 
@@ -74,8 +73,6 @@ const generateContentWithRetry = async ({model, contents, config}) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
-        'gemini-3.8-flash',
-        'gemini-3.5-flash',
         'gemini-2.5-flash',
         'gemini-2.0-flash',
         'gemini-1.5-flash',
@@ -85,39 +82,22 @@ const generateContentWithRetry = async ({model, contents, config}) => {
     let lastError;
 
     for (const currentModel of models) {
-        for (let attempt = 0; attempt < 2; attempt++) {
-            try {
-                return await withTimeout(
-                    ai.models.generateContent({
-                        model: currentModel,
-                        contents,
-                        config,
-                    }),
-                    LLM_TIMEOUT_MS
-                );
-            } catch (error) {
-                lastError = error;
+        try {
+            return await withTimeout(
+                ai.models.generateContent({
+                    model: currentModel,
+                    contents,
+                    config,
+                }),
+                LLM_TIMEOUT_MS
+            );
+        } catch (error) {
+            lastError = error;
+            const code = getErrorCode(error);
+            console.warn(`⚠️ Gemini model '${currentModel}' failed (${code || error.message}). Falling back to next model...`);
 
-                if (!isRetryableError(error)) {
-                    // Non-retryable (e.g., 404 model not found) -> break to try next candidate immediately
-                    break;
-                }
-
-                const isLastAttempt = attempt === 1;
-                const isLastModel = currentModel === models[models.length - 1];
-
-                if (isLastAttempt && isLastModel) {
-                    break;
-                }
-
-                const errorCode = getErrorCode(error);
-                const baseDelay = errorCode === 429 ? 2000 : 1000;
-                const delay = (baseDelay * (2 ** attempt)) + Math.floor(Math.random() * 300);
-
-                console.warn(
-                    `⚠️ Gemini ${currentModel} returned ${errorCode || 'ERROR'}. Retrying in ${delay}ms...`,
-                );
-                await wait(delay);
+            if (isRetryableError(error)) {
+                await wait(500);
             }
         }
     }
@@ -135,7 +115,16 @@ const getResponseText = (response) => {
         return '';
     }
 
-    return typeof response.text === 'function' ? response.text() : response.text;
+    if (typeof response.text === 'function') {
+        return response.text();
+    }
+    if (typeof response.text === 'string') {
+        return response.text;
+    }
+    if (response.candidates?.[0]?.content?.parts?.[0]?.text) {
+        return response.candidates[0].content.parts[0].text;
+    }
+    return '';
 };
 
 const getResponseUsage = (response) => {

@@ -43,7 +43,25 @@ const createTransporter = () => {
       user,
       pass,
     },
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 10000,
+    tls: {
+      rejectUnauthorized: false,
+    },
   });
+};
+
+const safeSendMail = async (transporter, mailOptions) => {
+  try {
+    return await transporter.sendMail(mailOptions);
+  } catch (err) {
+    console.warn(`[MailService Warning] Email dispatch failed (${err.code || err.message}).`);
+    if (isEmailSimulationAllowed()) {
+      return { simulated: true, error: err.message };
+    }
+    return { error: err.message, code: err.code || 'EMAIL_SEND_FAILED' };
+  }
 };
 
 const getAppUrl = () => {
@@ -67,7 +85,7 @@ const sendVerificationEmail = async (to, token, userName = 'Developer') => {
     return handleMissingTransporter();
   }
 
-  return transporter.sendMail({
+  return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
     subject: 'Confirm your email address - SMAgen',
@@ -138,7 +156,7 @@ const sendOTPEmail = async (to, otp, userName = 'User') => {
     return handleMissingTransporter();
   }
 
-  return transporter.sendMail({
+  return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
     subject: 'Your Password Reset Code - SMAgen',
@@ -201,7 +219,7 @@ const sendResetLinkEmail = async (to, token, userName = 'User') => {
     return handleMissingTransporter();
   }
 
-  return transporter.sendMail({
+  return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
     subject: 'Reset your password - SMAgen',
@@ -271,7 +289,7 @@ const sendPasswordResetSuccessEmail = async (to, userName = 'User') => {
     return handleMissingTransporter();
   }
 
-  return transporter.sendMail({
+  return safeSendMail(transporter, {
     from: getFromHeader(),
     to,
     subject: 'Security Notice: Password Changed Successfully - SMAgen',

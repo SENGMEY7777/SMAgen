@@ -1,9 +1,9 @@
 const crypto = require('crypto');
 const authModel = require('../../models/admins/authModel');
-const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { getJwtConfig } = require('../../configs/jwt');
 const { PASSWORD_REGEX } = require('../../validators/commonValidator');
+const { hashPassword, verifyPassword } = require('../../utils/password');
 
 const BCRYPT_SALT_ROUNDS = 10;
 

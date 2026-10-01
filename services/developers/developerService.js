@@ -1,8 +1,8 @@
 const crypto = require('crypto');
-const bcrypt = require('bcrypt');
 const developerModel = require('../../models/developers/developerModel');
 const { sendVerificationEmail } = require('../../utils/mailService');
 const { PASSWORD_REGEX } = require('../../validators/commonValidator');
+const { hashPassword, verifyPassword } = require('../../utils/password');
 
 const BCRYPT_SALT_ROUNDS = 10;
 

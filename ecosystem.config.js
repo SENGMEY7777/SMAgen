@@ -16,6 +16,13 @@ module.exports = {
       time: true,
       max_memory_restart: '300M',
       node_args: '--max-old-space-size=1024',
+<<<<<<< Updated upstream
+=======
+      env: {
+        NODE_ENV: process.env.NODE_ENV || 'development',
+        PORT: process.env.PORT || 5000,
+      },
+>>>>>>> Stashed changes
       env_production: {
         NODE_ENV: 'production',
         PORT: 5000,

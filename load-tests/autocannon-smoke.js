@@ -19,10 +19,12 @@ const instance = autocannon({
 autocannon.track(instance, {renderProgressBar: true});
 
 instance.on('done', (result) => {
-    const errors = result.errors + result.timeouts;
+    const transportErrors = result.errors + result.timeouts;
+    const non2xx = result.non2xx || 0;
+    const failedResponses = transportErrors + non2xx;
     const errorRate = result.requests.total === 0
         ? 0
-        : (errors / result.requests.total) * 100;
+        : (failedResponses / result.requests.total) * 100;
 
     console.log(JSON.stringify({
         url,
@@ -31,9 +33,11 @@ instance.on('done', (result) => {
         requests: result.requests,
         latency: result.latency,
         throughput: result.throughput,
-        errors,
+        transportErrors,
+        non2xx,
+        failedResponses,
         errorRatePercent: Number(errorRate.toFixed(3)),
     }, null, 2));
 
-    process.exitCode = errors > 0 ? 1 : 0;
+    process.exitCode = failedResponses > 0 ? 1 : 0;
 });

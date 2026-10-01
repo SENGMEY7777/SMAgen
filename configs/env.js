@@ -18,6 +18,9 @@ const DEFAULTS = {
     GEMINI_OUTPUT_RATE_USD_PER_1M_TOKENS: '0',
     DB_SSL: 'false',
     DB_SSL_REJECT_UNAUTHORIZED: 'true',
+    DB_POOL_LIMIT: '20',
+    DB_POOL_MAX_IDLE: '10',
+    DB_POOL_IDLE_TIMEOUT_MS: '60000',
 };
 
 const PLACEHOLDER_PATTERN = /^(?:your_|replace_with_|change_me|example|xxx|<.+>)|(?:_here$)/i;
@@ -132,6 +135,9 @@ const validateEnvironment = ({
 
     validateInteger(issues, env, 'PORT', {min: 1, max: 65535});
     validateInteger(issues, env, 'DB_PORT', {min: 1, max: 65535});
+    validateInteger(issues, env, 'DB_POOL_LIMIT', {min: 1, max: 100});
+    validateInteger(issues, env, 'DB_POOL_MAX_IDLE', {min: 0, max: 100});
+    validateInteger(issues, env, 'DB_POOL_IDLE_TIMEOUT_MS', {min: 1000, max: 3600000});
     validateInteger(issues, env, 'MAX_CONCURRENT_TASKS', {min: 1, max: 100});
     validateInteger(issues, env, 'COMMAND_TIMEOUT_MS', {min: 1000, max: 30000});
     validateInteger(issues, env, 'HTTP_REQUEST_TIMEOUT_MS', {min: 1000, max: 300000});
@@ -141,6 +147,8 @@ const validateEnvironment = ({
 
     const dbSsl = parseBoolean(env.DB_SSL, false);
     const dbSslRejectUnauthorized = parseBoolean(env.DB_SSL_REJECT_UNAUTHORIZED, true);
+    const dbPoolLimit = Number(getValue(env, 'DB_POOL_LIMIT'));
+    const dbPoolMaxIdle = Number(getValue(env, 'DB_POOL_MAX_IDLE'));
 
     if (dbSsl === null) {
         addIssue(issues, 'DB_SSL must be a boolean value');
@@ -148,6 +156,10 @@ const validateEnvironment = ({
 
     if (dbSslRejectUnauthorized === null) {
         addIssue(issues, 'DB_SSL_REJECT_UNAUTHORIZED must be a boolean value');
+    }
+
+    if (Number.isInteger(dbPoolLimit) && Number.isInteger(dbPoolMaxIdle) && dbPoolMaxIdle > dbPoolLimit) {
+        addIssue(issues, 'DB_POOL_MAX_IDLE cannot exceed DB_POOL_LIMIT');
     }
 
     if (
@@ -249,6 +261,11 @@ const validateEnvironment = ({
             user: env.DB_USER,
             ssl: dbSsl === true,
             sslRejectUnauthorized: dbSslRejectUnauthorized === true,
+            pool: {
+                connectionLimit: dbPoolLimit,
+                maxIdle: dbPoolMaxIdle,
+                idleTimeout: Number(getValue(env, 'DB_POOL_IDLE_TIMEOUT_MS')),
+            },
         },
         llm: {
             model: getValue(env, 'GEMINI_MODEL'),

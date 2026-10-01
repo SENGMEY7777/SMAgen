@@ -68,8 +68,7 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     ]).finally(() => clearTimeout(timeoutId));
 };
 
-const generateContentWithRetry = async ({model, contents, config}) => {
-    const ai = getAiClient();
+const getModelCandidates = (model) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
@@ -80,7 +79,12 @@ const generateContentWithRetry = async ({model, contents, config}) => {
         'gemini-flash-lite-latest',
         FALLBACK_MODEL,
     ].filter(Boolean);
-    const models = [...new Set(candidates)];
+    return [...new Set(candidates)];
+};
+
+const generateContentWithRetry = async ({model, contents, config}) => {
+    const ai = getAiClient();
+    const models = getModelCandidates(model);
     let lastError;
 
     for (const currentModel of models) {
@@ -177,6 +181,61 @@ const skGemini = async (contents, {model, config} = {}) => {
     }
 };
 
+/**
+ * Real-time token streaming using Server-Sent Events (SSE) or WebSocket.
+ * Calls onChunk(chunkText) as tokens arrive, and resolves to fullText upon completion.
+ */
+const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
+    const ai = getAiClient();
+    const models = getModelCandidates(model || process.env.GEMINI_MODEL || DEFAULT_MODEL);
+    let lastError;
+
+    for (const currentModel of models) {
+        try {
+            const stream = await ai.models.generateContentStream({
+                model: currentModel,
+                contents,
+                config,
+            });
+
+            let fullText = '';
+
+            for await (const chunk of stream) {
+                const chunkText = getResponseText(chunk);
+                if (chunkText) {
+                    fullText += chunkText;
+                    if (typeof onChunk === 'function') {
+                        onChunk(chunkText);
+                    }
+                }
+            }
+
+            if (!fullText.trim()) {
+                const error = new Error('Gemini returned an empty stream response');
+                error.code = 'LLM_EMPTY_RESPONSE';
+                throw error;
+            }
+
+            return fullText.trim();
+        } catch (error) {
+            lastError = error;
+            const code = getErrorCode(error);
+            console.warn(`⚠️ Gemini Stream on model '${currentModel}' failed (${code || error.message}). Trying fallback model...`);
+
+            if (isRetryableError(error)) {
+                await wait(200);
+            }
+        }
+    }
+
+    const finalError = new Error(
+        `Gemini Stream failed: ${lastError?.message || 'LLM stream service unavailable'}`,
+    );
+    finalError.code = getErrorCode(lastError) || 'LLM_ERROR';
+    finalError.cause = lastError;
+    throw finalError;
+};
+
 const generateStructureClient = async ({
     systemPrompt,
     userPrompt,
@@ -254,6 +313,7 @@ const generateStructureClient = async ({
 
 module.exports = {
     skGemini,
+    skGeminiStream,
     generateStructureClient,
     getResponseUsage,
 };

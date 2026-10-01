@@ -5,6 +5,8 @@ const authModel = require('../models/admins/authModel');
 const workflowModel = require('../models/workflow/workflowModel');
 const {getJwtConfig} = require('../configs/jwt');
 const {getCorsOrigins} = require('../configs/env');
+const {skGeminiStream} = require('../configs/llm');
+const {buildConversationRequest} = require('../controllers/chatController');
 
 const getSocketToken = (socket) => {
     const authorization = socket.handshake.headers.authorization || '';
@@ -90,6 +92,54 @@ const initializeWebSocket = (server) => {
     io.use(authenticateSocket);
 
     io.on('connection', (socket) => {
+        // Live Chat Streaming over WebSockets
+        socket.on('chat:stream', async (payload, callback) => {
+            const {message, history = [], requestId = Date.now()} = payload || {};
+
+            if (typeof message !== 'string' || !message.trim()) {
+                return callback?.({
+                    success: false,
+                    error: 'Message is required',
+                });
+            }
+
+            callback?.({
+                success: true,
+                status: 'STREAM_STARTED',
+                requestId,
+            });
+
+            try {
+                const {contents, config} = buildConversationRequest({message, history});
+
+                const fullText = await skGeminiStream(contents, {
+                    config,
+                    onChunk: (chunkText) => {
+                        socket.emit('chat:chunk', {
+                            requestId,
+                            text: chunkText,
+                            done: false,
+                        });
+                    },
+                });
+
+                socket.emit('chat:done', {
+                    requestId,
+                    text: '',
+                    done: true,
+                    fullText,
+                });
+            } catch (error) {
+                console.error('[WebSocket Chat Stream Error]', error?.message || error);
+                socket.emit('chat:error', {
+                    requestId,
+                    error: error?.message || 'Streaming failed',
+                    done: true,
+                });
+            }
+        });
+
+        // Workflow Run Events
         socket.on('join_run', async (runId, acknowledge) => {
             try {
                 const run = await canAccessRun(socket, runId);

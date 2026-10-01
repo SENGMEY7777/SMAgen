@@ -1,4 +1,4 @@
-const {skGemini} = require('../configs/llm');
+const {skGemini, skGeminiStream} = require('../configs/llm');
 const sendResponse = require('../utils/responseHelper');
 
 const MAX_HISTORY_MESSAGES = 12;
@@ -89,7 +89,15 @@ const buildConversationRequest = ({message, history = []}) => {
     };
 };
 
+/**
+ * Standard batch JSON chat response.
+ */
 const chat = async (req, res) => {
+    // If client requested stream via query param (?stream=true) or SSE accept header
+    if (req.query.stream === 'true' || req.headers.accept === 'text/event-stream') {
+        return chatStream(req, res);
+    }
+
     try {
         const {message, history = []} = req.body || {};
         if (typeof message !== 'string' || !message.trim()) {
@@ -130,7 +138,54 @@ const chat = async (req, res) => {
     }
 };
 
+/**
+ * Live Real-Time Token Streaming using Server-Sent Events (SSE).
+ * Sends token chunks immediately as they arrive from Google Gemini.
+ */
+const chatStream = async (req, res) => {
+    const {message, history = []} = req.body || {};
+
+    if (typeof message !== 'string' || !message.trim()) {
+        return sendResponse(res, 400, false, 'A chat message is required', null, {
+            code: 'VALIDATION_ERROR',
+        });
+    }
+
+    // Set Server-Sent Events (SSE) headers with Nginx unbuffered streaming header
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no', // Critical: tells Nginx not to buffer chunks
+    });
+
+    res.flushHeaders?.();
+
+    // Send connection established event
+    res.write(`data: ${JSON.stringify({ event: 'start', timestamp: new Date().toISOString() })}\n\n`);
+
+    try {
+        const {contents, config} = buildConversationRequest({message, history});
+
+        const fullText = await skGeminiStream(contents, {
+            config,
+            onChunk: (chunkText) => {
+                res.write(`data: ${JSON.stringify({ event: 'chunk', text: chunkText, done: false })}\n\n`);
+            },
+        });
+
+        // Final completion event
+        res.write(`data: ${JSON.stringify({ event: 'done', text: '', done: true, fullText })}\n\n`);
+        res.end();
+    } catch (error) {
+        console.error('[Chat Stream Error]', error?.message || error);
+        res.write(`data: ${JSON.stringify({ event: 'error', error: error?.message || 'Streaming failed', done: true })}\n\n`);
+        res.end();
+    }
+};
+
 module.exports = {
     chat,
+    chatStream,
     buildConversationRequest,
 };

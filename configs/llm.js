@@ -5,8 +5,8 @@ const {
 } = require('../core/telemetry');
 require('./env');
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash';
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash';
 
 const getAiClient = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -73,9 +73,11 @@ const generateContentWithRetry = async ({model, contents, config}) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
-        'gemini-2.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-3.8-flash',
+        'gemini-3.5-flash',
+        'gemini-flash-latest',
+        'gemini-flash-lite-latest',
         FALLBACK_MODEL,
     ].filter(Boolean);
     const models = [...new Set(candidates)];
@@ -94,10 +96,10 @@ const generateContentWithRetry = async ({model, contents, config}) => {
         } catch (error) {
             lastError = error;
             const code = getErrorCode(error);
-            console.warn(`⚠️ Gemini model '${currentModel}' failed (${code || error.message}). Falling back to next model...`);
+            console.warn(`⚠️ Gemini model '${currentModel}' failed (${code || error.message}). Trying next candidate...`);
 
             if (isRetryableError(error)) {
-                await wait(500);
+                await wait(200);
             }
         }
     }

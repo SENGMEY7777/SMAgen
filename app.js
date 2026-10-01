@@ -77,6 +77,7 @@ app.use(compression({
     },
 }));
 
+app.use(express.static('public'));
 app.use('/api/v1/admin/auth', authRoutes);
 app.use('/api/v1/admin/approvals', approveRoutes);
 app.use('/api/v1/auth', authRoutes);

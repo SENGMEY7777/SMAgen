@@ -5,13 +5,19 @@ const {
 } = require('../core/telemetry');
 require('./env');
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash';
-const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-1.5-flash';
 
-const ai = new GoogleGenAI({
-    apiKey,
-});
+const getAiClient = () => {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
+        const error = new Error('GEMINI_API_KEY is not configured in environment properties');
+        error.code = 'LLM_UNAVAILABLE';
+        error.status = 503;
+        throw error;
+    }
+    return new GoogleGenAI({ apiKey });
+};
 
 const wait = (milliseconds) => new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
@@ -35,13 +41,15 @@ const getErrorCode = (error) => {
 };
 
 const isRetryableError = (error) => {
-    return [404, 408, 429, 500, 502, 503, 504].includes(getErrorCode(error));
+    const code = getErrorCode(error);
+    // 401, 403, 404 are non-retryable fatal errors (bad key or bad model name)
+    return [408, 429, 500, 502, 503, 504].includes(code);
 };
 
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
-    : 30000;
+    : 15000;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     let timeoutId;
@@ -62,16 +70,13 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
 };
 
 const generateContentWithRetry = async ({model, contents, config}) => {
+    const ai = getAiClient();
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
-        'gemini-3.8-flash',
-        'gemini-3.6-flash',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3.7-flash',
-        'gemini-flash-latest',
-        'gemini-flash-lite-latest',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash',
         FALLBACK_MODEL,
     ].filter(Boolean);
     const models = [...new Set(candidates)];
@@ -92,7 +97,8 @@ const generateContentWithRetry = async ({model, contents, config}) => {
                 lastError = error;
 
                 if (!isRetryableError(error)) {
-                    throw error;
+                    // Non-retryable (e.g., 404 model not found) -> break to try next model immediately
+                    break;
                 }
 
                 const isLastAttempt = attempt === 1;
@@ -103,8 +109,8 @@ const generateContentWithRetry = async ({model, contents, config}) => {
                 }
 
                 const errorCode = getErrorCode(error);
-                const baseDelay = errorCode === 429 ? 2500 : 1200;
-                const delay = (baseDelay * (2 ** attempt)) + Math.floor(Math.random() * 500);
+                const baseDelay = errorCode === 429 ? 2000 : 1000;
+                const delay = (baseDelay * (2 ** attempt)) + Math.floor(Math.random() * 300);
 
                 console.warn(
                     `⚠️ Gemini ${currentModel} returned ${errorCode || 'ERROR'}. Retrying in ${delay}ms...`,
@@ -115,7 +121,7 @@ const generateContentWithRetry = async ({model, contents, config}) => {
     }
 
     const finalError = new Error(
-        `Gemini request failed after retries${getErrorCode(lastError) ? ` with status ${getErrorCode(lastError)}` : ''}`,
+        `Gemini request failed: ${lastError?.message || 'LLM service unavailable'}`,
     );
     finalError.code = getErrorCode(lastError) || 'LLM_ERROR';
     finalError.cause = lastError;

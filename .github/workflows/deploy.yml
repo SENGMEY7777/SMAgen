@@ -28,7 +28,7 @@ jobs:
           aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           application_name: Kairo-backend
-          environment_name: kairo-backend-sg
+          environment_name: Kairo-backend-env
           version_label: "deploy-${{ github.sha }}"
           region: ap-southeast-1
           deployment_package: deploy_package.zip

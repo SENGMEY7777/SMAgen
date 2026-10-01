@@ -292,6 +292,9 @@ Rules:
             } catch (error) {
                 lastPlannerError = error;
                 console.error(`❌ [Planner Attempt Error]:`, error.message);
+                if (['LLM_UNAVAILABLE', 'LLM_ERROR'].includes(error.code) || error.status === 503 || error.status === 401) {
+                    break;
+                }
                 currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${goalPrompt}`;
             }
         }
@@ -299,8 +302,9 @@ Rules:
         if (!validatedPlan) {
             await updateExecutionRunStatus(runId, 'FAILED');
 
-            const error = new Error('Failed to generate a valid acyclic DAG plan after maximum attempts.');
-            error.code = [500, 502, 503, 504].includes(Number(lastPlannerError?.code))
+            const errorMessage = lastPlannerError?.message || 'Failed to generate a valid acyclic DAG plan after maximum attempts.';
+            const error = new Error(errorMessage);
+            error.code = [500, 502, 503, 504].includes(Number(lastPlannerError?.code)) || lastPlannerError?.code === 'LLM_UNAVAILABLE'
                 ? 'LLM_UNAVAILABLE'
                 : 'PLANNER_ERROR';
             error.cause = lastPlannerError;

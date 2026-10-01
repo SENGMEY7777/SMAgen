@@ -185,12 +185,7 @@ const generateStructureClient = async ({
     try {
         const response = await generateContentWithRetry({
             model,
-            contents: [
-                {
-                    role: 'user',
-                    parts: [{text: `${systemPrompt}\n\nUser Request:\n${userPrompt}`}],
-                },
-            ],
+            contents: `${systemPrompt}\n\nUser Request / Goal:\n${userPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the schema with no extra prose.`,
             config: {
                 responseMimeType: 'application/json',
                 temperature: 0.2,

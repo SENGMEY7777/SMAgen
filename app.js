@@ -3,6 +3,7 @@ const { validateEnvironment } = require('./configs/env.js');
 const config = validateEnvironment();
 
 const express = require('express');
+const path = require('path');
 const compression = require('compression');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -77,7 +78,13 @@ app.use(compression({
     },
 }));
 
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/stream', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'stream.html'));
+});
+app.get('/stream.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'stream.html'));
+});
 app.use('/api/v1/admin/auth', authRoutes);
 app.use('/api/v1/admin/approvals', approveRoutes);
 app.use('/api/v1/auth', authRoutes);

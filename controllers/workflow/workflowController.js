@@ -32,6 +32,10 @@ const list = async (req, res) => {
 };
 
 const runWorkflow = async (req, res) => {
+    if (req.query.stream === 'true' || req.headers.accept === 'text/event-stream') {
+        return runWorkflowStream(req, res);
+    }
+
     try {
         const body = req.body || {};
         const result = await workflowService.runWorkflow({
@@ -70,6 +74,75 @@ const runWorkflow = async (req, res) => {
     }
 };
 
+/**
+ * Live Real-Time Workflow Planning and Execution Stream using Server-Sent Events (SSE).
+ */
+const runWorkflowStream = async (req, res) => {
+    const body = req.body || {};
+
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders?.();
+
+    const sendEvent = (event, data) => {
+        res.write(`data: ${JSON.stringify({ event, data, timestamp: new Date().toISOString() })}\n\n`);
+    };
+
+    sendEvent('status', { message: 'Initiating AI workflow planner...', phase: 'PLANNING' });
+
+    try {
+        const io = req.app.get('io');
+        const streamIo = {
+            to: (room) => ({
+                emit: (event, payload) => {
+                    io?.to(room).emit(event, payload);
+                    sendEvent(event, payload);
+                },
+            }),
+            emit: (event, payload) => {
+                io?.emit(event, payload);
+                sendEvent(event, payload);
+            },
+        };
+
+        const result = await workflowService.runWorkflow({
+            runId: req.params.runId,
+            workflowId: body.workflowId,
+            goalPrompt: body.goalPrompt,
+            userId: req.user.id,
+            io: streamIo,
+        });
+
+        sendEvent('plan_created', {
+            runId: result.runId,
+            status: result.status,
+            phase: result.phase,
+            tasksCreated: result.tasksCreated,
+            plan: result.plan,
+        });
+
+        sendEvent('done', {
+            success: true,
+            runId: result.runId,
+            message: 'Workflow plan created and running in background',
+        });
+
+        res.end();
+    } catch (error) {
+        console.error('[Workflow Stream Error]', error?.message || error);
+        sendEvent('error', {
+            success: false,
+            code: error.code || 'WORKFLOW_RUN_ERROR',
+            message: error.message || 'Workflow execution error',
+        });
+        res.end();
+    }
+};
+
 const listRuns = async (req, res) => {
     try {
         const runs = await workflowService.listRuns(req.user.id);
@@ -100,6 +173,7 @@ module.exports = {
     create,
     list,
     runWorkflow,
+    runWorkflowStream,
     listRuns,
     getWorkflowRun,
 };

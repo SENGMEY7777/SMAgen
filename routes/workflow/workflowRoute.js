@@ -24,6 +24,13 @@ router.post(
     workflowController.runWorkflow,
 );
 router.post(
+    '/run/stream',
+    isLogin,
+    workflowRunLimiter,
+    validate(runWorkflowSchema),
+    workflowController.runWorkflowStream,
+);
+router.post(
     '/run/:runId',
     isLogin,
     workflowRunLimiter,

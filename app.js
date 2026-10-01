@@ -69,6 +69,12 @@ app.use('/api', apiLimiter);
 app.use(express.json({ limit: '10kb' }));
 app.use(compression({
     threshold: '1kb',
+    filter: (req, res) => {
+        if (req.headers.accept === 'text/event-stream' || req.path.includes('/stream') || req.query?.stream === 'true') {
+            return false;
+        }
+        return compression.filter(req, res);
+    },
 }));
 
 app.use('/api/v1/admin/auth', authRoutes);

@@ -6,11 +6,11 @@ const {
 } = require('../commonValidator');
 
 const approvalIdParamsSchema = Joi.object({
-    id: uuid().required(),
+    id: Joi.alternatives().try(uuid(), Joi.string().pattern(/^[a-zA-Z0-9_-]{1,64}$/)).required(),
 }).unknown(false);
 
 const pendingApprovalsQuerySchema = Joi.object({
-    runId: uuid().optional(),
+    runId: Joi.alternatives().try(uuid(), Joi.string().pattern(/^[a-zA-Z0-9_-]{1,64}$/)).allow(null, '').optional(),
 }).unknown(false);
 
 const approvalDecisionSchema = Joi.object({

@@ -14,11 +14,12 @@ const getApprovalErrorStatus = (code) => ({
 
 const listPending = async (req, res) => {
     try {
-        const runId = req.validated?.query?.runId || null;
+        const runId = req.validated?.query?.runId || req.query?.runId || null;
         const approvals = await approveService.listPendingApprovals(runId);
 
         return sendResponse(res, 200, true, 'Pending approvals retrieved successfully', approvals);
     } catch (error) {
+        console.error('❌ [approveController.listPending Error]:', error.message || error);
         return sendResponse(res, 500, false, 'Failed to retrieve pending approvals', null, {
             code: 'APPROVAL_LIST_ERROR',
         });

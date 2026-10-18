@@ -147,6 +147,7 @@ const validateEnvironment = ({
 
     const dbSsl = parseBoolean(env.DB_SSL, false);
     const dbSslRejectUnauthorized = parseBoolean(env.DB_SSL_REJECT_UNAUTHORIZED, true);
+    const localDesktopOutput = parseBoolean(env.LOCAL_DESKTOP_OUTPUT, false);
     const dbPoolLimit = Number(getValue(env, 'DB_POOL_LIMIT'));
     const dbPoolMaxIdle = Number(getValue(env, 'DB_POOL_MAX_IDLE'));
 
@@ -156,6 +157,14 @@ const validateEnvironment = ({
 
     if (dbSslRejectUnauthorized === null) {
         addIssue(issues, 'DB_SSL_REJECT_UNAUTHORIZED must be a boolean value');
+    }
+
+    if (localDesktopOutput === null) {
+        addIssue(issues, 'LOCAL_DESKTOP_OUTPUT must be a boolean value');
+    }
+
+    if (normalizedNodeEnv === 'production' && localDesktopOutput === true) {
+        addIssue(issues, 'LOCAL_DESKTOP_OUTPUT must be false in production');
     }
 
     if (Number.isInteger(dbPoolLimit) && Number.isInteger(dbPoolMaxIdle) && dbPoolMaxIdle > dbPoolLimit) {
@@ -214,6 +223,7 @@ const validateEnvironment = ({
         nodeEnv: normalizedNodeEnv,
         port: Number(getValue(env, 'PORT')),
         corsOrigins,
+        localDesktopOutput: localDesktopOutput === true,
         emailSimulationAllowed: parseBoolean(env.ALLOW_EMAIL_SIMULATION, false) === true,
         database: {
             host: env.DB_HOST,

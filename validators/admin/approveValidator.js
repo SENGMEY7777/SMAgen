@@ -11,7 +11,7 @@ const approvalIdParamsSchema = Joi.object({
 
 const pendingApprovalsQuerySchema = Joi.object({
     runId: Joi.alternatives().try(uuid(), Joi.string().pattern(/^[a-zA-Z0-9_-]{1,64}$/)).allow(null, '').optional(),
-}).unknown(false);
+}).unknown(true);
 
 const approvalDecisionSchema = Joi.object({
     status: Joi.string()

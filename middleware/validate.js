@@ -6,6 +6,31 @@ const isJoiSchema = (obj) => {
   return Boolean(obj && (obj.isJoi || typeof obj.validate === 'function'));
 };
 
+const applyValidatedValue = (req, source, value) => {
+  if (source === 'body') {
+    req.body = value;
+  } else if (source === 'query') {
+    try {
+      Object.defineProperty(req, 'query', {
+        value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
+    } catch {
+      // Ignore if defineProperty fails
+    }
+  } else {
+    try {
+      req[source] = value;
+    } catch {
+      // Ignore if direct assignment fails
+    }
+  }
+  req.validated = req.validated || {};
+  req.validated[source] = value;
+};
+
 const validateRequest = (schema, source) => (req, res, next) => {
   if (!schema) {
     return next();
@@ -29,13 +54,7 @@ const validateRequest = (schema, source) => (req, res, next) => {
     return next(new ValidationError(errorDetails, message));
   }
 
-  if (source === 'body') {
-    req.body = value;
-  } else {
-    req[source] = value;
-    req.validated = req.validated || {};
-    req.validated[source] = value;
-  }
+  applyValidatedValue(req, source, value);
 
   return next();
 };
@@ -69,13 +88,7 @@ const validate = (target) => {
               });
             });
           } else {
-            if (loc === 'body') {
-              req.body = value;
-            } else {
-              req[loc] = value;
-              req.validated = req.validated || {};
-              req.validated[loc] = value;
-            }
+            applyValidatedValue(req, loc, value);
           }
         }
       }

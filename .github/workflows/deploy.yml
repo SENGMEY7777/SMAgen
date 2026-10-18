@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: elastic-beanstalk-production
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -21,6 +25,39 @@ jobs:
       - name: Create Deployment Package
         run: |
           zip -r deploy_package.zip . -x "*.git*" "node_modules/*" ".github/*"
+
+      - name: Wait for Elastic Beanstalk environment
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-southeast-1
+        run: |
+          set -euo pipefail
+
+          for attempt in $(seq 1 60); do
+            status="$(aws elasticbeanstalk describe-environments \
+              --application-name Kairo-backend \
+              --environment-names Kairo-backend-env \
+              --region ap-southeast-1 \
+              --query 'Environments[0].Status' \
+              --output text)"
+
+            echo "Elastic Beanstalk environment status: ${status} (attempt ${attempt}/60)"
+
+            if [ "${status}" = "Ready" ]; then
+              exit 0
+            fi
+
+            if [ "${status}" = "Terminated" ] || [ "${status}" = "Terminating" ]; then
+              echo "Elastic Beanstalk environment cannot receive deployments while it is ${status}."
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Timed out waiting for Kairo-backend-env to become Ready."
+          exit 1
 
       - name: Deploy to Elastic Beanstalk
         uses: einaregilsson/beanstalk-deploy@v22

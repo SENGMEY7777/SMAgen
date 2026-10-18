@@ -74,6 +74,7 @@ Rules:
 - Do not invent credentials, secrets, private keys, or authorization headers.
 - Do not use shell chaining, shell operators, or unsafe commands.
 - For directory creation, use fileManager with action 'createDirectory' and a relative path inside the workspace. Never use an absolute path or '..'.
+- When local Desktop output is explicitly enabled and the task targets the host Desktop, use fileManager with action 'createDesktopDirectory' and a relative folder name.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

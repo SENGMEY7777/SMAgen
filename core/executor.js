@@ -1,4 +1,5 @@
 const fs = require('fs/promises');
+const os = require('os');
 const path = require('path');
 const axios = require('axios');
 const {execFile} = require('child_process');
@@ -9,6 +10,8 @@ const {imageGenerator: rawImageGenerator} = require('../tools/imageGenerator');
 const DEFAULT_WORKSPACE_ROOT = path.resolve(
     process.env.WORKSPACE_ROOT || path.join(process.cwd(), 'workspaces'),
 );
+const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development').trim().toLowerCase() !== 'production'
+    && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const MAX_COMMAND_TIMEOUT_MS = 30_000;
@@ -139,6 +142,49 @@ const resolveWorkspaceFile = async (workspacePath, requestedPath, {allowWorkspac
     return resolvedPath;
 };
 
+const resolveLocalDesktopPath = async (requestedPath) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        throw new Error(
+            'Direct Desktop output is disabled. Set LOCAL_DESKTOP_OUTPUT=true only for local development.',
+        );
+    }
+
+    if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
+        throw new Error('A relative Desktop path is required');
+    }
+
+    if (path.isAbsolute(requestedPath) || requestedPath.split(/[\\/]/).includes('..')) {
+        throw new Error('Desktop paths must be relative and cannot contain ..');
+    }
+
+    const desktopRelativePath = requestedPath.replace(/^desktop[\\/]+/i, '');
+
+    if (!desktopRelativePath.trim()) {
+        throw new Error('A Desktop folder name is required');
+    }
+
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+    const resolvedPath = path.resolve(desktopRoot, desktopRelativePath);
+
+    if (!isPathInside(desktopRoot, resolvedPath)) {
+        throw new Error('Desktop path must remain inside the local Desktop directory');
+    }
+
+    try {
+        await fs.realpath(desktopRoot);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            throw new Error(`Local Desktop directory does not exist: ${desktopRoot}`);
+        }
+
+        throw error;
+    }
+
+    await assertRealPathInsideWorkspace(desktopRoot, resolvedPath);
+
+    return resolvedPath;
+};
+
 const validateContent = (content) => {
     if (typeof content !== 'string') {
         throw new Error('File content must be a string');
@@ -153,7 +199,22 @@ const fileManager = async (input, workspacePath) => {
     const requestedAction = String(input.action || 'read').trim().toLowerCase();
     const action = requestedAction === 'createdirectory' || requestedAction === 'create_directory'
         ? 'createDirectory'
+        : requestedAction === 'createdesktopdirectory' || requestedAction === 'create_desktop_directory'
+            ? 'createDesktopDirectory'
         : requestedAction;
+
+    if (action === 'createDesktopDirectory') {
+        const desktopPath = await resolveLocalDesktopPath(input.path);
+        await fs.mkdir(desktopPath, {recursive: input.recursive !== false});
+
+        return {
+            action,
+            path: input.path,
+            location: 'local Desktop',
+            created: true,
+        };
+    }
+
     const filePath = await resolveWorkspaceFile(workspacePath, input.path, {
         allowWorkspaceRoot: action === 'list',
     });

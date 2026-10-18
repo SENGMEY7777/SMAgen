@@ -183,6 +183,9 @@ const validateAcyclicGraph = (tasks) => {
 const planCache = new Map();
 const MAX_CACHE_SIZE = 100;
 
+const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development').trim().toLowerCase() !== 'production'
+    && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';
+
 const getCacheKey = (goalPrompt) => {
     return String(goalPrompt || '').trim().toLowerCase().replace(/\s+/g, ' ');
 };
@@ -218,12 +221,15 @@ const planWorkflowRun = async ({
     }
 
     if (!validatedPlan) {
+        const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
+            ? `- Local Desktop output is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}.`
+            : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
 1. 'executeCommand' - Run allowlisted, read-only workspace commands such as cat, head, tail, grep, ls, pwd, find, and wc. Directory creation via mkdir is supported only inside the workspace and requires approval.
-2. 'fileManager' - Create, edit, read, list, delete files, or create directories inside the workspace. Use {"action":"createDirectory","path":"relative/directory"} for directory creation instead of shell commands.
+2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, or create a local Desktop directory when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
@@ -233,8 +239,9 @@ Rules:
 - Assign dependencies logically (for example, task_2 depends on ['task_1']).
 - Never create circular dependencies.
 - Every dependency must reference an existing nodeKey.
-- Never use an absolute path or a path containing '..'. The workspace is the only filesystem boundary available to workflow tasks.
-- For directory creation, prefer the fileManager tool with action 'createDirectory'.
+- Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
+- For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
+${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {
   "workflowTitle": "string",

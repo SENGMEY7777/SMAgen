@@ -73,6 +73,7 @@ Rules:
 - Preserve the task's intended scope and workspace safety restrictions.
 - Do not invent credentials, secrets, private keys, or authorization headers.
 - Do not use shell chaining, shell operators, or unsafe commands.
+- For directory creation, use fileManager with action 'createDirectory' and a relative path inside the workspace. Never use an absolute path or '..'.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

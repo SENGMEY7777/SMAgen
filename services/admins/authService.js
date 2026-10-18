@@ -76,13 +76,22 @@ const register = async (body = {}) => {
     const secureUserId = crypto.randomUUID();
     const passwordHash = await hashPassword(password);
 
-    return authModel.createUser({
-        id: secureUserId,
-        email: normalizedEmail,
-        passwordHash,
-        fullName,
-        role,
-    });
+    try {
+        return await authModel.createUser({
+            id: secureUserId,
+            email: normalizedEmail,
+            passwordHash,
+            fullName,
+            role,
+        });
+    } catch (err) {
+        if (err.code === 'ER_DUP_ENTRY') {
+            const error = new Error('A user with this email already exists');
+            error.code = 'ER_DUP_ENTRY';
+            throw error;
+        }
+        throw err;
+    }
 };
 
 const logout = async (userId) => {

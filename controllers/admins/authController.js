@@ -1,67 +1,52 @@
+'use strict';
+
 const authService = require('../../services/admins/authService');
 const sendResponse = require('../../utils/responseHelper');
 
-const login = async (req, res) => {
+const login = async (req, res, next) => {
     try {
-        const {email, password} = req.body;
+        const { email, password } = req.body;
         const result = await authService.login(email, password);
-        sendResponse(res, 200, true, 'Login successful', result);
+        return sendResponse(res, 200, true, 'Login successful', result);
     } catch (error) {
-        const isInvalidCredentials = error.code === 'INVALID_CREDENTIALS';
-
-        if (isInvalidCredentials) {
-            return sendResponse(res, 401, false, 'Invalid email or password', null);
-        }
-
-        sendResponse(
-            res,
-            500,
-            false,
-            'Login failed',
-            null,
-            { code: 'INTERNAL_ERROR' },
-        );
+        return next(error);
     }
 };
 
+const register = async (req, res, next) => {
+    try {
+        const result = await authService.register(req.body);
+        return sendResponse(res, 201, true, 'User registered successfully', result);
+    } catch (error) {
+        return next(error);
+    }
+};
 
-const logout = async (req, res) => {
+const logout = async (req, res, next) => {
     try {
         await authService.logout(req.user.sub);
-        sendResponse(res, 200, true, 'Logout successful', null);
+        return sendResponse(res, 200, true, 'Logout successful', null);
     } catch (error) {
-        sendResponse(res, 500, false, 'Logout failed', null, {
-            code: 'INTERNAL_ERROR',
-        });
+        return next(error);
     }
 };
 
-const createApiKey = async (req, res) => {
+const createApiKey = async (req, res, next) => {
     try {
         const result = await authService.createApiKey(req.user.id);
-
         return sendResponse(
-            res,
-            201,
-            true,
+            res, 201, true,
             'API key created successfully. Store it securely; it will not be shown again.',
             result,
         );
     } catch (error) {
-        if (error.code === 'USER_NOT_FOUND') {
-            return sendResponse(res, 404, false, 'User not found', null, {
-                code: error.code,
-            });
-        }
-
-        return sendResponse(res, 500, false, 'API key creation failed', null, {
-            code: 'INTERNAL_ERROR',
-        });
+        return next(error);
     }
 };
 
 module.exports = {
     login,
+    register,
     logout,
     createApiKey,
 };

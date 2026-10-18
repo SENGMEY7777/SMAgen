@@ -1,5 +1,6 @@
 const {skGemini, skGeminiStream} = require('../configs/llm');
 const sendResponse = require('../utils/responseHelper');
+const logger = require('../utils/logger');
 
 const MAX_HISTORY_MESSAGES = 12;
 const CHAT_MAX_OUTPUT_TOKENS = 8192;
@@ -97,7 +98,7 @@ const buildConversationRequest = ({message, history = []}) => {
 /**
  * Standard batch JSON chat response.
  */
-const chat = async (req, res) => {
+const chat = async (req, res, next) => {
     // If client requested stream via query param (?stream=true) or SSE accept header
     if (req.query.stream === 'true' || req.headers.accept === 'text/event-stream') {
         return chatStream(req, res);
@@ -125,21 +126,7 @@ const chat = async (req, res) => {
             mode: 'chat',
         });
     } catch (error) {
-        const statusCode = [404, 408, 429, 500, 502, 503, 504].includes(Number(error?.code))
-            || ['LLM_ERROR', 'LLM_EMPTY_RESPONSE'].includes(error?.code)
-            ? 503
-            : 500;
-        const errorCode = statusCode === 503 ? 'CHAT_LLM_UNAVAILABLE' : 'CHAT_ERROR';
-        console.error('[Chat Error]', error?.message || error);
-        const errorDetail = error?.cause?.message || error?.message || 'Unable to connect to LLM provider';
-        const userFriendlyMessage = statusCode === 503
-            ? `AI model service is currently unavailable (${errorDetail}). Please check your Gemini API key or network connection.`
-            : `Unable to generate a chat response: ${errorDetail}`;
-
-        return sendResponse(res, statusCode, false, userFriendlyMessage, null, {
-            code: errorCode,
-            details: errorDetail,
-        });
+        return next(error);
     }
 };
 
@@ -183,7 +170,7 @@ const chatStream = async (req, res) => {
         res.write(`data: ${JSON.stringify({ event: 'done', text: '', done: true, fullText })}\n\n`);
         res.end();
     } catch (error) {
-        console.error('[Chat Stream Error]', error?.message || error);
+        logger.error('Chat stream error', error);
         res.write(`data: ${JSON.stringify({ event: 'error', error: error?.message || 'Streaming failed', done: true })}\n\n`);
         res.end();
     }

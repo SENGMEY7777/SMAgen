@@ -14,6 +14,7 @@ const dbPool = require('./configs/db');
 const correlationMiddleware = require('./middleware/correlation');
 const errorHandler = require('./middleware/errorHandler');
 const { NotFoundError } = require('./utils/errors');
+const logger = require('./utils/logger');
 
 const app = express();
 app.disable('x-powered-by');
@@ -102,10 +103,22 @@ app.get('/', (req, res) => {
     });
 });
 
-app.get('/health', (req, res) => {
-    res.status(200).json({
-        status: 'UP',
+app.get('/health', async (req, res) => {
+    let dbStatus = 'disconnected';
+    try {
+        await dbPool.query('SELECT 1');
+        dbStatus = 'connected';
+    } catch {
+        // DB unreachable — reported below
+    }
+
+    const isHealthy = dbStatus === 'connected';
+    const statusCode = isHealthy ? 200 : 503;
+
+    res.status(statusCode).json({
+        status: isHealthy ? 'UP' : 'DOWN',
         uptime: process.uptime(),
+        database: dbStatus,
         timestamp: new Date().toISOString(),
     });
 });
@@ -127,22 +140,24 @@ const shutdown = async (signal) => {
     }
 
     isShuttingDown = true;
-    console.log(`[Shutdown] ${signal} received; draining connections`);
+    logger.info(`Graceful shutdown initiated`, { signal, pid: process.pid });
 
     const forceExit = setTimeout(() => {
-        console.error('[Shutdown] Graceful shutdown timed out');
+        logger.fatal('Graceful shutdown timed out', { signal });
         process.exit(1);
     }, 30000);
     forceExit.unref();
+
+    server.close();
 
     try {
         await io.close();
         await dbPool.end();
         clearTimeout(forceExit);
-        console.log('[Shutdown] Complete');
+        logger.info('Shutdown complete');
         process.exit(0);
     } catch (error) {
-        console.error('[Shutdown] Failed', error);
+        logger.fatal('Shutdown failed', error);
         process.exit(1);
     }
 };
@@ -156,7 +171,7 @@ process.on('message', (message) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server is running on port ${PORT}`);
+    logger.info(`Server started`, { port: PORT, pid: process.pid, nodeEnv: process.env.NODE_ENV || 'development' });
     if (typeof process.send === 'function') {
         process.send('ready');
     }

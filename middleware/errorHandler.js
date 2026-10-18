@@ -3,6 +3,28 @@
 const { AppError } = require('../utils/errors');
 const { getCorrelationId } = require('../utils/asyncContext');
 
+const DOMAIN_ERROR_MAP = {
+  INVALID_CREDENTIALS: { statusCode: 401, title: 'INVALID_CREDENTIALS' },
+  ACCOUNT_INACTIVE: { statusCode: 403, title: 'ACCOUNT_INACTIVE' },
+  FORBIDDEN: { statusCode: 403, title: 'FORBIDDEN' },
+  DEVELOPER_NOT_FOUND: { statusCode: 404, title: 'NOT_FOUND' },
+  USER_NOT_FOUND: { statusCode: 404, title: 'NOT_FOUND' },
+  APPROVAL_NOT_FOUND: { statusCode: 404, title: 'NOT_FOUND' },
+  WORKFLOW_NOT_FOUND: { statusCode: 404, title: 'NOT_FOUND' },
+  RUN_NOT_FOUND: { statusCode: 404, title: 'NOT_FOUND' },
+  APPROVAL_ALREADY_RESOLVED: { statusCode: 409, title: 'CONFLICT' },
+  INVALID_RUN_STATUS: { statusCode: 409, title: 'CONFLICT' },
+  RUN_ALREADY_PLANNED: { statusCode: 409, title: 'CONFLICT' },
+  VALIDATION_ERROR: { statusCode: 400, title: 'VALIDATION_ERROR' },
+  INVALID_API_KEY_HASH: { statusCode: 400, title: 'INVALID_API_KEY_HASH' },
+  INVALID_APPROVAL_STATUS: { statusCode: 400, title: 'BAD_REQUEST' },
+  REJECTION_REASON_REQUIRED: { statusCode: 400, title: 'BAD_REQUEST' },
+  LLM_UNAVAILABLE: { statusCode: 503, title: 'SERVICE_UNAVAILABLE' },
+  LLM_ERROR: { statusCode: 503, title: 'SERVICE_UNAVAILABLE' },
+  LLM_EMPTY_RESPONSE: { statusCode: 503, title: 'SERVICE_UNAVAILABLE' },
+  PLANNER_ERROR: { statusCode: 502, title: 'BAD_GATEWAY' },
+};
+
 function errorHandler(err, req, res, next) {
   if (res.headersSent) {
     return next(err);
@@ -35,22 +57,17 @@ function errorHandler(err, req, res, next) {
     statusCode = 400;
     title = 'MALFORMED_JSON';
     detail = 'The request payload contains invalid JSON syntax';
-  } else if (err.code === 'INVALID_CREDENTIALS' || err.message === 'Invalid email or password') {
-    statusCode = 401;
-    title = 'INVALID_CREDENTIALS';
+  } else if (err.code && DOMAIN_ERROR_MAP[err.code]) {
+    const mapped = DOMAIN_ERROR_MAP[err.code];
+    statusCode = mapped.statusCode;
+    title = mapped.title;
     detail = err.message;
-  } else if (err.code === 'ACCOUNT_INACTIVE') {
-    statusCode = 403;
-    title = 'ACCOUNT_INACTIVE';
-    detail = err.message;
-  } else if (err.code === 'DEVELOPER_NOT_FOUND' || err.message === 'User not found') {
-    statusCode = 404;
-    title = 'NOT_FOUND';
-    detail = err.message;
-  } else if (err.code === 'VALIDATION_ERROR' || err.code === 'INVALID_API_KEY_HASH') {
-    statusCode = 400;
-    title = err.code;
-    detail = err.message;
+  } else if (err.code === 'ER_DUP_ENTRY') {
+    statusCode = 409;
+    title = 'CONFLICT';
+    detail = err.message?.includes('uq_users_email')
+      ? 'A user with this email already exists'
+      : 'A duplicate record was detected';
   } else if (err.message === 'Email already exists') {
     statusCode = 409;
     title = 'CONFLICT';

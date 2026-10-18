@@ -44,7 +44,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) =
             throw error;
         }
 
-        if (!['PENDING', 'AWAITING_APPROVAL'].includes(executionRun.status)) {
+        if (!['PENDING', 'AWAITING_APPROVAL', 'RUNNING'].includes(executionRun.status)) {
             const error = new Error(`Workflow run cannot be started from ${executionRun.status} status`);
             error.code = 'INVALID_RUN_STATUS';
             throw error;

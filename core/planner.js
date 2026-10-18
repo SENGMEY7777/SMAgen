@@ -222,8 +222,8 @@ const planWorkflowRun = async ({
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
-1. 'executeCommand' - Run shell commands, tests, or scripts (in sandboxed workspace).
-2. 'fileManager' - Create, edit, read, list, or delete files inside the workspace.
+1. 'executeCommand' - Run allowlisted, read-only workspace commands such as cat, head, tail, grep, ls, pwd, find, and wc. Directory creation via mkdir is supported only inside the workspace and requires approval.
+2. 'fileManager' - Create, edit, read, list, delete files, or create directories inside the workspace. Use {"action":"createDirectory","path":"relative/directory"} for directory creation instead of shell commands.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
@@ -233,6 +233,8 @@ Rules:
 - Assign dependencies logically (for example, task_2 depends on ['task_1']).
 - Never create circular dependencies.
 - Every dependency must reference an existing nodeKey.
+- Never use an absolute path or a path containing '..'. The workspace is the only filesystem boundary available to workflow tasks.
+- For directory creation, prefer the fileManager tool with action 'createDirectory'.
 - Output must strictly follow this JSON structure:
 {
   "workflowTitle": "string",

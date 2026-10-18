@@ -25,7 +25,7 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
     Number.parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '10000', 10) || 10000,
 );
 const execFileAsync = promisify(execFile);
-const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
+const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir']);
 const COMMAND_BLACKLIST_PATTERNS = [
     /\bsudo(?:\s|$)/i,
     /\bmkfs(?:\.[a-z0-9_-]+)?(?:\s|$)/i,
@@ -150,7 +150,10 @@ const validateContent = (content) => {
 };
 
 const fileManager = async (input, workspacePath) => {
-    const action = input.action || 'read';
+    const requestedAction = String(input.action || 'read').trim().toLowerCase();
+    const action = requestedAction === 'createdirectory' || requestedAction === 'create_directory'
+        ? 'createDirectory'
+        : requestedAction;
     const filePath = await resolveWorkspaceFile(workspacePath, input.path, {
         allowWorkspaceRoot: action === 'list',
     });
@@ -188,6 +191,16 @@ const fileManager = async (input, workspacePath) => {
         return {
             action: 'delete',
             path: input.path,
+        };
+    }
+
+    if (action === 'mkdir' || action === 'createDirectory') {
+        await fs.mkdir(filePath, {recursive: input.recursive !== false});
+
+        return {
+            action: 'createDirectory',
+            path: input.path,
+            created: true,
         };
     }
 
@@ -541,6 +554,35 @@ const executeCommand = async (input, workspacePath) => {
             workspacePath,
             path.resolve(workspacePath, argument),
         );
+    }
+
+    if (commandName === 'mkdir') {
+        const allowedMkdirOptions = new Set(['-p', '--parents']);
+        const unsupportedOptions = args.filter(
+            (argument) => argument.startsWith('-') && !allowedMkdirOptions.has(argument),
+        );
+
+        if (unsupportedOptions.length) {
+            throw new Error(`Unsupported mkdir option: ${unsupportedOptions[0]}`);
+        }
+
+        const directoryArguments = args.filter((argument) => !argument.startsWith('-'));
+
+        if (!directoryArguments.length) {
+            throw new Error('mkdir requires at least one relative directory path');
+        }
+
+        await Promise.all(directoryArguments.map((argument) => fs.mkdir(
+            path.resolve(workspacePath, argument),
+            {recursive: true},
+        )));
+
+        return {
+            command,
+            stdout: '',
+            stderr: '',
+            exitCode: 0,
+        };
     }
 
     try {

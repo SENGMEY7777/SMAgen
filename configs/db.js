@@ -36,22 +36,26 @@ const getSslOptions = () => {
   return sslOptions;
 };
 
+const clusterWorkers = Number(process.env.PM2_INSTANCES) || require('node:os').availableParallelism?.() || require('node:os').cpus().length || 1;
+const perWorkerLimit = Math.max(2, Math.floor(config.database.pool.connectionLimit / clusterWorkers));
+const perWorkerMaxIdle = Math.max(1, Math.floor(config.database.pool.maxIdle / clusterWorkers));
+
 const pool = mysql.createPool({
-  host: config.database.host,
-  user: config.database.user,
-  password: process.env.DB_PASSWORD || process.env.DB_PASS,
-  database: config.database.name,
-  port: config.database.port,
-  waitForConnections: true,
-  connectionLimit: 20,
-  maxIdle: 10,
-  idleTimeout: 60000,
-  queueLimit: 0,
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 10000,
-  connectTimeout: 10000,
-  multipleStatements: false,
-  ssl: getSslOptions(),
+    host: config.database.host,
+    user: config.database.user,
+    password: process.env.DB_PASSWORD || process.env.DB_PASS,
+    database: config.database.name,
+    port: config.database.port,
+    waitForConnections: true,
+    connectionLimit: perWorkerLimit,
+    maxIdle: perWorkerMaxIdle,
+    idleTimeout: config.database.pool.idleTimeout,
+    queueLimit: 0,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
+    connectTimeout: 10000,
+    multipleStatements: false,
+    ssl: getSslOptions(),
 });
 
 module.exports = pool;

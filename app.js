@@ -21,6 +21,12 @@ app.disable('x-powered-by');
 app.set('json escape', true);
 app.use(correlationMiddleware);
 
+const workspaceRoot = path.resolve(
+    process.env.WORKSPACE_ROOT || path.join(process.cwd(), 'workspaces'),
+);
+const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|svg)$/i;
+const SAFE_WORKSPACE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
+
 const server = http.createServer(app);
 const io = initializeWebSocket(server);
 app.set('io', io);
@@ -80,6 +86,34 @@ app.use(compression({
 }));
 
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Generated images are served through a constrained route. Do not expose the
+// entire workspace tree because it may contain source files or other artifacts.
+app.get('/workspaces/:runId/:fileName', (req, res, next) => {
+    const {runId, fileName} = req.params;
+
+    if (
+        !SAFE_WORKSPACE_SEGMENT.test(runId)
+        || path.basename(fileName) !== fileName
+        || !IMAGE_EXTENSION_PATTERN.test(fileName)
+    ) {
+        return next(new NotFoundError('Generated image not found'));
+    }
+
+    const imagePath = path.resolve(workspaceRoot, runId, fileName);
+    const workspacePrefix = `${path.resolve(workspaceRoot)}${path.sep}`;
+
+    if (!imagePath.startsWith(workspacePrefix)) {
+        return next(new NotFoundError('Generated image not found'));
+    }
+
+    return res.sendFile(imagePath, {dotfiles: 'deny'}, (error) => {
+        if (error && !res.headersSent) {
+            next(error);
+        }
+    });
+});
+
 app.get('/stream', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'stream.html'));
 });

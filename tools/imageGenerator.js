@@ -29,6 +29,14 @@ async function imageGenerator(input, workspacePath) {
         ? rawFileName
         : `${rawFileName}.png`;
 
+    if (
+        path.basename(fileName) !== fileName
+        || fileName.split(/[\\/]/).includes('..')
+        || fileName.startsWith('.')
+    ) {
+        throw new Error('Image fileName must be a simple relative image filename');
+    }
+
     const outputPath = path.resolve(workspacePath, fileName);
     const aspectRatio = input.aspectRatio || '1:1';
 

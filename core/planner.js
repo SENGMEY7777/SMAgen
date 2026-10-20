@@ -45,6 +45,9 @@ const DIRECTORY_ACTIONS = new Set([
 
 const DESKTOP_FILE_ACTION = 'createDesktopFile';
 const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
+const IMAGE_GENERATOR_TOOL = 'imageGenerator';
+const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
+const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 
 const cleanRelativeDirectoryPath = (value) => {
     if (typeof value !== 'string') {
@@ -224,6 +227,85 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
     });
 };
 
+const cleanImageFileName = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const fileName = value.trim().replace(/^['"`]|['"`]$/g, '');
+    if (
+        !fileName
+        || fileName.startsWith('.')
+        || fileName.includes('/')
+        || fileName.includes('\\')
+        || fileName.includes('..')
+    ) {
+        return null;
+    }
+
+    return /\.(?:png|jpe?g|webp)$/i.test(fileName) ? fileName : `${fileName}.png`;
+};
+
+const inferImageFileName = (task, toolInput) => {
+    const directFileName = cleanImageFileName(toolInput.fileName);
+    if (directFileName) {
+        return directFileName;
+    }
+
+    const pathFileName = cleanImageFileName(toolInput.path);
+    if (pathFileName) {
+        return pathFileName;
+    }
+
+    const taskText = `${task.title || ''} ${task.instruction || ''}`;
+    const quotedFileName = taskText.match(/\b(?:file|filename)\b[\s\S]{0,40}["']([^"']+)["']/i);
+    return cleanImageFileName(quotedFileName?.[1]) || 'generated-image.png';
+};
+
+const isImageGenerationTask = (task, goalPrompt = '') => {
+    const assignedTool = task.assignedTool || task.assigned_tool;
+    if (assignedTool === IMAGE_GENERATOR_TOOL) {
+        return true;
+    }
+
+    const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+    return IMAGE_INTENT_PATTERN.test(taskText)
+        || (IMAGE_KEYWORD_PATTERN.test(taskText) && /\b(?:generate|create|draw|design|make|render)\b/i.test(taskText));
+};
+
+const normalizeImageTasks = (tasks, goalPrompt) => {
+    const imageGoal = IMAGE_INTENT_PATTERN.test(String(goalPrompt || ''));
+
+    return tasks.map((task) => {
+        if (!imageGoal && task.assignedTool !== IMAGE_GENERATOR_TOOL) {
+            return task;
+        }
+
+        if (!isImageGenerationTask(task, goalPrompt)) {
+            return task;
+        }
+
+        const toolInput = task.toolInput || {};
+        const prompt = typeof toolInput.prompt === 'string' && toolInput.prompt.trim()
+            ? toolInput.prompt.trim()
+            : String(task.instruction || task.title || goalPrompt).trim();
+        const aspectRatio = ['1:1', '16:9', '9:16', '4:3', '3:4'].includes(toolInput.aspectRatio)
+            ? toolInput.aspectRatio
+            : '1:1';
+
+        return {
+            ...task,
+            assignedTool: IMAGE_GENERATOR_TOOL,
+            toolInput: {
+                ...toolInput,
+                prompt,
+                fileName: inferImageFileName(task, toolInput),
+                aspectRatio,
+            },
+        };
+    });
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -271,6 +353,7 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // A Desktop directory task establishes the destination for dependent file writes.
         // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
         plan.tasks = normalizeDesktopFileTasks(plan.tasks, goalPrompt);
+        plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
     }
 
     return plan;
@@ -435,6 +518,7 @@ Rules:
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
 - Never assign executeCommand to a directory or folder creation task.
+- For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {

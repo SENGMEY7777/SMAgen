@@ -1,9 +1,12 @@
+const crypto = require('crypto');
 const {skGemini, skGeminiStream} = require('../configs/llm');
+const {executeTaskNode} = require('../core/executor');
 const sendResponse = require('../utils/responseHelper');
 const logger = require('../utils/logger');
 
 const MAX_HISTORY_MESSAGES = 12;
 const CHAT_MAX_OUTPUT_TOKENS = 8192;
+const IMAGE_REQUEST_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 
 const CHAT_SYSTEM_INSTRUCTION = `
 You are **KAIRO**, an elite AI Technical Lead, Principal Systems Architect, and Staff Engineer. Whenever you mention your name, always format it in bold as **KAIRO**.
@@ -95,6 +98,35 @@ const buildConversationRequest = ({message, history = []}) => {
     };
 };
 
+const isImageGenerationRequest = (message) => IMAGE_REQUEST_PATTERN.test(String(message || ''));
+
+const generateChatImage = async (message) => {
+    const runId = `chat-${crypto.randomUUID()}`;
+    const fileName = 'generated-image.png';
+    const execution = await executeTaskNode({
+        runId,
+        assignedTool: 'imageGenerator',
+        toolInput: {
+            prompt: message.trim(),
+            fileName,
+            aspectRatio: '1:1',
+        },
+    });
+    const output = execution?.outputData || {};
+
+    if (!output.imageUrl) {
+        throw new Error('The image generator did not return an image URL');
+    }
+
+    return {
+        runId,
+        fileName: output.fileName || fileName,
+        imageUrl: output.imageUrl,
+        engine: output.engine || 'Image generator',
+        message: `![Generated image](${output.imageUrl})\n\nGenerated with ${output.engine || 'the KAIRO image generator'}.`,
+    };
+};
+
 /**
  * Standard batch JSON chat response.
  */
@@ -115,6 +147,15 @@ const chat = async (req, res, next) => {
         if (!Array.isArray(history)) {
             return sendResponse(res, 400, false, 'Chat history must be an array', null, {
                 code: 'VALIDATION_ERROR',
+            });
+        }
+
+        if (isImageGenerationRequest(message)) {
+            const image = await generateChatImage(message);
+            return sendResponse(res, 200, true, 'Image generated successfully', {
+                message: image.message,
+                mode: 'image',
+                image,
             });
         }
 
@@ -157,6 +198,19 @@ const chatStream = async (req, res) => {
     res.write(`data: ${JSON.stringify({ event: 'start', timestamp: new Date().toISOString() })}\n\n`);
 
     try {
+        if (isImageGenerationRequest(message)) {
+            const image = await generateChatImage(message);
+            res.write(`data: ${JSON.stringify({ event: 'chunk', text: image.message, done: false })}\n\n`);
+            res.write(`data: ${JSON.stringify({
+                event: 'done',
+                text: '',
+                done: true,
+                fullText: image.message,
+                image,
+            })}\n\n`);
+            return res.end();
+        }
+
         const {contents, config} = buildConversationRequest({message, history});
 
         const fullText = await skGeminiStream(contents, {
@@ -180,4 +234,5 @@ module.exports = {
     chat,
     chatStream,
     buildConversationRequest,
+    isImageGenerationRequest,
 };

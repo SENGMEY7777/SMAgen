@@ -32,7 +32,116 @@ const TOOL_MAP = {
     image: 'imageGenerator',
 };
 
-const normalizePlan = (rawPlan) => {
+const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development').trim().toLowerCase() !== 'production'
+    && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';
+
+const DIRECTORY_ACTIONS = new Set([
+    'mkdir',
+    'createdirectory',
+    'create_directory',
+    'createdesktopdirectory',
+    'create_desktop_directory',
+]);
+
+const cleanRelativeDirectoryPath = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const cleaned = value
+        .trim()
+        .replace(/^['"`]|['"`]$/g, '')
+        .replace(/^desktop[\\/]+/i, '');
+
+    if (
+        !cleaned
+        || cleaned.startsWith('~')
+        || cleaned.startsWith('/')
+        || /^[A-Za-z]:[\\/]/.test(cleaned)
+        || cleaned.split(/[\\/]/).includes('..')
+    ) {
+        return null;
+    }
+
+    return cleaned;
+};
+
+const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
+    const directPath = cleanRelativeDirectoryPath(toolInput.path);
+
+    if (directPath) {
+        return directPath;
+    }
+
+    const command = String(toolInput.command || '').trim();
+    const mkdirMatch = command.match(/^mkdir(?:\s+(?:-p|--parents))?\s+(.+)$/i);
+
+    if (mkdirMatch) {
+        const commandArguments = mkdirMatch[1].match(/"[^"]*"|'[^']*'|\S+/g) || [];
+
+        for (let index = commandArguments.length - 1; index >= 0; index -= 1) {
+            const commandPath = cleanRelativeDirectoryPath(commandArguments[index]);
+
+            if (commandPath) {
+                return commandPath;
+            }
+        }
+    }
+
+    const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+    const quotedName = taskText.match(
+        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called)\b\s+["']([^"']+)["']/i,
+    );
+
+    if (quotedName) {
+        return cleanRelativeDirectoryPath(quotedName[1]);
+    }
+
+    const plainName = taskText.match(
+        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called)\b\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and)\b|[.,;!?]|$)/i,
+    );
+
+    return cleanRelativeDirectoryPath(plainName?.[1]);
+};
+
+const isDirectoryCreationTask = (task, toolInput) => {
+    const action = String(toolInput.action || '').trim().toLowerCase();
+    const command = String(toolInput.command || '').trim();
+    const taskText = `${task.title || ''} ${task.instruction || ''}`;
+
+    return DIRECTORY_ACTIONS.has(action)
+        || /^mkdir(?:\s|$)/i.test(command)
+        || /\b(?:create|make|add)\s+(?:a\s+)?(?:new\s+)?(?:directory|folder)\b/i.test(taskText)
+        || /\b(?:directory|folder)\s+(?:named|called)\b/i.test(taskText);
+};
+
+const normalizeDirectoryTask = (task, goalPrompt) => {
+    const toolInput = task.toolInput || {};
+
+    if (!isDirectoryCreationTask(task, toolInput)) {
+        return task;
+    }
+
+    const directoryPath = inferDirectoryPath(task, toolInput, goalPrompt);
+
+    if (!directoryPath) {
+        return task;
+    }
+
+    const targetText = `${goalPrompt || ''} ${task.title || ''} ${task.instruction || ''} ${toolInput.path || ''}`;
+    const targetsDesktop = LOCAL_DESKTOP_OUTPUT_ENABLED && /\bdesktop\b/i.test(targetText);
+
+    return {
+        ...task,
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: targetsDesktop ? 'createDesktopDirectory' : 'createDirectory',
+            path: directoryPath,
+        },
+    };
+};
+
+const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
     const plan = { ...rawPlan };
@@ -57,14 +166,14 @@ const normalizePlan = (rawPlan) => {
             const rawTool = String(task.assignedTool || 'executeCommand').trim();
             const normalizedTool = TOOL_MAP[rawTool.toLowerCase()] || rawTool.replace(/[^A-Za-z0-9_-]/g, '_') || 'executeCommand';
 
-            return {
+            return normalizeDirectoryTask({
                 nodeKey: cleanKey,
                 title: String(task.title || `Task ${idx + 1}`).trim(),
                 instruction: String(task.instruction || task.description || task.title || '').trim(),
                 dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
                 assignedTool: normalizedTool,
                 toolInput: (task.toolInput && typeof task.toolInput === 'object' && !Array.isArray(task.toolInput)) ? task.toolInput : {},
-            };
+            }, goalPrompt);
         });
 
         // Pass 2: Map and filter dependencies to ensure valid references only
@@ -80,8 +189,8 @@ const normalizePlan = (rawPlan) => {
     return plan;
 };
 
-const validatePlan = (rawPlan) => {
-    const normalized = normalizePlan(rawPlan);
+const validatePlan = (rawPlan, options = {}) => {
+    const normalized = normalizePlan(rawPlan, options);
 
     const schemaResult = dagPlanSchema.validate(normalized, {
         abortEarly: false,
@@ -183,9 +292,6 @@ const validateAcyclicGraph = (tasks) => {
 const planCache = new Map();
 const MAX_CACHE_SIZE = 100;
 
-const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development').trim().toLowerCase() !== 'production'
-    && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';
-
 const getCacheKey = (goalPrompt) => {
     return String(goalPrompt || '').trim().toLowerCase().replace(/\s+/g, ' ');
 };
@@ -217,7 +323,7 @@ const planWorkflowRun = async ({
     if (planCache.has(cacheKey)) {
         console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
         const cached = planCache.get(cacheKey);
-        validatedPlan = JSON.parse(JSON.stringify(cached));
+        validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {goalPrompt});
     }
 
     if (!validatedPlan) {
@@ -228,7 +334,7 @@ const planWorkflowRun = async ({
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
-1. 'executeCommand' - Run allowlisted, read-only workspace commands such as cat, head, tail, grep, ls, pwd, find, and wc. Directory creation via mkdir is supported only inside the workspace and requires approval.
+1. 'executeCommand' - Run allowlisted, read-only workspace commands such as cat, head, tail, grep, ls, pwd, find, and wc. Never use executeCommand or mkdir for directory creation; use fileManager instead.
 2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, or create a local Desktop directory when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
@@ -241,6 +347,7 @@ Rules:
 - Every dependency must reference an existing nodeKey.
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
+- Never assign executeCommand to a directory or folder creation task.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {
@@ -276,7 +383,7 @@ ${desktopInstruction}
                     io,
                 });
 
-                const parsed = validatePlan(rawResult.data);
+                const parsed = validatePlan(rawResult.data, {goalPrompt});
 
                 if (!parsed.success) {
                     lastPlannerError = new Error(parsed.error.message);
@@ -384,5 +491,7 @@ ${desktopInstruction}
 
 module.exports = {
     validateAcyclicGraph,
+    normalizePlan,
+    validatePlan,
     planWorkflowRun,
 };

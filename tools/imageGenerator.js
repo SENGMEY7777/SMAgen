@@ -7,6 +7,18 @@ const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
 
+const getImageDimensions = (aspectRatio) => ({
+    width: aspectRatio === '16:9' ? 1280 : aspectRatio === '9:16' ? 720 : 1024,
+    height: aspectRatio === '16:9' ? 720 : aspectRatio === '9:16' ? 1280 : 1024,
+});
+
+const createRemoteImageUrl = (prompt, aspectRatio) => {
+    const {width, height} = getImageDimensions(aspectRatio);
+    const encodedPrompt = encodeURIComponent(prompt);
+
+    return `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&nologo=true&enhance=true`;
+};
+
 /**
  * Tool: imageGenerator
  * Generates an image using Google Imagen 3 with seamless fallback to AI image engine
@@ -14,6 +26,7 @@ const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
  * @param {string} input.prompt - Description of the image to generate
  * @param {string} [input.fileName] - Output image filename (e.g. 'hero_banner.png')
  * @param {string} [input.aspectRatio] - '1:1', '16:9', '9:16', '4:3', '3:4'
+ * @param {string} [input.outputMode] - 'file' (default), 'url', or 'both'
  * @param {string} workspacePath - Output workspace folder
  */
 async function imageGenerator(input, workspacePath) {
@@ -39,16 +52,36 @@ async function imageGenerator(input, workspacePath) {
     }
 
     const outputPath = path.resolve(workspacePath, fileName);
-    const aspectRatio = input.aspectRatio || '1:1';
+    const validAspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
+    const aspectRatio = validAspectRatios.includes(input.aspectRatio) ? input.aspectRatio : '1:1';
+    const outputMode = String(input.outputMode || 'file').trim().toLowerCase();
+
+    if (!['file', 'url', 'both'].includes(outputMode)) {
+        throw new Error("imageGenerator outputMode must be 'file', 'url', or 'both'");
+    }
+
+    const remoteImageUrl = createRemoteImageUrl(prompt, aspectRatio);
+
+    // URL mode is intended for generated HTML and frontend assets. The browser
+    // loads the generated image directly from the image provider, so no local
+    // Desktop/workspace file is required.
+    if (outputMode === 'url') {
+        return {
+            success: true,
+            prompt,
+            aspectRatio,
+            outputMode,
+            engine: 'Pollinations remote image URL',
+            imageUrl: remoteImageUrl,
+            remoteImageUrl,
+        };
+    }
 
     // 1. Try the Gemini image model through generateContent. The older
     // generateImages/Imagen path requires Vertex AI and is not supported by
     // regular Gemini API keys.
     if (ai && ai.models && typeof ai.models.generateContent === 'function') {
         try {
-            const validAspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
-            const chosenAspect = validAspectRatios.includes(aspectRatio) ? aspectRatio : '1:1';
-
             const response = await ai.models.generateContent({
                 model: IMAGE_MODEL,
                 contents: prompt,
@@ -56,7 +89,7 @@ async function imageGenerator(input, workspacePath) {
                     responseModalities: ['IMAGE'],
                     responseFormat: {
                         image: {
-                            aspectRatio: chosenAspect,
+                            aspectRatio,
                         },
                     },
                 },
@@ -76,6 +109,7 @@ async function imageGenerator(input, workspacePath) {
                     filePath: outputPath,
                     engine: `Gemini image model (${IMAGE_MODEL})`,
                     imageUrl: `/workspaces/${path.basename(workspacePath)}/${fileName}`,
+                    ...(outputMode === 'both' ? {remoteImageUrl} : {}),
                 };
             }
 
@@ -87,10 +121,7 @@ async function imageGenerator(input, workspacePath) {
 
     // 2. High-Quality Free AI Image Engine Fallback
     try {
-        const encodedPrompt = encodeURIComponent(prompt);
-        const width = aspectRatio === '16:9' ? 1280 : aspectRatio === '9:16' ? 720 : 1024;
-        const height = aspectRatio === '16:9' ? 720 : aspectRatio === '9:16' ? 1280 : 1024;
-        const fallbackUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=${width}&height=${height}&nologo=true&enhance=true`;
+        const fallbackUrl = remoteImageUrl;
 
         const imageRes = await axios.get(fallbackUrl, {
             responseType: 'arraybuffer',
@@ -106,6 +137,7 @@ async function imageGenerator(input, workspacePath) {
             filePath: outputPath,
             engine: 'AI Image Engine (Pollinations)',
             imageUrl: `/workspaces/${path.basename(workspacePath)}/${fileName}`,
+            ...(outputMode === 'both' ? {remoteImageUrl} : {}),
         };
     } catch (fallbackError) {
         throw new Error(`Failed to generate image: ${fallbackError.message}`);

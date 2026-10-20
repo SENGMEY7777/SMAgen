@@ -99,6 +99,7 @@ const buildConversationRequest = ({message, history = []}) => {
 };
 
 const isImageGenerationRequest = (message) => IMAGE_REQUEST_PATTERN.test(String(message || ''));
+const wantsRemoteImageUrl = (message) => /\b(?:image|photo|picture|banner)\b[\s\S]{0,80}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:image\s+)?(?:url|urls|link|links)\b/i.test(String(message || ''));
 
 const generateChatImage = async (message) => {
     const runId = `chat-${crypto.randomUUID()}`;
@@ -110,6 +111,7 @@ const generateChatImage = async (message) => {
             prompt: message.trim(),
             fileName,
             aspectRatio: '1:1',
+            ...(wantsRemoteImageUrl(message) ? {outputMode: 'url'} : {}),
         },
     });
     const output = execution?.outputData || {};

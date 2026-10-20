@@ -48,6 +48,7 @@ const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
 const IMAGE_GENERATOR_TOOL = 'imageGenerator';
 const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
+const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image\s+)?(?:url|urls|link|links)\b/i;
 const DESKTOP_ASSET_INTENT_PATTERN = /\b(?:list|read|inspect|scan|find|load|use|utili[sz]e|map|import|copy)\b[\s\S]{0,120}\b(?:asset|image|banner|product|file|folder|directory)\b/i;
 const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\s'"`]+(?:[\\/][^\s'"`]+)*)/i;
 
@@ -364,6 +365,8 @@ const isImageGenerationTask = (task) => {
         || (IMAGE_KEYWORD_PATTERN.test(taskText) && /\b(?:generate|create|draw|design|make|render)\b/i.test(taskText));
 };
 
+const wantsRemoteImageUrls = (goalPrompt) => IMAGE_URL_INTENT_PATTERN.test(String(goalPrompt || ''));
+
 const normalizeNonImageTask = (task) => {
     const toolInput = task.toolInput || {};
     const action = String(toolInput.action || '').trim().toLowerCase();
@@ -426,6 +429,7 @@ const normalizeNonImageTask = (task) => {
 
 const normalizeImageTasks = (tasks, goalPrompt) => {
     const imageGoal = IMAGE_INTENT_PATTERN.test(String(goalPrompt || ''));
+    const remoteImageUrls = wantsRemoteImageUrls(goalPrompt);
 
     return tasks.map((task) => {
         const imageTask = isImageGenerationTask(task);
@@ -458,6 +462,7 @@ const normalizeImageTasks = (tasks, goalPrompt) => {
                 prompt,
                 fileName: inferImageFileName(task, toolInput),
                 aspectRatio,
+                ...(remoteImageUrls ? {outputMode: 'url'} : {}),
             },
         };
     });
@@ -668,7 +673,7 @@ Available Tools:
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
-6. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, and toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3').
+6. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3'), and optional toolInput.outputMode ('file', 'url', or 'both').
 
 Rules:
 - Assign dependencies logically (for example, task_2 depends on ['task_1']).
@@ -679,6 +684,7 @@ Rules:
 - Never assign executeCommand to a directory or folder creation task.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
+- If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {

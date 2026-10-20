@@ -76,6 +76,7 @@ Rules:
 - For directory creation, use fileManager with action 'createDirectory' and a relative path inside the workspace. Never use an absolute path or '..'.
 - When local Desktop output is explicitly enabled and the task targets the host Desktop, use fileManager with action 'createDesktopDirectory' and a relative folder name.
 - When listing local Desktop assets, keep the assigned tool as fileManager and use action 'listDesktopDirectory' with a relative path such as 'E-Commerce'; never replace it with executeCommand or an absolute path.
+- When the task requests image links or image URLs, keep imageGenerator outputMode as 'url' so generated HTML can reference the remote image directly.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

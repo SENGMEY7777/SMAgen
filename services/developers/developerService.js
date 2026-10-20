@@ -48,20 +48,26 @@ const register = async (body) => {
 
 const verifyEmail = async (token) => {
     if (!token || typeof token !== 'string') {
-        throw new Error('Verification token is required');
+        const error = new Error('Verification token is required');
+        error.code = 'VERIFICATION_TOKEN_REQUIRED';
+        throw error;
     }
 
     const user = await developerModel.findUserByVerificationToken(token);
     if (!user) {
-        throw new Error('Invalid verification token');
+        const error = new Error('Invalid verification token');
+        error.code = 'INVALID_VERIFICATION_TOKEN';
+        throw error;
     }
 
     if (user.is_verified) {
-        return { message: 'Email is already verified' };
+        return { message: 'Email is already verified', id: user.id, email: user.email, is_verified: 1 };
     }
 
     if (user.verification_expires && new Date(user.verification_expires) < new Date()) {
-        throw new Error('Verification token has expired');
+        const error = new Error('Verification token has expired');
+        error.code = 'EXPIRED_VERIFICATION_TOKEN';
+        throw error;
     }
 
     await developerModel.verifyUserEmail(user.id);

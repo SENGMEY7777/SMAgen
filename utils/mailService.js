@@ -65,7 +65,13 @@ const safeSendMail = async (transporter, mailOptions) => {
 };
 
 const getAppUrl = () => {
-  return (process.env.APP_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, '');
+  if (process.env.APP_URL) {
+    return process.env.APP_URL.replace(/\/+$/, '');
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return 'https://kairo-sengmey-dev.duckdns.org';
+  }
+  return `http://localhost:${process.env.PORT || 8080}`;
 };
 
 const getFromHeader = () => {

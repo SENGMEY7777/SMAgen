@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const path = require('path');
 
 const {generateStructureClient} = require('../configs/llm');
 const {
@@ -46,6 +47,50 @@ const DIRECTORY_ACTIONS = new Set([
 const DESKTOP_FILE_ACTION = 'createDesktopFile';
 const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
 const IMAGE_GENERATOR_TOOL = 'imageGenerator';
+const DEFAULT_KAIRO_LANDING_PAGE = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KAIRO | Autonomous Intelligence</title>
+  <style>
+    :root { --ink:#0b1020; --muted:#70798a; --gold:#c69a4b; --cream:#f7f4ee; }
+    * { box-sizing:border-box; }
+    body { margin:0; color:var(--ink); background:var(--cream); font-family:Inter,system-ui,sans-serif; }
+    .wrap { max-width:1120px; margin:auto; padding:0 28px; }
+    header { display:flex; justify-content:space-between; align-items:center; padding:28px 0; border-bottom:1px solid #ddd8cf; }
+    .brand { font-weight:800; letter-spacing:.22em; }
+    nav { display:flex; gap:24px; color:var(--muted); font-size:14px; }
+    .hero { display:grid; grid-template-columns:1.1fr .9fr; gap:64px; align-items:center; min-height:620px; }
+    .eyebrow { color:var(--gold); font-size:12px; font-weight:700; letter-spacing:.18em; text-transform:uppercase; }
+    h1 { max-width:700px; margin:20px 0; font:400 clamp(54px,8vw,92px)/.98 Georgia,serif; letter-spacing:-.06em; }
+    h1 em { color:var(--gold); font-style:normal; }
+    .lead { max-width:520px; color:var(--muted); font-size:18px; line-height:1.75; }
+    .button { display:inline-block; margin-top:26px; padding:15px 24px; color:white; background:var(--ink); border-radius:999px; font-size:13px; font-weight:700; text-decoration:none; }
+    .visual { min-height:470px; border-radius:240px 240px 18px 18px; background:linear-gradient(145deg,#1d263a,#b18a4b); box-shadow:0 30px 80px #0b102033; display:grid; place-items:center; color:white; }
+    .visual strong { font:400 82px Georgia,serif; letter-spacing:-.08em; }
+    .section { padding:76px 0; border-top:1px solid #ddd8cf; }
+    h2 { font:400 46px Georgia,serif; margin:12px 0 34px; }
+    .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+    article { padding:26px; background:white; border:1px solid #e3ded5; }
+    article h3 { margin:48px 0 10px; font:400 27px Georgia,serif; }
+    article p, footer { color:var(--muted); line-height:1.7; }
+    footer { display:flex; justify-content:space-between; gap:20px; padding:30px 0; font-size:13px; }
+    @media (max-width:760px) { nav { display:none; } .hero { grid-template-columns:1fr; padding:58px 0; } .grid { grid-template-columns:1fr; } footer { display:block; } footer > * { margin:12px 0; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header><div class="brand">KAIRO</div><nav><a href="#systems">Systems</a><a href="#about">About</a><a href="#contact">Contact</a></nav><span class="eyebrow">Operational</span></header>
+    <main>
+      <section class="hero"><div><div class="eyebrow">Enterprise autonomous intelligence</div><h1>Clarity for the <em>complex.</em></h1><p class="lead">KAIRO orchestrates ambitious operations with precision, translating strategy into resilient, measurable execution across every layer of your organization.</p><a class="button" href="#systems">Explore KAIRO</a></div><div class="visual"><strong>K</strong></div></section>
+      <section class="section" id="systems"><div class="eyebrow">Built for the decisive</div><h2>Intelligence with structure.</h2><div class="grid"><article><div class="eyebrow">01 / 03</div><h3>Command</h3><p>Turn high-level intent into clear, executable systems of work.</p></article><article><div class="eyebrow">02 / 03</div><h3>Orchestrate</h3><p>Coordinate agents, tools, and people through one intelligent control plane.</p></article><article><div class="eyebrow">03 / 03</div><h3>Advance</h3><p>Learn from every outcome and continuously improve operational performance.</p></article></div></section>
+      <section class="section" id="about"><div class="eyebrow">Engineered by Vann Sengmey</div><h2>Make complexity your advantage.</h2><p class="lead">KAIRO gives modern enterprises the architecture to move with intention and execute without compromise.</p></section>
+    </main>
+    <footer id="contact"><strong>KAIRO</strong><span>Autonomous intelligence for consequential work.</span><span>© 2026 KAIRO Systems</span></footer>
+  </div>
+</body>
+</html>`;
 const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image\s+)?(?:url|urls|link|links)\b/i;
@@ -390,6 +435,279 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
     });
 };
 
+const isIndexHtmlRequest = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    return LOCAL_DESKTOP_OUTPUT_ENABLED
+        && /\bindex\.html\b/i.test(text)
+        && /\b(?:create|generate|build|make|write)\b/i.test(text)
+        && /\b(?:landing\s+page|homepage|web\s*page|website|html)\b/i.test(text);
+};
+
+const ensureDesktopIndexTask = (tasks, goalPrompt) => {
+    if (!isIndexHtmlRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const directoryPath = cleanRelativeDirectoryPath(
+        tasks.find(isDesktopDirectoryTask)?.toolInput?.path
+            || inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+
+    if (!directoryPath) {
+        return tasks;
+    }
+
+    const nextTasks = [...tasks];
+    let directoryTask = nextTasks.find((task) => (
+        isDesktopDirectoryTask(task)
+        && cleanRelativeDirectoryPath(task.toolInput?.path) === directoryPath
+    ));
+
+    if (!directoryTask) {
+        const existingKeys = new Set(nextTasks.map((task) => task.nodeKey));
+        let nodeKey = 'create_desktop_directory';
+        let suffix = 2;
+        while (existingKeys.has(nodeKey)) {
+            nodeKey = `create_desktop_directory_${suffix}`;
+            suffix += 1;
+        }
+
+        directoryTask = {
+            nodeKey,
+            title: `Create Desktop directory ${directoryPath}`,
+            instruction: `Create a directory named ${directoryPath} on the local Desktop.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: directoryPath,
+            },
+        };
+        nextTasks.unshift(directoryTask);
+    }
+
+    const isIndexTask = (task) => {
+        const taskPath = String(task.toolInput?.path || '').replace(/\\/g, '/');
+        const taskText = `${task.title || ''} ${task.instruction || ''} ${taskPath}`;
+        return /(?:^|\/)index\.html$/i.test(taskPath) || /\bindex\.html\b/i.test(taskText);
+    };
+
+    const existingIndexTask = nextTasks.find(isIndexTask);
+    if (existingIndexTask) {
+        const requestedPath = cleanRelativeFilePath(existingIndexTask.toolInput?.path) || 'index.html';
+        const desktopPath = requestedPath === directoryPath || requestedPath.startsWith(`${directoryPath}/`)
+            ? requestedPath
+            : `${directoryPath}/${requestedPath}`;
+
+        return nextTasks.map((task) => {
+            if (task !== existingIndexTask) {
+                return task;
+            }
+
+            return {
+                ...task,
+                assignedTool: 'fileManager',
+                dependencies: [...new Set([...(task.dependencies || []), directoryTask.nodeKey])],
+                toolInput: {
+                    ...task.toolInput,
+                    action: DESKTOP_FILE_ACTION,
+                    mode: task.toolInput?.mode || 'create',
+                    path: desktopPath,
+                    content: typeof task.toolInput?.content === 'string' && task.toolInput.content.trim()
+                        ? task.toolInput.content
+                        : DEFAULT_KAIRO_LANDING_PAGE,
+                },
+            };
+        });
+    }
+
+    const existingKeys = new Set(nextTasks.map((task) => task.nodeKey));
+    let nodeKey = 'create_desktop_index_html';
+    let suffix = 2;
+    while (existingKeys.has(nodeKey)) {
+        nodeKey = `create_desktop_index_html_${suffix}`;
+        suffix += 1;
+    }
+
+    return [
+        ...nextTasks,
+        {
+            nodeKey,
+            title: 'Generate KAIRO landing page index.html',
+            instruction: 'Create a modern luxury KAIRO landing page introducing KAIRO as the enterprise autonomous AI orchestrator engineered by Vann Sengmey.',
+            dependencies: [directoryTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: DESKTOP_FILE_ACTION,
+                mode: 'create',
+                path: `${directoryPath}/index.html`,
+                content: DEFAULT_KAIRO_LANDING_PAGE,
+            },
+        },
+    ];
+};
+
+const extractDesktopFileNames = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    const candidates = new Set();
+    const filePattern = /\b[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html?|css|js|mjs|cjs|ts|tsx|jsx|json|java|py|go|rs|md|txt|vue|xml|yml|yaml|sql)\b/gi;
+
+    for (const match of text.matchAll(filePattern)) {
+        candidates.add(match[0]);
+    }
+
+    const quotedFilePattern = /\bfile\b[\s\S]{0,40}\b(?:named|called|name)\b\s*["']([^"']+)["']/gi;
+    for (const match of text.matchAll(quotedFilePattern)) {
+        candidates.add(match[1]);
+    }
+
+    return [...candidates]
+        .map((candidate) => cleanRelativeFilePath(candidate))
+        .filter((candidate) => candidate && !candidate.includes('/'))
+        .filter((candidate, index, all) => all.indexOf(candidate) === index);
+};
+
+const fallbackDesktopFileContent = (fileName, goalPrompt) => {
+    const extension = path.extname(fileName).toLowerCase();
+    const baseName = path.basename(fileName, extension);
+    const className = baseName
+        .replace(/[^A-Za-z0-9]+/g, ' ')
+        .split(' ')
+        .filter(Boolean)
+        .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
+        .join('') || 'Main';
+
+    if (extension === '.html' || extension === '.htm') {
+        return DEFAULT_KAIRO_LANDING_PAGE;
+    }
+
+    if (extension === '.java') {
+        const message = /hello\s+world/i.test(goalPrompt) ? 'Hello World' : 'Generated by KAIRO';
+        return `public class ${className} {\n    public static void main(String[] args) {\n        System.out.println("${message}");\n    }\n}\n`;
+    }
+
+    if (extension === '.json') {
+        return `${JSON.stringify({generatedBy: 'KAIRO', file: fileName}, null, 2)}\n`;
+    }
+
+    if (extension === '.md' || extension === '.txt') {
+        return `# ${baseName}\n\nGenerated by KAIRO.\n`;
+    }
+
+    if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
+        return `// Generated by KAIRO\nconsole.log("KAIRO is ready");\n`;
+    }
+
+    return `/* Generated by KAIRO */\n`;
+};
+
+const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
+    if (!isExplicitDesktopWriteRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const fileNames = extractDesktopFileNames(goalPrompt);
+    if (!fileNames.length) {
+        return tasks;
+    }
+
+    const directoryPath = cleanRelativeDirectoryPath(
+        tasks.find(isDesktopDirectoryTask)?.toolInput?.path
+            || inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+
+    if (!directoryPath) {
+        return tasks;
+    }
+
+    const nextTasks = [...tasks];
+    let directoryTask = nextTasks.find((task) => (
+        isDesktopDirectoryTask(task)
+        && cleanRelativeDirectoryPath(task.toolInput?.path) === directoryPath
+    ));
+
+    if (!directoryTask) {
+        const existingKeys = new Set(nextTasks.map((task) => task.nodeKey));
+        let nodeKey = 'create_desktop_directory';
+        let suffix = 2;
+        while (existingKeys.has(nodeKey)) {
+            nodeKey = `create_desktop_directory_${suffix}`;
+            suffix += 1;
+        }
+
+        directoryTask = {
+            nodeKey,
+            title: `Create Desktop directory ${directoryPath}`,
+            instruction: `Create a directory named ${directoryPath} on the local Desktop.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: directoryPath,
+            },
+        };
+        nextTasks.unshift(directoryTask);
+    }
+
+    for (const fileName of fileNames) {
+        const existingTask = nextTasks.find((task) => {
+            const taskPath = String(task.toolInput?.path || '').replace(/\\/g, '/');
+            const taskText = `${task.title || ''} ${task.instruction || ''} ${taskPath}`;
+            return path.basename(taskPath).toLowerCase() === fileName.toLowerCase()
+                || new RegExp(`\\b${fileName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i').test(taskText);
+        });
+
+        if (existingTask) {
+            const requestedPath = cleanRelativeFilePath(existingTask.toolInput?.path) || fileName;
+            const desktopPath = requestedPath === directoryPath || requestedPath.startsWith(`${directoryPath}/`)
+                ? requestedPath
+                : `${directoryPath}/${requestedPath}`;
+
+            const taskIndex = nextTasks.indexOf(existingTask);
+            nextTasks[taskIndex] = {
+                ...existingTask,
+                assignedTool: 'fileManager',
+                dependencies: [...new Set([...(existingTask.dependencies || []), directoryTask.nodeKey])],
+                toolInput: {
+                    ...existingTask.toolInput,
+                    action: DESKTOP_FILE_ACTION,
+                    mode: existingTask.toolInput?.mode || 'create',
+                    path: desktopPath,
+                    content: typeof existingTask.toolInput?.content === 'string' && existingTask.toolInput.content.trim()
+                        ? existingTask.toolInput.content
+                        : fallbackDesktopFileContent(fileName, goalPrompt),
+                },
+            };
+            continue;
+        }
+
+        const existingKeys = new Set(nextTasks.map((task) => task.nodeKey));
+        const baseKey = `create_desktop_${path.basename(fileName).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`;
+        let nodeKey = baseKey;
+        let suffix = 2;
+        while (existingKeys.has(nodeKey)) {
+            nodeKey = `${baseKey}_${suffix}`;
+            suffix += 1;
+        }
+
+        nextTasks.push({
+            nodeKey,
+            title: `Create Desktop file ${fileName}`,
+            instruction: `Create ${fileName} inside the Desktop directory ${directoryPath}.`,
+            dependencies: [directoryTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: DESKTOP_FILE_ACTION,
+                mode: 'create',
+                path: `${directoryPath}/${fileName}`,
+                content: fallbackDesktopFileContent(fileName, goalPrompt),
+            },
+        });
+    }
+
+    return nextTasks;
+};
+
 const cleanImageFileName = (value) => {
     if (typeof value !== 'string') {
         return null;
@@ -582,6 +900,12 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // A Desktop directory task establishes the destination for dependent file writes.
         // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
         plan.tasks = normalizeDesktopFileTasks(plan.tasks, goalPrompt);
+        // A direct Desktop request must always produce both the directory and index.html task,
+        // even when the LLM returns an incomplete plan containing only the directory step.
+        plan.tasks = ensureDesktopIndexTask(plan.tasks, goalPrompt);
+        // General Desktop prompts may mention Java, JSON, Vue, Markdown, or other files.
+        // Ensure every explicitly requested filename has a safe Desktop file task too.
+        plan.tasks = ensureDesktopPromptFileTasks(plan.tasks, goalPrompt);
         // Desktop asset discovery must use the constrained fileManager path, never a shell command.
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);

@@ -201,6 +201,8 @@ const fileManager = async (input, workspacePath) => {
         ? 'createDirectory'
         : requestedAction === 'createdesktopdirectory' || requestedAction === 'create_desktop_directory'
             ? 'createDesktopDirectory'
+        : requestedAction === 'createdesktopfile' || requestedAction === 'create_desktop_file'
+            ? 'createDesktopFile'
         : requestedAction;
 
     if (action === 'createDesktopDirectory') {
@@ -215,9 +217,16 @@ const fileManager = async (input, workspacePath) => {
         };
     }
 
-    const filePath = await resolveWorkspaceFile(workspacePath, input.path, {
-        allowWorkspaceRoot: action === 'list',
-    });
+    const desktopFileAction = action === 'createDesktopFile';
+    if (desktopFileAction && !['create', 'write', 'update', 'append'].includes(input.mode || 'create')) {
+        throw new Error('createDesktopFile supports create, write, update, or append through the mode field');
+    }
+
+    const filePath = desktopFileAction
+        ? await resolveLocalDesktopPath(input.path)
+        : await resolveWorkspaceFile(workspacePath, input.path, {
+            allowWorkspaceRoot: action === 'list',
+        });
 
     if (action === 'read') {
         const content = await fs.readFile(filePath, 'utf8');
@@ -265,27 +274,30 @@ const fileManager = async (input, workspacePath) => {
         };
     }
 
-    if (!['create', 'write', 'update', 'append'].includes(action)) {
+    const writeAction = desktopFileAction ? String(input.mode || 'create').trim().toLowerCase() : action;
+
+    if (!['create', 'write', 'update', 'append'].includes(writeAction)) {
         throw new Error(`Unsupported fileManager action: ${action}`);
     }
 
     validateContent(input.content);
     await fs.mkdir(path.dirname(filePath), {recursive: true});
 
-    if (action === 'create') {
+    if (writeAction === 'create') {
         await fs.writeFile(filePath, input.content, {
             encoding: 'utf8',
             flag: input.overwrite === true ? 'w' : 'wx',
         });
-    } else if (action === 'write' || action === 'update') {
+    } else if (writeAction === 'write' || writeAction === 'update') {
         await fs.writeFile(filePath, input.content, 'utf8');
-    } else if (action === 'append') {
+    } else if (writeAction === 'append') {
         await fs.appendFile(filePath, input.content, 'utf8');
     }
 
     return {
-        action,
+        action: desktopFileAction ? 'createDesktopFile' : action,
         path: input.path,
+        ...(desktopFileAction ? {location: 'local Desktop'} : {}),
         bytesWritten: Buffer.byteLength(input.content, 'utf8'),
     };
 };

@@ -43,6 +43,9 @@ const DIRECTORY_ACTIONS = new Set([
     'create_desktop_directory',
 ]);
 
+const DESKTOP_FILE_ACTION = 'createDesktopFile';
+const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
+
 const cleanRelativeDirectoryPath = (value) => {
     if (typeof value !== 'string') {
         return null;
@@ -90,7 +93,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
 
     const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
     const quotedName = taskText.match(
-        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called)\b\s+["']([^"']+)["']/i,
+        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called|name)\b\s+["']([^"']+)["']/i,
     );
 
     if (quotedName) {
@@ -98,7 +101,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const plainName = taskText.match(
-        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called)\b\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and)\b|[.,;!?]|$)/i,
+        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called|name)\b\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and)\b|[.,;!?]|$)/i,
     );
 
     return cleanRelativeDirectoryPath(plainName?.[1]);
@@ -139,6 +142,86 @@ const normalizeDirectoryTask = (task, goalPrompt) => {
             path: directoryPath,
         },
     };
+};
+
+const cleanRelativeFilePath = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    const cleaned = value
+        .trim()
+        .replace(/^['"`]|['"`]$/g, '')
+        .replace(/^desktop[\\/]+/i, '');
+
+    if (
+        !cleaned
+        || cleaned.startsWith('~')
+        || cleaned.startsWith('/')
+        || /^[A-Za-z]:[\\/]/.test(cleaned)
+        || cleaned.split(/[\\/]/).includes('..')
+    ) {
+        return null;
+    }
+
+    return cleaned.replace(/\\/g, '/');
+};
+
+const isDesktopDirectoryTask = (task) => {
+    const action = String(task.toolInput?.action || '').trim().toLowerCase();
+    return action === 'createdesktopdirectory' || action === 'create_desktop_directory';
+};
+
+const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
+    const desktopDirectoryTasks = tasks.filter(isDesktopDirectoryTask);
+    const desktopGoal = LOCAL_DESKTOP_OUTPUT_ENABLED && /\bdesktop\b/i.test(String(goalPrompt || ''));
+
+    if (!desktopDirectoryTasks.length && !desktopGoal) {
+        return tasks;
+    }
+
+    const inferredDirectoryPath = desktopDirectoryTasks[0]?.toolInput?.path
+        || inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt);
+
+    return tasks.map((task) => {
+        if (task.assignedTool !== 'fileManager') {
+            return task;
+        }
+
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (!FILE_WRITE_ACTIONS.has(action)) {
+            return task;
+        }
+
+        const dependsOnDesktopDirectory = task.dependencies.some((dependency) => {
+            return desktopDirectoryTasks.some((directoryTask) => directoryTask.nodeKey === dependency);
+        });
+
+        if (!dependsOnDesktopDirectory && !desktopGoal) {
+            return task;
+        }
+
+        const filePath = cleanRelativeFilePath(task.toolInput.path);
+        if (!filePath) {
+            return task;
+        }
+
+        const directoryPath = cleanRelativeDirectoryPath(inferredDirectoryPath);
+        const desktopPath = directoryPath
+            && filePath !== directoryPath
+            && !filePath.startsWith(`${directoryPath}/`)
+            ? `${directoryPath}/${filePath}`
+            : filePath;
+
+        return {
+            ...task,
+            toolInput: {
+                ...task.toolInput,
+                action: DESKTOP_FILE_ACTION,
+                path: desktopPath,
+            },
+        };
+    });
 };
 
 const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
@@ -184,6 +267,10 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
                 .filter((dep) => existingKeys.has(dep) && dep !== task.nodeKey);
             task.dependencies = [...new Set(task.dependencies)];
         });
+
+        // A Desktop directory task establishes the destination for dependent file writes.
+        // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
+        plan.tasks = normalizeDesktopFileTasks(plan.tasks, goalPrompt);
     }
 
     return plan;

@@ -124,6 +124,28 @@ const isDirectoryCreationTask = (task, toolInput) => {
         || /\b(?:directory|folder)\s+(?:named|called)\b/i.test(taskText);
 };
 
+const isExplicitDesktopWriteRequest = (value) => {
+    const text = String(value || '');
+    const hasWriteVerb = /\b(?:create|make|add|write|save|put|place|export|copy)\b/i.test(text);
+    const hasDesktopTarget = /\bdesktop\b/i.test(text);
+    const hasFileOrDirectoryTarget = /\b(?:file|files|folder|directory|project)\b/i.test(text);
+
+    return LOCAL_DESKTOP_OUTPUT_ENABLED && hasWriteVerb && hasDesktopTarget && hasFileOrDirectoryTarget;
+};
+
+const isDesktopExportRequest = (value) => {
+    const text = String(value || '');
+
+    return LOCAL_DESKTOP_OUTPUT_ENABLED
+        && ((/\b(?:local\s+computer|finder)\b/i.test(text)
+                && /\b(?:show|save|export|copy|folder|directory|project|files?)\b/i.test(text))
+            || /\b(?:show|export|copy|save)\b[\s\S]{0,80}\b(?:folder|directory|project|files?|desktop)\b/i.test(text));
+};
+
+const isDesktopOutputRequest = (value) => {
+    return isExplicitDesktopWriteRequest(value) || isDesktopExportRequest(value);
+};
+
 const normalizeDirectoryTask = (task, goalPrompt) => {
     const toolInput = task.toolInput || {};
 
@@ -138,7 +160,7 @@ const normalizeDirectoryTask = (task, goalPrompt) => {
     }
 
     const targetText = `${goalPrompt || ''} ${task.title || ''} ${task.instruction || ''} ${toolInput.path || ''}`;
-    const targetsDesktop = LOCAL_DESKTOP_OUTPUT_ENABLED && /\bdesktop\b/i.test(targetText);
+    const targetsDesktop = isExplicitDesktopWriteRequest(targetText);
 
     return {
         ...task,
@@ -268,6 +290,49 @@ const normalizeDesktopAssetTasks = (tasks, goalPrompt) => tasks.map((task) => {
     };
 });
 
+const shouldExportWorkspaceToDesktop = (goalPrompt, tasks) => {
+    if (!isDesktopOutputRequest(goalPrompt)) {
+        return false;
+    }
+
+    const hasExistingDesktopFileOutput = tasks.some((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        return action === 'createdesktopfile' || action === 'create_desktop_file'
+            || action === 'exportworkspacetodesktop' || action === 'export_workspace_to_desktop';
+    });
+
+    return !hasExistingDesktopFileOutput;
+};
+
+const appendDesktopExportTask = (tasks, goalPrompt) => {
+    if (!shouldExportWorkspaceToDesktop(goalPrompt, tasks)) {
+        return tasks;
+    }
+
+    const existingKeys = new Set(tasks.map((task) => task.nodeKey));
+    let nodeKey = 'export_desktop';
+    let suffix = 2;
+    while (existingKeys.has(nodeKey)) {
+        nodeKey = `export_desktop_${suffix}`;
+        suffix += 1;
+    }
+
+    return [
+        ...tasks,
+        {
+            nodeKey,
+            title: 'Export generated project to Desktop',
+            instruction: 'Copy the completed workflow workspace to a local Desktop folder named kairo-ecommerce.',
+            dependencies: tasks.map((task) => task.nodeKey),
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'exportWorkspaceToDesktop',
+                path: process.env.LOCAL_DESKTOP_OUTPUT_DIR || 'kairo-ecommerce',
+            },
+        },
+    ];
+};
+
 const isDesktopDirectoryTask = (task) => {
     const action = String(task.toolInput?.action || '').trim().toLowerCase();
     return action === 'createdesktopdirectory' || action === 'create_desktop_directory';
@@ -275,7 +340,7 @@ const isDesktopDirectoryTask = (task) => {
 
 const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
     const desktopDirectoryTasks = tasks.filter(isDesktopDirectoryTask);
-    const desktopGoal = LOCAL_DESKTOP_OUTPUT_ENABLED && /\bdesktop\b/i.test(String(goalPrompt || ''));
+    const desktopGoal = isExplicitDesktopWriteRequest(goalPrompt);
 
     if (!desktopDirectoryTasks.length && !desktopGoal) {
         return tasks;
@@ -520,6 +585,8 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // Desktop asset discovery must use the constrained fileManager path, never a shell command.
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
+        // Local development users should be able to open the generated project in Finder.
+        plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
     }
 
     return plan;
@@ -664,14 +731,14 @@ const planWorkflowRun = async ({
 
     if (!validatedPlan) {
         const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
-            ? `- Local Desktop access is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true}; never use executeCommand for Desktop paths.`
+            ? `- Local Desktop access is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"kairo-ecommerce"}; never use executeCommand for Desktop paths.`
             : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
 1. 'executeCommand' - Run allowlisted, read-only workspace commands such as cat, head, tail, grep, ls, pwd, find, and wc. Never use executeCommand or mkdir for directory creation; use fileManager instead.
-2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, or access a local Desktop directory when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories and {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true} to list local Desktop image assets.
+2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true} to list local Desktop image assets, and {"action":"exportWorkspaceToDesktop","path":"kairo-ecommerce"} to export the completed project.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.

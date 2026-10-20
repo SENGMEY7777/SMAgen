@@ -215,6 +215,8 @@ const fileManager = async (input, workspacePath) => {
             ? 'createFiles'
         : requestedAction === 'writefiles' || requestedAction === 'write_files'
             ? 'createFiles'
+        : requestedAction === 'exportworkspacetodesktop' || requestedAction === 'export_workspace_to_desktop'
+            ? 'exportWorkspaceToDesktop'
         : requestedAction === 'listdesktopdirectory' || requestedAction === 'list_desktop_directory'
             ? 'listDesktopDirectory'
         : requestedAction === 'listdesktopfiles' || requestedAction === 'list_desktop_files'
@@ -287,6 +289,65 @@ const fileManager = async (input, workspacePath) => {
             location: 'local Desktop',
             imageOnly,
             entries: listedEntries,
+        };
+    }
+
+    if (action === 'exportWorkspaceToDesktop') {
+        const desktopTarget = await resolveLocalDesktopPath(input.path || 'kairo-ecommerce');
+        await fs.mkdir(desktopTarget, {recursive: true});
+
+        const copiedFiles = [];
+        const copyWorkspaceEntry = async (sourcePath, relativePath) => {
+            const sourceStats = await fs.lstat(sourcePath);
+
+            if (sourceStats.isSymbolicLink()) {
+                throw new Error(`Workspace symlinks cannot be exported: ${relativePath}`);
+            }
+
+            const destinationPath = path.resolve(desktopTarget, relativePath);
+            if (!isPathInside(desktopTarget, destinationPath)) {
+                throw new Error('Export path must remain inside the local Desktop output folder');
+            }
+
+            await assertRealPathInsideWorkspace(desktopTarget, destinationPath);
+
+            if (sourceStats.isDirectory()) {
+                await fs.mkdir(destinationPath, {recursive: true});
+                const children = await fs.readdir(sourcePath, {withFileTypes: true});
+
+                for (const child of children) {
+                    await copyWorkspaceEntry(
+                        path.join(sourcePath, child.name),
+                        path.join(relativePath, child.name),
+                    );
+                }
+
+                return;
+            }
+
+            if (!sourceStats.isFile()) {
+                return;
+            }
+
+            await fs.mkdir(path.dirname(destinationPath), {recursive: true});
+            await fs.copyFile(sourcePath, destinationPath);
+            copiedFiles.push(relativePath);
+        };
+
+        const workspaceEntries = await fs.readdir(workspacePath, {withFileTypes: true});
+        for (const entry of workspaceEntries) {
+            await copyWorkspaceEntry(
+                path.join(workspacePath, entry.name),
+                entry.name,
+            );
+        }
+
+        return {
+            action,
+            path: input.path || 'kairo-ecommerce',
+            location: 'local Desktop',
+            exported: true,
+            files: copiedFiles,
         };
     }
 

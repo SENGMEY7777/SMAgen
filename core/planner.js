@@ -262,26 +262,88 @@ const inferImageFileName = (task, toolInput) => {
     return cleanImageFileName(quotedFileName?.[1]) || 'generated-image.png';
 };
 
-const isImageGenerationTask = (task, goalPrompt = '') => {
-    const assignedTool = task.assignedTool || task.assigned_tool;
-    if (assignedTool === IMAGE_GENERATOR_TOOL) {
-        return true;
-    }
-
-    const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+const isImageGenerationTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const taskText = `${task.title || ''} ${task.instruction || ''} ${toolInput.prompt || ''}`;
     return IMAGE_INTENT_PATTERN.test(taskText)
         || (IMAGE_KEYWORD_PATTERN.test(taskText) && /\b(?:generate|create|draw|design|make|render)\b/i.test(taskText));
+};
+
+const normalizeNonImageTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const action = String(toolInput.action || '').trim().toLowerCase();
+    const taskText = `${task.title || ''} ${task.instruction || ''}`;
+
+    if (typeof toolInput.command === 'string' && toolInput.command.trim()) {
+        return {
+            ...task,
+            assignedTool: 'executeCommand',
+        };
+    }
+
+    if (['read', 'list', 'search', 'get', 'create', 'write', 'update', 'append', 'delete', 'remove', 'mkdir', 'createdirectory', 'create_directory'].includes(action)) {
+        return {
+            ...task,
+            assignedTool: 'fileManager',
+        };
+    }
+
+    if (/\b(?:list|show|inspect|scan|find)\b[\s\S]{0,80}\b(?:asset|file|folder|directory|workspace)\b/i.test(taskText)) {
+        return {
+            ...task,
+            assignedTool: 'fileManager',
+            toolInput: {
+                ...toolInput,
+                action: 'list',
+                path: cleanRelativeFilePath(toolInput.path) || '.',
+            },
+        };
+    }
+
+    if (/\b(?:file|html|json|css|javascript|homepage|webpage|metadata|project structure|directory|folder)\b/i.test(taskText)) {
+        const isDirectoryTask = /\b(?:directory|folder|project structure)\b/i.test(taskText);
+        const mentionedFile = taskText.match(/\b[A-Za-z0-9_-]+\.(?:html?|json|css|js|mjs|cjs|ts|tsx|jsx|md|txt)\b/i)?.[0];
+        return {
+            ...task,
+            assignedTool: 'fileManager',
+            toolInput: {
+                ...toolInput,
+                action: isDirectoryTask ? 'createDirectory' : 'create',
+                path: cleanRelativeFilePath(toolInput.path)
+                    || cleanRelativeFilePath(toolInput.fileName)
+                    || cleanRelativeFilePath(mentionedFile)
+                    || (isDirectoryTask ? 'project' : 'output.txt'),
+            },
+        };
+    }
+
+    // Never allow a non-visual task to execute through the image provider.
+    return {
+        ...task,
+        assignedTool: 'fileManager',
+        toolInput: {
+            ...toolInput,
+            action: 'list',
+            path: '.',
+        },
+    };
 };
 
 const normalizeImageTasks = (tasks, goalPrompt) => {
     const imageGoal = IMAGE_INTENT_PATTERN.test(String(goalPrompt || ''));
 
     return tasks.map((task) => {
-        if (!imageGoal && task.assignedTool !== IMAGE_GENERATOR_TOOL) {
+        const imageTask = isImageGenerationTask(task);
+
+        if (task.assignedTool === IMAGE_GENERATOR_TOOL && !imageTask) {
+            return normalizeNonImageTask(task);
+        }
+
+        if (!imageGoal && !imageTask) {
             return task;
         }
 
-        if (!isImageGenerationTask(task, goalPrompt)) {
+        if (!imageTask) {
             return task;
         }
 
@@ -519,6 +581,7 @@ Rules:
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
 - Never assign executeCommand to a directory or folder creation task.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
+- Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {

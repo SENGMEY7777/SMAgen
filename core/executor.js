@@ -241,7 +241,7 @@ const fileManager = async (input, workspacePath) => {
             entries = await fs.readdir(desktopPath, {withFileTypes: true});
         } catch (error) {
             if (error.code === 'ENOENT') {
-                if (input.allowMissing === true) {
+                if (input.allowMissing !== false) {
                     return {
                         action,
                         path: input.path,

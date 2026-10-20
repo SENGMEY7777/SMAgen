@@ -203,6 +203,18 @@ const fileManager = async (input, workspacePath) => {
             ? 'createDesktopDirectory'
         : requestedAction === 'createdesktopfile' || requestedAction === 'create_desktop_file'
             ? 'createDesktopFile'
+        : requestedAction === 'createfile' || requestedAction === 'create_file'
+            ? 'create'
+        : requestedAction === 'writefile' || requestedAction === 'write_file'
+            ? 'write'
+        : requestedAction === 'updatefile' || requestedAction === 'update_file'
+            ? 'update'
+        : requestedAction === 'appendfile' || requestedAction === 'append_file'
+            ? 'append'
+        : requestedAction === 'createfiles' || requestedAction === 'create_files'
+            ? 'createFiles'
+        : requestedAction === 'writefiles' || requestedAction === 'write_files'
+            ? 'createFiles'
         : requestedAction === 'listdesktopdirectory' || requestedAction === 'list_desktop_directory'
             ? 'listDesktopDirectory'
         : requestedAction === 'listdesktopfiles' || requestedAction === 'list_desktop_files'
@@ -229,6 +241,18 @@ const fileManager = async (input, workspacePath) => {
             entries = await fs.readdir(desktopPath, {withFileTypes: true});
         } catch (error) {
             if (error.code === 'ENOENT') {
+                if (input.allowMissing === true) {
+                    return {
+                        action,
+                        path: input.path,
+                        location: 'local Desktop',
+                        imageOnly: input.imagesOnly === true,
+                        missing: true,
+                        warning: `Local Desktop asset directory does not exist: ${desktopPath}`,
+                        entries: [],
+                    };
+                }
+
                 throw new Error(`Local Desktop asset directory does not exist: ${desktopPath}`);
             }
 
@@ -263,6 +287,50 @@ const fileManager = async (input, workspacePath) => {
             location: 'local Desktop',
             imageOnly,
             entries: listedEntries,
+        };
+    }
+
+    if (action === 'createFiles') {
+        const fileEntries = Array.isArray(input.files)
+            ? input.files
+            : input.files && typeof input.files === 'object' && !Array.isArray(input.files)
+                ? Object.entries(input.files).map(([filePath, content]) => ({path: filePath, content}))
+                : [];
+
+        if (!fileEntries.length) {
+            throw new Error('createFiles requires a non-empty files array or object');
+        }
+
+        const preparedFiles = await Promise.all(fileEntries.map(async (entry) => {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+                throw new Error('Each createFiles entry must be an object');
+            }
+
+            const requestedFilePath = entry.path || entry.fileName;
+            const targetPath = await resolveWorkspaceFile(workspacePath, requestedFilePath);
+            validateContent(entry.content);
+
+            return {
+                requestedFilePath,
+                targetPath,
+                content: entry.content,
+            };
+        }));
+
+        await Promise.all(preparedFiles.map(async ({targetPath, content}) => {
+            await fs.mkdir(path.dirname(targetPath), {recursive: true});
+            await fs.writeFile(targetPath, content, {
+                encoding: 'utf8',
+                flag: input.overwrite === true ? 'w' : 'wx',
+            });
+        }));
+
+        return {
+            action,
+            files: preparedFiles.map(({requestedFilePath, content}) => ({
+                path: requestedFilePath,
+                bytesWritten: Buffer.byteLength(content, 'utf8'),
+            })),
         };
     }
 

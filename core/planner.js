@@ -254,6 +254,7 @@ const normalizeDesktopAssetTasks = (tasks, goalPrompt) => tasks.map((task) => {
 
     const taskText = `${goalPrompt || ''} ${task.title || ''} ${task.instruction || ''}`;
     const wantsImagesOnly = /\b(?:image|images|banner|product)\b/i.test(taskText);
+    const remoteImageUrls = wantsRemoteImageUrls(goalPrompt);
 
     return {
         ...task,
@@ -262,6 +263,7 @@ const normalizeDesktopAssetTasks = (tasks, goalPrompt) => tasks.map((task) => {
             action: 'listDesktopDirectory',
             path: inferDesktopAssetPath(task, goalPrompt),
             ...(wantsImagesOnly ? {imagesOnly: true} : {}),
+            ...(remoteImageUrls ? {allowMissing: true} : {}),
         },
     };
 });
@@ -685,6 +687,7 @@ Rules:
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
+- For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {

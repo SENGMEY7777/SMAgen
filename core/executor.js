@@ -203,6 +203,10 @@ const fileManager = async (input, workspacePath) => {
             ? 'createDesktopDirectory'
         : requestedAction === 'createdesktopfile' || requestedAction === 'create_desktop_file'
             ? 'createDesktopFile'
+        : requestedAction === 'listdesktopdirectory' || requestedAction === 'list_desktop_directory'
+            ? 'listDesktopDirectory'
+        : requestedAction === 'listdesktopfiles' || requestedAction === 'list_desktop_files'
+            ? 'listDesktopDirectory'
         : requestedAction;
 
     if (action === 'createDesktopDirectory') {
@@ -214,6 +218,51 @@ const fileManager = async (input, workspacePath) => {
             path: input.path,
             location: 'local Desktop',
             created: true,
+        };
+    }
+
+    if (action === 'listDesktopDirectory') {
+        const desktopPath = await resolveLocalDesktopPath(input.path);
+        let entries;
+
+        try {
+            entries = await fs.readdir(desktopPath, {withFileTypes: true});
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                throw new Error(`Local Desktop asset directory does not exist: ${desktopPath}`);
+            }
+
+            if (error.code === 'ENOTDIR') {
+                throw new Error(`Local Desktop asset path is not a directory: ${desktopPath}`);
+            }
+
+            throw error;
+        }
+
+        const imageOnly = input.imagesOnly === true || requestedAction === 'listdesktopfiles'
+            || requestedAction === 'list_desktop_files';
+        const imagePattern = /\.(?:png|jpe?g|webp|gif|svg|avif)$/i;
+        const filteredEntries = imageOnly
+            ? entries.filter((entry) => entry.isFile() && imagePattern.test(entry.name))
+            : entries;
+
+        const listedEntries = await Promise.all(filteredEntries.map(async (entry) => {
+            const entryPath = path.join(desktopPath, entry.name);
+            const stats = entry.isFile() ? await fs.stat(entryPath) : null;
+
+            return {
+                name: entry.name,
+                type: entry.isDirectory() ? 'directory' : 'file',
+                ...(stats ? {size: stats.size} : {}),
+            };
+        }));
+
+        return {
+            action,
+            path: input.path,
+            location: 'local Desktop',
+            imageOnly,
+            entries: listedEntries,
         };
     }
 

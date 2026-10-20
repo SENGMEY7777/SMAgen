@@ -48,6 +48,8 @@ const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
 const IMAGE_GENERATOR_TOOL = 'imageGenerator';
 const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
+const DESKTOP_ASSET_INTENT_PATTERN = /\b(?:list|read|inspect|scan|find|load|use|utili[sz]e|map|import|copy)\b[\s\S]{0,120}\b(?:asset|image|banner|product|file|folder|directory)\b/i;
+const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\s'"`]+(?:[\\/][^\s'"`]+)*)/i;
 
 const cleanRelativeDirectoryPath = (value) => {
     if (typeof value !== 'string') {
@@ -169,6 +171,99 @@ const cleanRelativeFilePath = (value) => {
 
     return cleaned.replace(/\\/g, '/');
 };
+
+const cleanDesktopRelativePath = (value) => {
+    if (typeof value !== 'string') {
+        return null;
+    }
+
+    let cleaned = value
+        .trim()
+        .replace(/^['"`]|['"`]$/g, '')
+        .replace(/[.,;!?]+$/, '')
+        .replace(/[\\/]$/, '');
+
+    const desktopMatch = cleaned.match(/(?:^|[\\/])Desktop[\\/]+(.+)$/i);
+    if (desktopMatch) {
+        cleaned = desktopMatch[1];
+    }
+
+    cleaned = cleaned.replace(/^~[\\/]+/, '');
+
+    if (
+        !cleaned
+        || cleaned.startsWith('/')
+        || /^[A-Za-z]:[\\/]/.test(cleaned)
+        || cleaned.split(/[\\/]/).includes('..')
+        || cleaned.includes('\0')
+    ) {
+        return null;
+    }
+
+    return cleaned.replace(/\\/g, '/');
+};
+
+const inferDesktopAssetPath = (task, goalPrompt) => {
+    const toolInput = task.toolInput || {};
+    const directCandidates = [
+        toolInput.path,
+        toolInput.directory,
+        toolInput.directoryPath,
+        toolInput.root,
+    ];
+
+    for (const candidate of directCandidates) {
+        const normalized = cleanDesktopRelativePath(candidate);
+        if (normalized && normalized !== '.') {
+            return normalized;
+        }
+    }
+
+    const commandTokens = String(toolInput.command || '').match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g) || [];
+    const text = `${goalPrompt || ''} ${task.title || ''} ${task.instruction || ''}`;
+    const textCandidates = [...commandTokens, text.match(DESKTOP_PATH_PATTERN)?.[0]];
+
+    for (const candidate of textCandidates) {
+        const normalized = cleanDesktopRelativePath(candidate);
+        if (normalized && (/[\\/]Desktop[\\/]/i.test(String(candidate)) || /Desktop/i.test(String(candidate)))) {
+            return normalized;
+        }
+    }
+
+    return 'E-Commerce';
+};
+
+const isDesktopAssetTask = (task, goalPrompt) => {
+    const toolInput = task.toolInput || {};
+    const taskText = `${task.title || ''} ${task.instruction || ''} ${JSON.stringify(toolInput)}`;
+    const goalText = String(goalPrompt || '');
+    const referencesDesktop = /\bdesktop\b/i.test(taskText)
+        || /(?:~[\\/]|\/Users\/[^\s/'"`]+[\\/])Desktop[\\/]/i.test(taskText)
+        || (/\bdesktop\b/i.test(goalText) && /\b(?:local assets|asset folder)\b/i.test(taskText));
+
+    return referencesDesktop
+        && (DESKTOP_ASSET_INTENT_PATTERN.test(taskText)
+            || /\b(?:local assets|product images|banner images|asset folder)\b/i.test(taskText));
+};
+
+const normalizeDesktopAssetTasks = (tasks, goalPrompt) => tasks.map((task) => {
+    if (!isDesktopAssetTask(task, goalPrompt)) {
+        return task;
+    }
+
+    const taskText = `${goalPrompt || ''} ${task.title || ''} ${task.instruction || ''}`;
+    const wantsImagesOnly = /\b(?:image|images|banner|product)\b/i.test(taskText);
+
+    return {
+        ...task,
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'listDesktopDirectory',
+            path: inferDesktopAssetPath(task, goalPrompt),
+            ...(wantsImagesOnly ? {imagesOnly: true} : {}),
+        },
+    };
+});
 
 const isDesktopDirectoryTask = (task) => {
     const action = String(task.toolInput?.action || '').trim().toLowerCase();
@@ -415,6 +510,8 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // A Desktop directory task establishes the destination for dependent file writes.
         // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
         plan.tasks = normalizeDesktopFileTasks(plan.tasks, goalPrompt);
+        // Desktop asset discovery must use the constrained fileManager path, never a shell command.
+        plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
     }
 
@@ -560,14 +657,14 @@ const planWorkflowRun = async ({
 
     if (!validatedPlan) {
         const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
-            ? `- Local Desktop output is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}.`
+            ? `- Local Desktop access is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true}; never use executeCommand for Desktop paths.`
             : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
 1. 'executeCommand' - Run allowlisted, read-only workspace commands such as cat, head, tail, grep, ls, pwd, find, and wc. Never use executeCommand or mkdir for directory creation; use fileManager instead.
-2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, or create a local Desktop directory when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories.
+2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, or access a local Desktop directory when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories and {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true} to list local Desktop image assets.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.

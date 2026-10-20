@@ -10,7 +10,16 @@ const RISK_LEVELS = {
     CRITICAL: 4,
 };
 
-const READ_ONLY_ACTIONS = new Set(['read', 'list', 'search', 'get']);
+const READ_ONLY_ACTIONS = new Set([
+    'read',
+    'list',
+    'search',
+    'get',
+    'listdesktopdirectory',
+    'list_desktop_directory',
+    'listdesktopfiles',
+    'list_desktop_files',
+]);
 const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
 const HIGH_RISK_TOOLS = new Set([
     'databaseConnector',

@@ -5,6 +5,7 @@ const { GoogleGenAI } = require('@google/genai');
 
 const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
 
 /**
  * Tool: imageGenerator
@@ -40,23 +41,32 @@ async function imageGenerator(input, workspacePath) {
     const outputPath = path.resolve(workspacePath, fileName);
     const aspectRatio = input.aspectRatio || '1:1';
 
-    // 1. Try Google Imagen 3 if API client is available
-    if (ai && ai.models && typeof ai.models.generateImages === 'function') {
+    // 1. Try the Gemini image model through generateContent. The older
+    // generateImages/Imagen path requires Vertex AI and is not supported by
+    // regular Gemini API keys.
+    if (ai && ai.models && typeof ai.models.generateContent === 'function') {
         try {
             const validAspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
             const chosenAspect = validAspectRatios.includes(aspectRatio) ? aspectRatio : '1:1';
 
-            const response = await ai.models.generateImages({
-                model: 'imagen-3.0-generate-002',
-                prompt,
+            const response = await ai.models.generateContent({
+                model: IMAGE_MODEL,
+                contents: prompt,
                 config: {
-                    numberOfImages: 1,
-                    outputMimeType: 'image/png',
-                    aspectRatio: chosenAspect,
+                    responseModalities: ['IMAGE'],
+                    responseFormat: {
+                        image: {
+                            aspectRatio: chosenAspect,
+                        },
+                    },
                 },
             });
 
-            const imageBase64 = response?.generatedImages?.[0]?.image?.imageBytes;
+            const imageBase64 = response?.candidates
+                ?.flatMap((candidate) => candidate?.content?.parts || [])
+                .find((part) => part?.inlineData?.data)
+                ?.inlineData?.data;
+
             if (imageBase64) {
                 await fs.writeFile(outputPath, Buffer.from(imageBase64, 'base64'));
                 return {
@@ -64,12 +74,14 @@ async function imageGenerator(input, workspacePath) {
                     prompt,
                     fileName,
                     filePath: outputPath,
-                    engine: 'Google Imagen 3 (imagen-3.0-generate-002)',
+                    engine: `Gemini image model (${IMAGE_MODEL})`,
                     imageUrl: `/workspaces/${path.basename(workspacePath)}/${fileName}`,
                 };
             }
+
+            throw new Error(`Gemini image model '${IMAGE_MODEL}' returned no image data`);
         } catch (imagenError) {
-            console.warn('⚠️ [Imagen 3] Primary attempt error, falling back:', imagenError.message || imagenError);
+            console.warn('⚠️ [Gemini image] Primary attempt error, falling back:', imagenError.message || imagenError);
         }
     }
 

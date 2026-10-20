@@ -8,7 +8,10 @@ const databasePool = require('../configs/db');
 const {imageGenerator: rawImageGenerator} = require('../tools/imageGenerator');
 
 const DEFAULT_WORKSPACE_ROOT = path.resolve(
-    process.env.WORKSPACE_ROOT || path.join(process.cwd(), 'workspaces'),
+    process.env.WORKSPACE_ROOT
+        || (String(process.env.NODE_ENV || 'development').trim().toLowerCase() === 'production'
+            ? path.join(process.cwd(), 'workspaces')
+            : path.join(os.tmpdir(), 'kairo-workspaces')),
 );
 const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development').trim().toLowerCase() !== 'production'
     && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';

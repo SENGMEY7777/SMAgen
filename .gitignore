@@ -18,6 +18,7 @@ logs/
 coverage/
 dist/
 build/
+workspaces/
 
 # Operating system files
 .DS_Store

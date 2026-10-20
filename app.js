@@ -3,6 +3,7 @@ const { validateEnvironment } = require('./configs/env.js');
 const config = validateEnvironment();
 
 const express = require('express');
+const os = require('os');
 const path = require('path');
 const compression = require('compression');
 const cors = require('cors');
@@ -22,7 +23,10 @@ app.set('json escape', true);
 app.use(correlationMiddleware);
 
 const workspaceRoot = path.resolve(
-    process.env.WORKSPACE_ROOT || path.join(process.cwd(), 'workspaces'),
+    process.env.WORKSPACE_ROOT
+        || (config.nodeEnv === 'production'
+            ? path.join(process.cwd(), 'workspaces')
+            : path.join(os.tmpdir(), 'kairo-workspaces')),
 );
 const IMAGE_EXTENSION_PATTERN = /\.(?:png|jpe?g|gif|webp|svg)$/i;
 const SAFE_WORKSPACE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;

@@ -28,6 +28,22 @@ const DOMAIN_ERROR_MAP = {
   PLANNER_ERROR: { statusCode: 502, title: 'BAD_GATEWAY' },
 };
 
+const DATABASE_UNAVAILABLE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'PROTOCOL_CONNECTION_LOST',
+  'PROTOCOL_SEQUENCE_TIMEOUT',
+]);
+
+const DATABASE_UNAVAILABLE_MESSAGES = new Set([
+  'Queue limit reached.',
+  'No connections available.',
+]);
+
 function errorHandler(err, req, res, next) {
   if (res.headersSent) {
     return next(err);
@@ -71,6 +87,13 @@ function errorHandler(err, req, res, next) {
     detail = err.message?.includes('uq_users_email')
       ? 'A user with this email already exists'
       : 'A duplicate record was detected';
+  } else if (
+    DATABASE_UNAVAILABLE_CODES.has(err.code)
+    || DATABASE_UNAVAILABLE_MESSAGES.has(err.message)
+  ) {
+    statusCode = 503;
+    title = 'SERVICE_UNAVAILABLE';
+    detail = 'The database is temporarily unavailable';
   } else if (err.message === 'Email already exists') {
     statusCode = 409;
     title = 'CONFLICT';

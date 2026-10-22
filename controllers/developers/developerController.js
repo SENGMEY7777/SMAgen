@@ -119,6 +119,13 @@ const createApiKey = async (req, res, next) => {
 const login = async (req, res, next) => {
     try {
         const { email, password } = req.body || {};
+
+        if (!email || !password) {
+            const error = new Error('Email and password are required');
+            error.code = 'VALIDATION_ERROR';
+            return next(error);
+        }
+
         const result = await developerService.login(email, password);
         return sendResponse(res, 200, true, 'Login successful', result);
     } catch (error) {

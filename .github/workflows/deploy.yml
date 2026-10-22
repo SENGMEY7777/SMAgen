@@ -36,6 +36,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          # If AWS_SESSION_TOKEN is empty, unset it so AWS CLI doesn't treat it as an invalid token
+          if [ -z "${AWS_SESSION_TOKEN:-}" ]; then
+            unset AWS_SESSION_TOKEN
+          fi
+
+          echo "Checking Elastic Beanstalk environment status..."
           for attempt in $(seq 1 60); do
             status="$(aws elasticbeanstalk describe-environments \
               --application-name Kairo-backend \

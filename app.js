@@ -144,7 +144,10 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
     let dbStatus = 'disconnected';
     try {
-        await dbPool.query('SELECT 1');
+        await dbPool.query({
+            sql: 'SELECT 1',
+            timeout: config.database.queryTimeout,
+        });
         dbStatus = 'connected';
     } catch {
         // DB unreachable — reported below
@@ -168,7 +171,7 @@ app.use((req, res, next) => {
 app.use(errorHandler);
 
 
-const PORT = process.env.PORT || 5000;
+const PORT = config.port;
 
 let isShuttingDown = false;
 

@@ -50,12 +50,17 @@ const pool = mysql.createPool({
     connectionLimit: perWorkerLimit,
     maxIdle: perWorkerMaxIdle,
     idleTimeout: config.database.pool.idleTimeout,
-    queueLimit: 0,
+    queueLimit: config.database.pool.queueLimit,
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
-    connectTimeout: 10000,
+    connectTimeout: config.database.connectTimeout,
     multipleStatements: false,
     ssl: getSslOptions(),
 });
+
+// mysql2 applies query timeouts per command, not as a pool option. Repositories
+// use this value when issuing queries so an RDS stall cannot hold an HTTP
+// request indefinitely.
+pool.queryTimeout = config.database.queryTimeout;
 
 module.exports = pool;

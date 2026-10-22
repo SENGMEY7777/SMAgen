@@ -17,12 +17,20 @@ class BaseRepository {
 
   async query(sql, params = []) {
     const executor = await this.getExecutor();
-    return executor.query(sql, params);
+    return executor.query({
+      sql,
+      values: params,
+      timeout: this.pool.queryTimeout || 10000,
+    });
   }
 
   async execute(sql, params = []) {
     const executor = await this.getExecutor();
-    return executor.execute(sql, params);
+    return executor.execute({
+      sql,
+      values: params,
+      timeout: this.pool.queryTimeout || 10000,
+    });
   }
 }
 

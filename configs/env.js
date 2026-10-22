@@ -20,7 +20,10 @@ const DEFAULTS = {
     DB_SSL_REJECT_UNAUTHORIZED: 'true',
     DB_POOL_LIMIT: '20',
     DB_POOL_MAX_IDLE: '10',
+    DB_POOL_QUEUE_LIMIT: '50',
     DB_POOL_IDLE_TIMEOUT_MS: '60000',
+    DB_CONNECT_TIMEOUT_MS: '10000',
+    DB_QUERY_TIMEOUT_MS: '10000',
 };
 
 const PLACEHOLDER_PATTERN = /^(?:your_|replace_with_|change_me|example|xxx|<.+>)|(?:_here$)/i;
@@ -137,7 +140,10 @@ const validateEnvironment = ({
     validateInteger(issues, env, 'DB_PORT', {min: 1, max: 65535});
     validateInteger(issues, env, 'DB_POOL_LIMIT', {min: 1, max: 100});
     validateInteger(issues, env, 'DB_POOL_MAX_IDLE', {min: 0, max: 100});
+    validateInteger(issues, env, 'DB_POOL_QUEUE_LIMIT', {min: 0, max: 1000});
     validateInteger(issues, env, 'DB_POOL_IDLE_TIMEOUT_MS', {min: 1000, max: 3600000});
+    validateInteger(issues, env, 'DB_CONNECT_TIMEOUT_MS', {min: 1000, max: 120000});
+    validateInteger(issues, env, 'DB_QUERY_TIMEOUT_MS', {min: 1000, max: 120000});
     validateInteger(issues, env, 'MAX_CONCURRENT_TASKS', {min: 1, max: 100});
     validateInteger(issues, env, 'COMMAND_TIMEOUT_MS', {min: 1000, max: 30000});
     validateInteger(issues, env, 'HTTP_REQUEST_TIMEOUT_MS', {min: 1000, max: 300000});
@@ -235,8 +241,11 @@ const validateEnvironment = ({
             pool: {
                 connectionLimit: dbPoolLimit,
                 maxIdle: dbPoolMaxIdle,
+                queueLimit: Number(getValue(env, 'DB_POOL_QUEUE_LIMIT')),
                 idleTimeout: Number(getValue(env, 'DB_POOL_IDLE_TIMEOUT_MS')),
             },
+            connectTimeout: Number(getValue(env, 'DB_CONNECT_TIMEOUT_MS')),
+            queryTimeout: Number(getValue(env, 'DB_QUERY_TIMEOUT_MS')),
         },
         llm: {
             model: getValue(env, 'GEMINI_MODEL'),

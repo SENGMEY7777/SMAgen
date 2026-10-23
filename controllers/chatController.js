@@ -12,13 +12,59 @@ const CHAT_SYSTEM_INSTRUCTION = "You are **KAIRO**, an elite AI Technical Lead, 
 
 const sanitizeChatResponse = (text) => {
     if (typeof text !== 'string') return text;
+
     return text
-        .replace(/___TK1___\s*\(/g, 'if (')
-        .replace(/___TK0___\s*\(/g, 'catch (')
+        // Case 1: } catch (err) {
+        .replace(/}\s*___TK\d*___\s*(?=\()/g, '} catch ')
+        // Case 2: async (req, res...
+        .replace(/(=>|\s)\s*___TK\d*___\s*(?=\((?:req|request|ctx|event)?[\s:,])/gi, '$1 async ')
+        // Case 3: if (...) condition
+        .replace(/___TK\d*___\s*(?=\([^)]*(?:instanceof|===|!==|==|!=|!|\bhas\b|\bin\b|&&|\|\|))/g, 'if ')
+        .replace(/___TK1___\s*(?=\()/g, 'if ')
+        // General fallback: replace remaining ___TK\d*___ (error) { with catch (error) { if preceded by }
+        .replace(/___TK\d*___\s*\(([^)]*(?:err|error)[^)]*)\)\s*\{/gi, 'catch ($1) {')
+        // General fallback: replace ___TK\d*___ (...) { with if (...) {
+        .replace(/___TK\d*___\s*(?=\([^)]*\)\s*\{)/g, 'if ')
+        // Remove any other standalone ___TK\d*___
         .replace(/___TK\d*___/g, '');
 };
 
+const createStreamingSanitizer = (onChunk) => {
+    let buffer = '';
+
+    const flushClean = (text) => {
+        if (!text) return;
+        const cleaned = sanitizeChatResponse(text);
+        if (cleaned) onChunk(cleaned);
+    };
+
+    return {
+        write: (chunk) => {
+            buffer += chunk;
+            const partialMatch = buffer.match(/_{1,3}(?:T(?:K(?:\d*(?:_{0,3})?)?)?)?$/);
+            if (partialMatch) {
+                const safeLength = buffer.length - partialMatch[0].length;
+                if (safeLength > 0) {
+                    const toSend = buffer.slice(0, safeLength);
+                    buffer = buffer.slice(safeLength);
+                    flushClean(toSend);
+                }
+            } else {
+                flushClean(buffer);
+                buffer = '';
+            }
+        },
+        end: () => {
+            if (buffer.length > 0) {
+                flushClean(buffer);
+                buffer = '';
+            }
+        }
+    };
+};
+
 const buildConversationRequest = ({message, history = []}) => {
+    const cleanMessage = sanitizeChatResponse(message);
     const contents = history
         .slice(-MAX_HISTORY_MESSAGES)
         .filter((entry) => (
@@ -29,12 +75,12 @@ const buildConversationRequest = ({message, history = []}) => {
         ))
         .map(({role, content}) => ({
             role: role === 'assistant' ? 'model' : 'user',
-            parts: [{text: content.trim()}],
+            parts: [{text: sanitizeChatResponse(content.trim())}],
         }));
 
     contents.push({
         role: 'user',
-        parts: [{text: message.trim()}],
+        parts: [{text: cleanMessage.trim()}],
     });
 
     return {
@@ -164,15 +210,22 @@ const chatStream = async (req, res) => {
 
         const {contents, config} = buildConversationRequest({message, history});
 
-        const fullText = await skGeminiStream(contents, {
-            config,
-            onChunk: (chunkText) => {
-                res.write(`data: ${JSON.stringify({ event: 'chunk', text: sanitizeChatResponse(chunkText), done: false })}\n\n`);
-            },
+        const sanitizer = createStreamingSanitizer((chunkText) => {
+            res.write(`data: ${JSON.stringify({ event: 'chunk', text: chunkText, done: false })}\n\n`);
         });
 
+        const rawFullText = await skGeminiStream(contents, {
+            config,
+            onChunk: (chunkText) => {
+                sanitizer.write(chunkText);
+            },
+        });
+        sanitizer.end();
+
+        const fullText = sanitizeChatResponse(rawFullText);
+
         // Final completion event
-        res.write(`data: ${JSON.stringify({ event: 'done', text: '', done: true, fullText: sanitizeChatResponse(fullText) })}\n\n`);
+        res.write(`data: ${JSON.stringify({ event: 'done', text: '', done: true, fullText })}\n\n`);
         res.end();
     } catch (error) {
         logger.error('Chat stream error', error);

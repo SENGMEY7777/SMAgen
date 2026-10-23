@@ -48,7 +48,7 @@ const isRetryableError = (error) => {
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
-    : 15000;
+    : 30000;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     let timeoutId;
@@ -72,11 +72,12 @@ const getModelCandidates = (model) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
+        'gemini-3.5-flash-lite',
+        'gemini-3.5-flash',
         'gemini-3.1-flash-lite',
         'gemini-3.8-flash',
-        'gemini-3.5-flash',
-        'gemini-flash-latest',
         'gemini-flash-lite-latest',
+        'gemini-flash-latest',
         FALLBACK_MODEL,
     ].filter(Boolean);
     return [...new Set(candidates)];

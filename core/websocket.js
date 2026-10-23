@@ -6,7 +6,7 @@ const workflowModel = require('../models/workflow/workflowModel');
 const {getJwtConfig} = require('../configs/jwt');
 const {getCorsOrigins} = require('../configs/env');
 const {skGeminiStream} = require('../configs/llm');
-const {buildConversationRequest} = require('../controllers/chatController');
+const {buildConversationRequest, createStreamingSanitizer, sanitizeChatResponse} = require('../controllers/chatController');
 
 const getSocketToken = (socket) => {
     const authorization = socket.handshake.headers.authorization || '';
@@ -112,16 +112,23 @@ const initializeWebSocket = (server) => {
             try {
                 const {contents, config} = buildConversationRequest({message, history});
 
-                const fullText = await skGeminiStream(contents, {
+                const sanitizer = createStreamingSanitizer((cleanChunk) => {
+                    socket.emit('chat:chunk', {
+                        requestId,
+                        text: cleanChunk,
+                        done: false,
+                    });
+                });
+
+                const rawFullText = await skGeminiStream(contents, {
                     config,
                     onChunk: (chunkText) => {
-                        socket.emit('chat:chunk', {
-                            requestId,
-                            text: chunkText,
-                            done: false,
-                        });
+                        sanitizer.write(chunkText);
                     },
                 });
+                sanitizer.end();
+
+                const fullText = sanitizeChatResponse(rawFullText);
 
                 socket.emit('chat:done', {
                     requestId,

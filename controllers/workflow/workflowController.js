@@ -1,5 +1,4 @@
 'use strict';
-
 const workflowService = require('../../services/workflow/workflowService');
 const sendResponse = require('../../utils/responseHelper');
 const logger = require('../../utils/logger');

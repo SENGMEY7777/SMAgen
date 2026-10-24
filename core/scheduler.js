@@ -2,7 +2,7 @@ const pLimitModule = require('p-limit');
 
 const pLimit = pLimitModule.default || pLimitModule;
 const {
-    listLatestTaskNodesByRunId,
+    listTaskNodesByRunId,
     updateExecutionRunStatus,
     updateTaskNode,
 } = require('../models/workflow/workflowModel');
@@ -90,7 +90,11 @@ const triggerScheduler = async (runId, options = {}) => {
         await updateExecutionRunStatus(runId, 'RUNNING');
 
         while (true) {
-            const rows = await listLatestTaskNodesByRunId(runId);
+            // The scheduler must evaluate the complete DAG. Reading only the
+            // rows with the latest created_at can hide an earlier dependency
+            // when task inserts receive different timestamps, causing valid
+            // downstream tasks to fail with "Task dependencies could not be resolved".
+            const rows = await listTaskNodesByRunId(runId);
             const tasks = rows.map(normalizeTask);
 
             if (!tasks.length) {

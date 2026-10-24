@@ -17,7 +17,7 @@ const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development
     && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
-const MAX_COMMAND_TIMEOUT_MS = 30_000;
+const MAX_COMMAND_TIMEOUT_MS = 120_000;
 const COMMAND_TIMEOUT_MS = Math.max(
     1000,
     Math.min(
@@ -31,7 +31,10 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
     Number.parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '10000', 10) || 10000,
 );
 const execFileAsync = promisify(execFile);
-const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir']);
+const SAFE_COMMANDS = new Set([
+    'cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir',
+    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun'
+]);
 const COMMAND_BLACKLIST_PATTERNS = [
     /\bsudo(?:\s|$)/i,
     /\bmkfs(?:\.[a-z0-9_-]+)?(?:\s|$)/i,
@@ -772,7 +775,7 @@ const tokenizeCommand = (command) => {
     });
 };
 
-const executeCommand = async (input, workspacePath) => {
+const executeCommand = async (input, workspacePath, task) => {
     const command = typeof input.command === 'string' ? input.command.trim() : '';
 
     if (!command) {
@@ -793,6 +796,51 @@ const executeCommand = async (input, workspacePath) => {
         throw new Error(`Command is not allowed: ${commandName}`);
     }
 
+    // Determine target execution directory (supports relative workspace paths or local Desktop output)
+    let effectiveCwd = workspacePath;
+    const requestedCwd = input.cwd || input.workingDirectory || input.path || input.desktopPath;
+
+    if (typeof requestedCwd === 'string' && requestedCwd.trim()) {
+        const trimmed = requestedCwd.trim();
+        if (LOCAL_DESKTOP_OUTPUT_ENABLED && (trimmed.toLowerCase().includes('desktop') || input.desktop)) {
+            effectiveCwd = await resolveLocalDesktopPath(trimmed);
+        } else {
+            if (LOCAL_DESKTOP_OUTPUT_ENABLED) {
+                try {
+                    const desktopCandidate = await resolveLocalDesktopPath(trimmed);
+                    const stats = await fs.stat(desktopCandidate);
+                    if (stats.isDirectory()) {
+                        effectiveCwd = desktopCandidate;
+                    }
+                } catch (_) {}
+            }
+            if (effectiveCwd === workspacePath) {
+                effectiveCwd = path.resolve(workspacePath, trimmed);
+                await assertRealPathInsideWorkspace(workspacePath, effectiveCwd);
+            }
+        }
+    } else if (LOCAL_DESKTOP_OUTPUT_ENABLED && task && (task.run_id || task.runId)) {
+        // If this task depends on a previous task in this run that created a Desktop folder, use that folder as cwd
+        try {
+            const runId = task.run_id || task.runId;
+            const [prevTasks] = await databasePool.query(
+                "SELECT tool_input FROM task_nodes WHERE run_id = ? AND assigned_tool = 'fileManager' AND status = 'SUCCESS' ORDER BY created_at DESC",
+                [runId],
+            );
+            for (const pt of prevTasks) {
+                const parsed = typeof pt.tool_input === 'string' ? JSON.parse(pt.tool_input) : pt.tool_input;
+                if (parsed?.action === 'createDesktopDirectory' && parsed?.path) {
+                    const desktopCandidate = await resolveLocalDesktopPath(parsed.path);
+                    const stats = await fs.stat(desktopCandidate);
+                    if (stats.isDirectory()) {
+                        effectiveCwd = desktopCandidate;
+                        break;
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
     for (const argument of args) {
         if (
             path.isAbsolute(argument)
@@ -806,10 +854,13 @@ const executeCommand = async (input, workspacePath) => {
             continue;
         }
 
-        await assertRealPathInsideWorkspace(
-            workspacePath,
-            path.resolve(workspacePath, argument),
-        );
+        // Only enforce file existence check for inspection utilities
+        if (['cat', 'head', 'tail', 'grep', 'ls', 'find', 'wc'].includes(commandName)) {
+            await assertRealPathInsideWorkspace(
+                effectiveCwd,
+                path.resolve(effectiveCwd, argument),
+            );
+        }
     }
 
     if (commandName === 'mkdir') {
@@ -829,7 +880,7 @@ const executeCommand = async (input, workspacePath) => {
         }
 
         await Promise.all(directoryArguments.map((argument) => fs.mkdir(
-            path.resolve(workspacePath, argument),
+            path.resolve(effectiveCwd, argument),
             {recursive: true},
         )));
 
@@ -843,14 +894,20 @@ const executeCommand = async (input, workspacePath) => {
 
     try {
         const result = await execFileAsync(commandName, args, {
-            cwd: workspacePath,
+            cwd: effectiveCwd,
             timeout: COMMAND_TIMEOUT_MS,
             maxBuffer: MAX_COMMAND_OUTPUT,
             shell: false,
+            env: {
+                ...process.env,
+                npm_config_yes: 'true',
+                CI: 'true',
+            },
         });
 
         return {
             command,
+            cwd: effectiveCwd,
             stdout: result.stdout,
             stderr: result.stderr,
             exitCode: 0,
@@ -858,6 +915,7 @@ const executeCommand = async (input, workspacePath) => {
     } catch (error) {
         return {
             command,
+            cwd: effectiveCwd,
             stdout: error.stdout || '',
             stderr: error.stderr || error.message,
             exitCode: typeof error.code === 'number' ? error.code : 1,

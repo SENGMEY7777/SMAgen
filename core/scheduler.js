@@ -67,7 +67,15 @@ const finishRun = async (runId, tasks, io) => {
     };
 };
 
+const activeSchedulers = new Map();
+
 const triggerScheduler = async (runId, options = {}) => {
+    if (activeSchedulers.has(runId)) {
+        console.log(`⏳ [Scheduler] Run ${runId} is already running an active scheduler. Reusing promise.`);
+        return activeSchedulers.get(runId);
+    }
+
+    const schedulerPromise = (async () => {
     const {
         io = null,
         riskGate = createRiskGate(),
@@ -162,6 +170,20 @@ const triggerScheduler = async (runId, options = {}) => {
             });
 
             if (!readyTasks.length) {
+                const activeTasks = tasks.filter((task) => ACTIVE_TASK_STATUSES.includes(task.status));
+
+                if (activeTasks.length) {
+                    if (activeTasks.some((task) => task.status === 'AWAITING_APPROVAL')) {
+                        await updateExecutionRunStatus(runId, 'AWAITING_APPROVAL');
+                    }
+
+                    return {
+                        runId,
+                        status: 'WAITING',
+                        tasksProcessed,
+                    };
+                }
+
                 await Promise.all(pendingTasks.map((task) => updateTaskNode(task.id, {
                     status: 'FAILED',
                     errorMessage: 'Task dependencies could not be resolved',
@@ -334,6 +356,14 @@ const triggerScheduler = async (runId, options = {}) => {
         await updateExecutionRunStatus(runId, 'FAILED');
         console.error(`❌ [Scheduler Error]:`, error.message);
         throw error;
+    }
+    })();
+
+    activeSchedulers.set(runId, schedulerPromise);
+    try {
+        return await schedulerPromise;
+    } finally {
+        activeSchedulers.delete(runId);
     }
 };
 

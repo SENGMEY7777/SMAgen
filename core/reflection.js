@@ -288,7 +288,7 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
         return markTaskFailedAndSkipDependents({
             runId,
             task,
-            errorMessage: `Invalid corrected tool_input: ${correction.reason}`,
+            errorMessage: correction.reason || 'Self-healing could not resolve the task failure',
             errorTrace,
             executionTimeMs: telemetry?.latencyMs,
             io,

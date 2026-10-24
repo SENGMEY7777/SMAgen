@@ -91,6 +91,28 @@ const DEFAULT_KAIRO_LANDING_PAGE = `<!doctype html>
   </div>
 </body>
 </html>`;
+const DEFAULT_PINIA_STORE = `import { defineStore } from 'pinia'
+import { ref } from 'vue'
+
+export const useCounterStore = defineStore('counter', () => {
+  const count = ref(0)
+
+  function increment() {
+    count.value += 1
+  }
+
+  return {count, increment}
+})
+`;
+const DEFAULT_PINIA_MAIN = `import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import App from './App.vue'
+import './style.css'
+
+const app = createApp(App)
+app.use(createPinia())
+app.mount('#app')
+`;
 const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image\s+)?(?:url|urls|link|links)\b/i;
@@ -144,7 +166,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
 
     const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
     const quotedName = taskText.match(
-        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called|name)\b\s+["']([^"']+)["']/i,
+        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s*["']([^"']+)["']/i,
     );
 
     if (quotedName) {
@@ -152,7 +174,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const plainName = taskText.match(
-        /\b(?:directory|folder)\b[\s\S]{0,80}\b(?:named|called|name)\b\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and)\b|[.,;!?]|$)/i,
+        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and|i\s+want)\b|[.,;!?]|$)/i,
     );
 
     return cleanRelativeDirectoryPath(plainName?.[1]);
@@ -350,6 +372,10 @@ const shouldExportWorkspaceToDesktop = (goalPrompt, tasks) => {
 };
 
 const appendDesktopExportTask = (tasks, goalPrompt) => {
+    if (isVueProjectSetupRequest(goalPrompt)) {
+        return tasks;
+    }
+
     if (!shouldExportWorkspaceToDesktop(goalPrompt, tasks)) {
         return tasks;
     }
@@ -708,6 +734,421 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
     return nextTasks;
 };
 
+const isVueProjectSetupRequest = (goalPrompt) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        return false;
+    }
+
+    const text = String(goalPrompt || '');
+    const mentionsVue = /\bvue(?:\.js)?\b|\bvue\s*3\b|\bvue3\b/i.test(text);
+    const mentionsProject = /\b(?:project|app|application|starter|template)\b/i.test(text);
+    const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|start)\b/i.test(text);
+
+    return mentionsVue
+        && mentionsProject
+        && requestsSetup
+        && /\bdesktop\b/i.test(text);
+};
+
+const isVueScaffoldTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const text = `${task.title || ''} ${task.instruction || ''} ${toolInput.command || ''}`;
+
+    return /(?:npm\s+(?:create|init)\s+vite|npx\s+create-vite|create-vue)/i.test(text)
+        || (/(?:vue|vite)/i.test(text)
+            && /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate)\b/i.test(text)
+            && /\b(?:project|app|application|starter)\b/i.test(text));
+};
+
+const isVueInstallTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const text = `${task.title || ''} ${task.instruction || ''} ${toolInput.command || ''}`;
+
+    return /\b(?:npm|pnpm|yarn|bun)\s+install\b/i.test(text)
+        || (/(?:vue|vite)/i.test(text)
+            && /\b(?:install|dependencies|packages)\b/i.test(text));
+};
+
+const getUniqueNodeKey = (tasks, baseKey) => {
+    const existingKeys = new Set(tasks.map((task) => task.nodeKey));
+    let nodeKey = baseKey;
+    let suffix = 2;
+
+    while (existingKeys.has(nodeKey)) {
+        nodeKey = `${baseKey}_${suffix}`;
+        suffix += 1;
+    }
+
+    return nodeKey;
+};
+
+const ensureVueDesktopProjectTasks = (tasks, goalPrompt) => {
+    if (!isVueProjectSetupRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const requestedDirectoryPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+
+    if (!requestedDirectoryPath) {
+        return tasks;
+    }
+
+    const nextTasks = [...tasks];
+    let directoryTask = nextTasks.find((task) => (
+        isDesktopDirectoryTask(task)
+        && cleanRelativeDirectoryPath(task.toolInput?.path) === requestedDirectoryPath
+    ));
+
+    if (!directoryTask) {
+        const existingDirectoryTask = nextTasks.find(isDesktopDirectoryTask);
+
+        if (existingDirectoryTask) {
+            const directoryIndex = nextTasks.indexOf(existingDirectoryTask);
+            directoryTask = {
+                ...existingDirectoryTask,
+                title: `Create Desktop directory ${requestedDirectoryPath}`,
+                instruction: `Create a directory named ${requestedDirectoryPath} on the local Desktop.`,
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopDirectory',
+                    path: requestedDirectoryPath,
+                },
+            };
+            nextTasks[directoryIndex] = directoryTask;
+        } else {
+            directoryTask = {
+                nodeKey: getUniqueNodeKey(nextTasks, 'create_desktop_directory'),
+                title: `Create Desktop directory ${requestedDirectoryPath}`,
+                instruction: `Create a directory named ${requestedDirectoryPath} on the local Desktop.`,
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopDirectory',
+                    path: requestedDirectoryPath,
+                },
+            };
+            nextTasks.unshift(directoryTask);
+        }
+    }
+
+    const scaffoldCommand = 'npm create vite@latest . -- --template vue';
+    let scaffoldTask = nextTasks.find(isVueScaffoldTask);
+
+    if (scaffoldTask) {
+        const scaffoldIndex = nextTasks.indexOf(scaffoldTask);
+        scaffoldTask = {
+            ...scaffoldTask,
+            title: 'Scaffold the latest Vue 3 project',
+            instruction: `Create the latest Vue project inside the Desktop directory ${requestedDirectoryPath}.`,
+            dependencies: [...new Set([...(scaffoldTask.dependencies || []), directoryTask.nodeKey])]
+                .filter((dependency) => dependency !== scaffoldTask.nodeKey),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: scaffoldCommand,
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks[scaffoldIndex] = scaffoldTask;
+    } else {
+        scaffoldTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'scaffold_vue3_project'),
+            title: 'Scaffold the latest Vue 3 project',
+            instruction: `Create the latest Vue project inside the Desktop directory ${requestedDirectoryPath}.`,
+            dependencies: [directoryTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: scaffoldCommand,
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks.push(scaffoldTask);
+    }
+
+    let installTask = nextTasks.find((task) => task.nodeKey !== scaffoldTask.nodeKey && isVueInstallTask(task));
+
+    if (installTask) {
+        const installIndex = nextTasks.indexOf(installTask);
+        installTask = {
+            ...installTask,
+            title: 'Install Vue 3 dependencies',
+            instruction: `Install dependencies for the Vue project in the Desktop directory ${requestedDirectoryPath}.`,
+            dependencies: [...new Set([...(installTask.dependencies || []), scaffoldTask.nodeKey])]
+                .filter((dependency) => dependency !== installTask.nodeKey),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm install',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks[installIndex] = installTask;
+    } else {
+        installTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'install_vue3_dependencies'),
+            title: 'Install Vue 3 dependencies',
+            instruction: `Install dependencies for the Vue project in the Desktop directory ${requestedDirectoryPath}.`,
+            dependencies: [scaffoldTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm install',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks.push(installTask);
+    }
+
+    return nextTasks;
+};
+
+const inferExistingDesktopProjectPath = (tasks, goalPrompt) => {
+    const directPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+    if (directPath) {
+        return directPath;
+    }
+
+    const existingDirectory = tasks.find(isDesktopDirectoryTask);
+    const existingDirectoryPath = cleanRelativeDirectoryPath(existingDirectory?.toolInput?.path);
+    if (existingDirectoryPath) {
+        return existingDirectoryPath;
+    }
+
+    const cwdTask = tasks.find((task) => {
+        const cwd = task.toolInput?.cwd || task.toolInput?.workingDirectory;
+        return typeof cwd === 'string' && cwd.trim();
+    });
+    const cwdPath = cleanRelativeDirectoryPath(cwdTask?.toolInput?.cwd || cwdTask?.toolInput?.workingDirectory);
+    if (cwdPath) {
+        return cwdPath;
+    }
+
+    const projectMatch = String(goalPrompt || '').match(
+        /\b(?:in|inside|under|within)\s+(?:the\s+)?(?:desktop\s+)?(?:folder\s+)?["']?([A-Za-z0-9_-]+)["']?(?=\s|$|[.,!?])/i,
+    );
+
+    return cleanRelativeDirectoryPath(projectMatch?.[1]);
+};
+
+const isPiniaProjectSetupRequest = (goalPrompt) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        return false;
+    }
+
+    const text = String(goalPrompt || '');
+    const mentionsPinia = /\bpin(?:ia|ai)\b/i.test(text);
+    const mentionsStore = /\b(?:store|state\s+management)\b/i.test(text);
+    const requestsChange = /\b(?:add|install|setup|set\s+up|configure|enable|create|use|integrate|modify)\b/i.test(text);
+    const mentionsProject = /\b(?:desktop|production|project|app|application|folder|directory)\b/i.test(text);
+
+    return mentionsPinia && mentionsStore && requestsChange && mentionsProject;
+};
+
+const isPiniaInstallTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const text = `${task.title || ''} ${task.instruction || ''} ${toolInput.command || ''}`;
+
+    return /\b(?:npm|pnpm|yarn|bun)\s+install\s+pin(?:ia|ai)\b/i.test(text)
+        || (/\bpin(?:ia|ai)\b/i.test(text) && /\b(?:install|dependency|package)\b/i.test(text));
+};
+
+const isPiniaStoreTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const taskPath = String(toolInput.path || '').replace(/\\/g, '/');
+    const text = `${task.title || ''} ${task.instruction || ''} ${taskPath}`;
+
+    return /(?:^|\/)stores?\/[^\s/]+\.(?:js|ts)$/i.test(taskPath)
+        || (/\b(?:pin(?:ia|ai)|state\s+management)\b/i.test(text)
+            && /\b(?:store|counter)\b/i.test(text));
+};
+
+const isPiniaMainTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const taskPath = String(toolInput.path || '').replace(/\\/g, '/');
+    const text = `${task.title || ''} ${task.instruction || ''} ${taskPath}`;
+
+    return /(?:^|\/)main\.(?:js|ts)$/i.test(taskPath)
+        && /\b(?:pin(?:ia|ai)|register|configure|setup|set\s+up|enable|use)\b/i.test(text);
+};
+
+const ensurePiniaDesktopProjectTasks = (tasks, goalPrompt) => {
+    if (!isPiniaProjectSetupRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const projectPath = inferExistingDesktopProjectPath(tasks, goalPrompt);
+    if (!projectPath) {
+        return tasks;
+    }
+
+    const nextTasks = [...tasks];
+    let directoryTask = nextTasks.find((task) => (
+        isDesktopDirectoryTask(task)
+        && cleanRelativeDirectoryPath(task.toolInput?.path) === projectPath
+    ));
+
+    if (!directoryTask) {
+        directoryTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'ensure_desktop_project_directory'),
+            title: `Ensure Desktop directory ${projectPath}`,
+            instruction: `Ensure the existing Vue project directory ${projectPath} is available on the local Desktop.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: projectPath,
+            },
+        };
+        nextTasks.unshift(directoryTask);
+    }
+
+    const piniaInstallCommand = 'npm install pinia';
+    let installTask = nextTasks.find(isPiniaInstallTask);
+    if (installTask) {
+        const installIndex = nextTasks.indexOf(installTask);
+        installTask = {
+            ...installTask,
+            title: 'Install Pinia state management',
+            instruction: `Install Pinia in the Vue project inside the Desktop directory ${projectPath}.`,
+            dependencies: [...new Set([...(installTask.dependencies || []), directoryTask.nodeKey])]
+                .filter((dependency) => dependency !== installTask.nodeKey),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: piniaInstallCommand,
+                cwd: projectPath,
+                desktop: true,
+            },
+        };
+        nextTasks[installIndex] = installTask;
+    } else {
+        installTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'install_pinia'),
+            title: 'Install Pinia state management',
+            instruction: `Install Pinia in the Vue project inside the Desktop directory ${projectPath}.`,
+            dependencies: [directoryTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: piniaInstallCommand,
+                cwd: projectPath,
+                desktop: true,
+            },
+        };
+        nextTasks.push(installTask);
+    }
+
+    const storePath = `${projectPath}/src/stores/counter.js`;
+    let storeTask = nextTasks.find(isPiniaStoreTask);
+    if (storeTask) {
+        const storeIndex = nextTasks.indexOf(storeTask);
+        storeTask = {
+            ...storeTask,
+            title: 'Create Pinia counter store',
+            instruction: `Create a starter Pinia store at ${storePath}.`,
+            dependencies: [...new Set([...(storeTask.dependencies || []), installTask.nodeKey])]
+                .filter((dependency) => dependency !== storeTask.nodeKey),
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: storePath,
+                content: DEFAULT_PINIA_STORE,
+            },
+        };
+        nextTasks[storeIndex] = storeTask;
+    } else {
+        storeTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'create_pinia_store'),
+            title: 'Create Pinia counter store',
+            instruction: `Create a starter Pinia store at ${storePath}.`,
+            dependencies: [installTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: storePath,
+                content: DEFAULT_PINIA_STORE,
+            },
+        };
+        nextTasks.push(storeTask);
+    }
+
+    const mainPath = `${projectPath}/src/main.js`;
+    let mainTask = nextTasks.find(isPiniaMainTask)
+        || nextTasks.find((task) => /(?:^|\/)main\.(?:js|ts)$/i.test(String(task.toolInput?.path || '').replace(/\\/g, '/')));
+    if (mainTask) {
+        const mainIndex = nextTasks.indexOf(mainTask);
+        mainTask = {
+            ...mainTask,
+            title: 'Register Pinia in main.js',
+            instruction: `Register Pinia in ${mainPath} so the Vue application can use the store.`,
+            dependencies: [...new Set([...(mainTask.dependencies || []), storeTask.nodeKey])]
+                .filter((dependency) => dependency !== mainTask.nodeKey),
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: mainPath,
+                content: DEFAULT_PINIA_MAIN,
+            },
+        };
+        nextTasks[mainIndex] = mainTask;
+    } else {
+        mainTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'register_pinia_main'),
+            title: 'Register Pinia in main.js',
+            instruction: `Register Pinia in ${mainPath} so the Vue application can use the store.`,
+            dependencies: [storeTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: mainPath,
+                content: DEFAULT_PINIA_MAIN,
+            },
+        };
+        nextTasks.push(mainTask);
+    }
+
+    const existingBuildTask = nextTasks.find((task) => /\b(?:npm|pnpm|yarn|bun)\s+run\s+build\b/i.test(String(task.toolInput?.command || '')));
+    if (existingBuildTask) {
+        const buildIndex = nextTasks.indexOf(existingBuildTask);
+        nextTasks[buildIndex] = {
+            ...existingBuildTask,
+            title: 'Verify Vue and Pinia build',
+            instruction: `Build the Vue project in ${projectPath} to verify the Pinia setup.`,
+            dependencies: [...new Set([...(existingBuildTask.dependencies || []), mainTask.nodeKey])]
+                .filter((dependency) => dependency !== existingBuildTask.nodeKey),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm run build',
+                cwd: projectPath,
+                desktop: true,
+            },
+        };
+    } else {
+        nextTasks.push({
+            nodeKey: getUniqueNodeKey(nextTasks, 'verify_vue_pinia_build'),
+            title: 'Verify Vue and Pinia build',
+            instruction: `Build the Vue project in ${projectPath} to verify the Pinia setup.`,
+            dependencies: [mainTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm run build',
+                cwd: projectPath,
+                desktop: true,
+            },
+        });
+    }
+
+    return nextTasks;
+};
+
 const cleanImageFileName = (value) => {
     if (typeof value !== 'string') {
         return null;
@@ -906,6 +1347,12 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // General Desktop prompts may mention Java, JSON, Vue, Markdown, or other files.
         // Ensure every explicitly requested filename has a safe Desktop file task too.
         plan.tasks = ensureDesktopPromptFileTasks(plan.tasks, goalPrompt);
+        // Vue/Vite project setup requires commands to run inside the requested Desktop folder.
+        // The LLM plan may otherwise downgrade the request to a folder-only or file-only task.
+        plan.tasks = ensureVueDesktopProjectTasks(plan.tasks, goalPrompt);
+        // Pinia follow-up requests must execute inside the existing Desktop Vue project.
+        // Normalize common misspellings such as "Pinai" to the real package and setup.
+        plan.tasks = ensurePiniaDesktopProjectTasks(plan.tasks, goalPrompt);
         // Desktop asset discovery must use the constrained fileManager path, never a shell command.
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
@@ -1055,7 +1502,7 @@ const planWorkflowRun = async ({
 
     if (!validatedPlan) {
         const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
-            ? `- Local Desktop access is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"kairo-ecommerce"}; never use executeCommand for Desktop paths.`
+            ? `- Local Desktop access is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"folder-name"}. For a project setup inside that folder, first create the folder with fileManager, then use executeCommand with a relative cwd and desktop:true for the approved package-manager command. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"E-Commerce","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"kairo-ecommerce"}; never use executeCommand to create a Desktop directory or to access arbitrary absolute Desktop paths.`
             : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
@@ -1074,9 +1521,10 @@ Rules:
 - Every dependency must reference an existing nodeKey.
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
-- Never assign executeCommand to a directory or folder creation task.
+- Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
+- For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 ${desktopInstruction}

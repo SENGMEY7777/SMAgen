@@ -745,6 +745,7 @@ const httpRequester = async (input) => {
         timeout,
         maxContentLength: 5 * 1024 * 1024,
         maxBodyLength: 5 * 1024 * 1024,
+        validateStatus: () => true,
     });
 
     return {
@@ -755,6 +756,7 @@ const httpRequester = async (input) => {
         statusText: response.statusText,
         headers: maskHeaders(response.headers),
         data: response.data,
+        ok: response.status >= 200 && response.status < 400,
     };
 };
 

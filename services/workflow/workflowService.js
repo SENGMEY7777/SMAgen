@@ -140,7 +140,9 @@ const getWorkflowRun = async (runId, userId) => {
         throw error;
     }
 
-    const tasks = await workflowModel.listLatestTaskNodesByRunId(runId);
+    // Return every task in the run so dependency state and completed steps
+    // remain visible even when task rows have different created_at values.
+    const tasks = await workflowModel.listTaskNodesByRunId(runId);
     const logs = await workflowModel.listExecutionLogsByRunId(runId);
 
     return {

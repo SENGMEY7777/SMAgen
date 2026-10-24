@@ -17,28 +17,32 @@ const authAttemptLimiter = rateLimit({
     ),
 });
 
+const isProduction = String(process.env.NODE_ENV || '').trim().toLowerCase() === 'production';
+
 const workflowRunLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
-    limit: 20,
-    keyGenerator: (req) => String(req.user.id),
+    limit: Number(process.env.WORKFLOW_RUN_LIMIT) || (isProduction ? 100 : 2000),
+    keyGenerator: (req) => String(req.user?.id || req.ip),
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     message: rateLimitMessage(
         'Workflow run limit reached. Please try again later.',
         'WORKFLOW_RATE_LIMITED',
     ),
+    skip: (req) => !isProduction && String(process.env.ENABLE_RATE_LIMITING || '').toLowerCase() !== 'true',
 });
 
 const chatLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
-    limit: 60,
-    keyGenerator: (req) => String(req.user.id),
+    limit: Number(process.env.CHAT_LIMIT) || (isProduction ? 200 : 2000),
+    keyGenerator: (req) => String(req.user?.id || req.ip),
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     message: rateLimitMessage(
         'Chat limit reached. Please try again later.',
         'CHAT_RATE_LIMITED',
     ),
+    skip: (req) => !isProduction && String(process.env.ENABLE_RATE_LIMITING || '').toLowerCase() !== 'true',
 });
 
 module.exports = {

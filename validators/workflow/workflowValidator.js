@@ -16,6 +16,10 @@ const workflowCreateSchema = Joi.object({
 const runWorkflowSchema = Joi.object({
     workflowId: uuid().allow(null),
     goalPrompt: Joi.string().trim().min(3).max(20000).required(),
+    // The dashboard uses this for follow-up requests so a new run keeps the
+    // local Desktop/Downloads destination selected by the earlier request.
+    // The planner validates and normalizes the path before it reaches the host.
+    localDestination: Joi.string().trim().max(255).allow(null, ''),
 }).unknown(false);
 
 const resumeWorkflowSchema = Joi.object({}).unknown(false);

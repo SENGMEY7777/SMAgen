@@ -201,7 +201,65 @@ const validateContent = (content) => {
     }
 };
 
-const fileManager = async (input, workspacePath) => {
+const findImageUrl = (value) => {
+    if (!value) {
+        return '';
+    }
+
+    if (typeof value === 'string') {
+        return /^https?:\/\//i.test(value.trim()) ? value.trim() : '';
+    }
+
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const imageUrl = findImageUrl(item);
+            if (imageUrl) {
+                return imageUrl;
+            }
+        }
+        return '';
+    }
+
+    if (typeof value === 'object') {
+        for (const key of ['imageUrl', 'remoteImageUrl', 'url', 'src']) {
+            const imageUrl = findImageUrl(value[key]);
+            if (imageUrl) {
+                return imageUrl;
+            }
+        }
+    }
+
+    return '';
+};
+
+const resolveDynamicContent = (content, dependencyOutputs = {}) => {
+    if (typeof content !== 'string' || !content.includes('{{imageUrl:')) {
+        return content;
+    }
+
+    const unresolved = new Set();
+    const resolvedContent = content.replace(/\{\{imageUrl:([A-Za-z0-9_-]+)\}\}/g, (placeholder, nodeKey) => {
+        const imageUrl = findImageUrl(dependencyOutputs[nodeKey]);
+        if (imageUrl) {
+            return imageUrl;
+        }
+
+        unresolved.add(nodeKey);
+        return placeholder;
+    });
+
+    if (unresolved.size) {
+        throw new Error(`Dynamic image URL dependencies could not be resolved: ${[...unresolved].join(', ')}`);
+    }
+
+    return resolvedContent;
+};
+
+const fileManager = async (input, workspacePath, task = {}) => {
+    const dependencyOutputs = task?.dependencyOutputs && typeof task.dependencyOutputs === 'object'
+        ? task.dependencyOutputs
+        : {};
+    const resolveContent = (content) => resolveDynamicContent(content, dependencyOutputs);
     const requestedAction = String(input.action || 'read').trim().toLowerCase();
     const action = requestedAction === 'createdirectory' || requestedAction === 'create_directory'
         ? 'createDirectory'
@@ -375,12 +433,13 @@ const fileManager = async (input, workspacePath) => {
 
             const requestedFilePath = entry.path || entry.fileName;
             const targetPath = await resolveWorkspaceFile(workspacePath, requestedFilePath);
-            validateContent(entry.content);
+            const content = resolveContent(entry.content);
+            validateContent(content);
 
             return {
                 requestedFilePath,
                 targetPath,
-                content: entry.content,
+                content,
             };
         }));
 
@@ -464,25 +523,26 @@ const fileManager = async (input, workspacePath) => {
         throw new Error(`Unsupported fileManager action: ${action}`);
     }
 
-    validateContent(input.content);
+    const content = resolveContent(input.content);
+    validateContent(content);
     await fs.mkdir(path.dirname(filePath), {recursive: true});
 
     if (writeAction === 'create') {
-        await fs.writeFile(filePath, input.content, {
+        await fs.writeFile(filePath, content, {
             encoding: 'utf8',
             flag: input.overwrite === true ? 'w' : 'wx',
         });
     } else if (writeAction === 'write' || writeAction === 'update') {
-        await fs.writeFile(filePath, input.content, 'utf8');
+        await fs.writeFile(filePath, content, 'utf8');
     } else if (writeAction === 'append') {
-        await fs.appendFile(filePath, input.content, 'utf8');
+        await fs.appendFile(filePath, content, 'utf8');
     }
 
     return {
         action: desktopFileAction ? 'createDesktopFile' : action,
         path: input.path,
         ...(desktopFileAction ? {location: 'local Desktop'} : {}),
-        bytesWritten: Buffer.byteLength(input.content, 'utf8'),
+        bytesWritten: Buffer.byteLength(content, 'utf8'),
     };
 };
 
@@ -1024,4 +1084,5 @@ module.exports = {
     executeCommand,
     databaseConnector,
     httpRequester,
+    resolveDynamicContent,
 };

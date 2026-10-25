@@ -33,7 +33,7 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
 const execFileAsync = promisify(execFile);
 const SAFE_COMMANDS = new Set([
     'cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir',
-    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun'
+    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'php', 'composer'
 ]);
 const COMMAND_BLACKLIST_PATTERNS = [
     /\bsudo(?:\s|$)/i,
@@ -402,7 +402,20 @@ const fileManager = async (input, workspacePath, task = {}) => {
         await fs.mkdir(targetPath, {recursive: true});
 
         const copiedFiles = [];
+        const skippedPaths = [];
+        const isDependencyPath = (relativePath) => relativePath
+            .split(/[\\/]/)
+            .some((segment) => segment === 'node_modules');
+
         const copyWorkspaceEntry = async (sourcePath, relativePath) => {
+            // npm/pnpm/yarn create executable links under node_modules/.bin.
+            // Dependencies are reproducible from package.json and lockfiles, so
+            // omit the generated directory instead of failing the whole export.
+            if (isDependencyPath(relativePath)) {
+                skippedPaths.push(relativePath);
+                return;
+            }
+
             const sourceStats = await fs.lstat(sourcePath);
 
             if (sourceStats.isSymbolicLink()) {
@@ -456,6 +469,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
             downloaded: isDownloadsExport,
             exported: true,
             files: copiedFiles,
+            skipped: skippedPaths,
+            dependenciesExcluded: skippedPaths.length > 0,
         };
     }
 
@@ -891,7 +906,7 @@ const executeCommand = async (input, workspacePath, task) => {
     }
 
     if (/[;&|`]|\$\(|>|<|\n/.test(command)) {
-        throw new Error('Shell operators and command chaining are not allowed');
+        throw new Error('Shell operators and command chaining are not allowed; run each command as a separate workflow task');
     }
 
     const [commandName, ...args] = tokenizeCommand(command);

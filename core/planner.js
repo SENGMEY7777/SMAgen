@@ -132,6 +132,7 @@ const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|logo|logos|icon|icons|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image|logo|icon|banner)?\s*(?:url|urls|link|links)\b/i;
 const DESKTOP_ASSET_INTENT_PATTERN = /\b(?:list|read|inspect|scan|find|load|use|utili[sz]e|map|import|copy)\b[\s\S]{0,120}\b(?:asset|image|banner|product|file|folder|directory)\b/i;
+const LOCAL_DESTINATION_PATH_PATTERN = /\b(?:desktop|downloads?)[\\/]+([A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)*)/i;
 const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\s'"`]+(?:[\\/][^\s'"`]+)*)/i;
 
 const isHtmlSourceRequest = (goalPrompt) => {
@@ -186,6 +187,12 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+    const localDestinationMatch = taskText.match(LOCAL_DESTINATION_PATH_PATTERN);
+
+    if (localDestinationMatch) {
+        return cleanRelativeDirectoryPath(localDestinationMatch[1].replace(/[.,;!?]+$/, ''));
+    }
+
     const quotedName = taskText.match(
         /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s*["']([^"']+)["']/i,
     );
@@ -732,6 +739,26 @@ const normalizeHomepageImageReferences = (content, imagePrefix) => {
     return normalized;
 };
 
+const escapeHtmlAttribute = (value) => String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&#39;');
+
+const injectHomepageImagePlaceholder = (content, goalPrompt, imagePrefix) => {
+    const topic = extractHomepageTopic(goalPrompt) || 'requested subject';
+    const alt = escapeHtmlAttribute(`${topic} image`);
+    const markup = `\n<section class="generated-image" aria-label="${alt}">\n  <img src="{{imageUrl:${imagePrefix}1}}" alt="${alt}" loading="lazy" />\n</section>\n`;
+    const closingTag = String(content || '').match(/<\/(?:main|body)>/i);
+
+    if (closingTag && closingTag.index !== undefined) {
+        return `${content.slice(0, closingTag.index)}${markup}${content.slice(closingTag.index)}`;
+    }
+
+    return `${content}${markup}`;
+};
+
 const ensureHomepageImageTasks = (tasks, goalPrompt) => {
     if (!isDynamicHomepageImageRequest(goalPrompt)) {
         return tasks;
@@ -752,12 +779,19 @@ const ensureHomepageImageTasks = (tasks, goalPrompt) => {
     const originalContent = typeof indexTask.toolInput?.content === 'string'
         ? indexTask.toolInput.content
         : '';
-    const normalizedContent = normalizeHomepageImageReferences(originalContent, imagePrefix);
-    const placeholderKeys = [...new Set(
+    let normalizedContent = normalizeHomepageImageReferences(originalContent, imagePrefix);
+    let placeholderKeys = [...new Set(
         [...normalizedContent.matchAll(/\{\{imageUrl:([A-Za-z0-9_-]+)\}\}/g)].map((match) => match[1]),
     )];
     if (!placeholderKeys.length) {
-        throw new Error('The planner must include dynamic image placeholders in index.html for the requested image URLs.');
+        normalizedContent = injectHomepageImagePlaceholder(normalizedContent, goalPrompt, imagePrefix);
+        placeholderKeys = [...new Set(
+            [...normalizedContent.matchAll(/\{\{imageUrl:([A-Za-z0-9_-]+)\}\}/g)].map((match) => match[1]),
+        )];
+    }
+
+    if (!placeholderKeys.length) {
+        throw new Error('Unable to add a dynamic image placeholder to index.html for the requested image URL.');
     }
 
     const count = Math.max(
@@ -1876,9 +1910,29 @@ const getCacheKey = (goalPrompt) => {
     return String(goalPrompt || '').trim().toLowerCase().replace(/\s+/g, ' ');
 };
 
+const normalizeLocalDestination = (value) => {
+    const raw = String(value || '').trim().replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '');
+    const match = raw.match(/^(desktop|downloads?)\/(.+)$/i);
+    if (!match) return null;
+
+    const location = /^downloads?$/i.test(match[1]) ? 'Downloads' : 'Desktop';
+    const relativePath = cleanRelativeDirectoryPath(match[2].replace(/[.,;!?]+$/, ''));
+    if (!relativePath) return null;
+
+    return {location, relativePath};
+};
+
+const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
+    const destination = normalizeLocalDestination(localDestination);
+    if (!destination) return goalPrompt;
+
+    return `${goalPrompt}\n\n[Follow-up execution context: continue working in the existing local ${destination.location} folder ${destination.location}/${destination.relativePath}. Create or update the requested output there. Do not choose a different default destination.]`;
+};
+
 const planWorkflowRun = async ({
     runId,
     goalPrompt,
+    localDestination = '',
     userId,
     io = null,
     scheduler = null,
@@ -1897,13 +1951,14 @@ const planWorkflowRun = async ({
         },
     });
 
-    const cacheKey = getCacheKey(goalPrompt);
+    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, localDestination);
+    const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;
 
     if (planCache.has(cacheKey)) {
         console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
         const cached = planCache.get(cacheKey);
-        validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {goalPrompt});
+        validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {goalPrompt: planningGoalPrompt});
     }
 
     if (!validatedPlan) {
@@ -1956,7 +2011,7 @@ ${desktopInstruction}
 
         let attempts = 0;
         const maxAttempts = 3;
-        let currentPrompt = `Goal:\n"${goalPrompt}"`;
+        let currentPrompt = `Goal:\n"${planningGoalPrompt}"`;
         let lastPlannerError = null;
 
         while (attempts < maxAttempts) {
@@ -1972,12 +2027,12 @@ ${desktopInstruction}
                     io,
                 });
 
-                const parsed = validatePlan(rawResult.data, {goalPrompt});
+                const parsed = validatePlan(rawResult.data, {goalPrompt: planningGoalPrompt});
 
                 if (!parsed.success) {
                     lastPlannerError = new Error(parsed.error.message);
                     console.warn('⚠️ [Planner] Plan validation failed:', parsed.error.message);
-                    currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${goalPrompt}`;
+                    currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${planningGoalPrompt}`;
                     continue;
                 }
 
@@ -2000,7 +2055,7 @@ ${desktopInstruction}
                 if (['LLM_UNAVAILABLE', 'LLM_ERROR'].includes(error.code) || error.status === 503 || error.status === 401) {
                     break;
                 }
-                currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${goalPrompt}`;
+                currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${planningGoalPrompt}`;
             }
         }
 

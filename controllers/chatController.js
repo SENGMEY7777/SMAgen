@@ -3,10 +3,12 @@ const {skGemini, skGeminiStream} = require('../configs/llm');
 const {executeTaskNode} = require('../core/executor');
 const sendResponse = require('../utils/responseHelper');
 const logger = require('../utils/logger');
+const {AppError} = require('../utils/errors');
 
 const MAX_HISTORY_MESSAGES = 12;
 const CHAT_MAX_OUTPUT_TOKENS = 8192;
 const IMAGE_REQUEST_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
+const IMAGE_ASPECT_RATIOS = new Set(['1:1', '16:9', '9:16', '4:3', '3:4']);
 
 const FOUNDER_RELATIONSHIP_INSTRUCTION = `
 ### 👤 Founder Relationship Status:
@@ -144,21 +146,57 @@ const buildConversationRequest = ({message, history = []}) => {
 };
 
 const isImageGenerationRequest = (message) => IMAGE_REQUEST_PATTERN.test(String(message || ''));
-const wantsRemoteImageUrl = (message) => /\b(?:image|photo|picture|banner)\b[\s\S]{0,80}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:image\s+)?(?:url|urls|link|links)\b/i.test(String(message || ''));
+const wantsRemoteImageUrl = (message) => /\b(?:image|images|photo|photos|picture|pictures|logo|logos|icon|icons|banner|banners)\b[\s\S]{0,80}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:image|logo|icon|banner)?\s*(?:url|urls|link|links)\b/i.test(String(message || ''));
+
+const isLogoGenerationRequest = (message) => /\b(?:logo|logos|brand\s+mark|wordmark|logomark|favicon)\b/i.test(String(message || ''));
+
+const wantsLocalImageFile = (message) => /\b(?:save|download|store|write|export|local|file)\b[\s\S]{0,80}\b(?:image|logo|icon|banner|picture|artwork|file|computer|desktop|downloads?)\b|\b(?:image|logo|icon|banner|picture|artwork)\s+file\b/i.test(String(message || ''));
+
+const getRequestedImageAspectRatio = (message) => {
+    const match = String(message || '').match(/\b(1\s*[:x]\s*1|16\s*[:x]\s*9|9\s*[:x]\s*16|4\s*[:x]\s*3|3\s*[:x]\s*4)\b/i);
+    if (!match) return '1:1';
+
+    const ratio = match[1].replace(/\s+/g, '').replace('x', ':').toLowerCase();
+    return IMAGE_ASPECT_RATIOS.has(ratio) ? ratio : '1:1';
+};
+
+const buildChatImagePrompt = (message) => {
+    const brief = String(message || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    const logo = isLogoGenerationRequest(brief);
+    const asset = logo ? 'a professional logo or brand mark' : 'a polished image';
+    const constraints = logo
+        ? 'Use a clear, memorable silhouette with strong contrast and a clean background. Do not add a watermark, mockup, browser frame, or unrelated text.'
+        : 'Follow the requested subject, style, colors, composition, and mood. Do not add unrelated subjects, watermarks, or logos unless requested.';
+
+    return `Create ${asset} based exactly on this user brief: "${brief}". ${constraints} Return the visual asset itself.`;
+};
 
 const generateChatImage = async (message) => {
     const runId = `chat-${crypto.randomUUID()}`;
-    const fileName = 'generated-image.png';
-    const execution = await executeTaskNode({
-        runId,
-        assignedTool: 'imageGenerator',
-        toolInput: {
-            prompt: message.trim(),
-            fileName,
-            aspectRatio: '1:1',
-            ...(wantsRemoteImageUrl(message) ? {outputMode: 'url'} : {}),
-        },
-    });
+    const fileName = isLogoGenerationRequest(message) ? 'generated-logo.png' : 'generated-image.png';
+    const remoteRequested = wantsRemoteImageUrl(message);
+    const localRequested = wantsLocalImageFile(message);
+    const outputMode = localRequested ? (remoteRequested ? 'both' : 'file') : 'url';
+    let execution;
+    try {
+        execution = await executeTaskNode({
+            runId,
+            assignedTool: 'imageGenerator',
+            toolInput: {
+                prompt: buildChatImagePrompt(message),
+                fileName,
+                aspectRatio: getRequestedImageAspectRatio(message),
+                outputMode,
+            },
+        });
+    } catch (error) {
+        throw new AppError(
+            'Image generation is temporarily unavailable. Please try again.',
+            502,
+            'IMAGE_GENERATION_FAILED',
+            process.env.NODE_ENV === 'production' ? null : {cause: error.message},
+        );
+    }
     const output = execution?.outputData || {};
 
     if (!output.imageUrl) {

@@ -33,7 +33,7 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
 const execFileAsync = promisify(execFile);
 const SAFE_COMMANDS = new Set([
     'cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir',
-    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'php', 'composer'
+    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'php', 'composer', 'mvn'
 ]);
 const COMMAND_BLACKLIST_PATTERNS = [
     /\bsudo(?:\s|$)/i,

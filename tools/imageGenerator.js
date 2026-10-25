@@ -6,6 +6,9 @@ const { GoogleGenAI } = require('@google/genai');
 const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
 const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
+const ALLOW_WATERMARKED_FALLBACK = String(process.env.ALLOW_WATERMARKED_IMAGE_FALLBACK || '')
+    .trim()
+    .toLowerCase() === 'true';
 
 const getImageDimensions = (aspectRatio) => ({
     width: aspectRatio === '16:9' ? 1280 : aspectRatio === '9:16' ? 720 : 1024,
@@ -31,6 +34,7 @@ const createRemoteImageUrl = (prompt, aspectRatio) => {
  * @param {string} [input.fileName] - Output image filename (e.g. 'hero_banner.png')
  * @param {string} [input.aspectRatio] - '1:1', '16:9', '9:16', '4:3', '3:4'
  * @param {string} [input.outputMode] - 'file' (default), 'url', or 'both'
+ * @param {boolean} [input.watermarkFree] - Require a provider asset without a provider watermark
  * @param {string} workspacePath - Output workspace folder
  */
 async function imageGenerator(input, workspacePath) {
@@ -59,6 +63,7 @@ async function imageGenerator(input, workspacePath) {
     const validAspectRatios = ['1:1', '16:9', '9:16', '4:3', '3:4'];
     const aspectRatio = validAspectRatios.includes(input.aspectRatio) ? input.aspectRatio : '1:1';
     const outputMode = String(input.outputMode || 'file').trim().toLowerCase();
+    const watermarkFree = input.watermarkFree === true || input.removeWatermark === true;
 
     if (!['file', 'url', 'both'].includes(outputMode)) {
         throw new Error("imageGenerator outputMode must be 'file', 'url', or 'both'");
@@ -66,10 +71,10 @@ async function imageGenerator(input, workspacePath) {
 
     const remoteImageUrl = createRemoteImageUrl(prompt, aspectRatio);
 
-    // URL mode is intended for generated HTML and frontend assets. The browser
-    // loads the generated image directly from the image provider, so no local
-    // Desktop/workspace file is required.
-    if (outputMode === 'url') {
+    // URL mode normally uses the remote provider so generated HTML can load
+    // the asset directly. Chat image/logo generation sets watermarkFree=true,
+    // which deliberately skips this path and generates a local asset instead.
+    if (outputMode === 'url' && !watermarkFree) {
         return {
             success: true,
             prompt,
@@ -91,10 +96,8 @@ async function imageGenerator(input, workspacePath) {
                 contents: prompt,
                 config: {
                     responseModalities: ['IMAGE'],
-                    responseFormat: {
-                        image: {
-                            aspectRatio,
-                        },
+                    imageConfig: {
+                        aspectRatio,
                     },
                 },
             });
@@ -123,7 +126,18 @@ async function imageGenerator(input, workspacePath) {
         }
     }
 
-    // 2. High-Quality Free AI Image Engine Fallback
+    // A remote fallback may carry provider branding. Never use it for direct
+    // chat assets that explicitly requested a clean, watermark-free result.
+    if (watermarkFree && !ALLOW_WATERMARKED_FALLBACK) {
+        throw new Error(
+            `Watermark-free image generation failed because Gemini image model '${IMAGE_MODEL}' was unavailable. `
+            + 'Configure a working GEMINI_API_KEY/GEMINI_IMAGE_MODEL instead of using a watermarked fallback.',
+        );
+    }
+
+    // 2. High-Quality Free AI Image Engine Fallback. This path is retained for
+    // workflow HTML that intentionally uses remote images, but is opt-in for
+    // watermark-free requests via ALLOW_WATERMARKED_IMAGE_FALLBACK=true.
     try {
         const fallbackUrl = remoteImageUrl;
 

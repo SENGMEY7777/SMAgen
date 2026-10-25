@@ -134,6 +134,12 @@ const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|picture
 const DESKTOP_ASSET_INTENT_PATTERN = /\b(?:list|read|inspect|scan|find|load|use|utili[sz]e|map|import|copy)\b[\s\S]{0,120}\b(?:asset|image|banner|product|file|folder|directory)\b/i;
 const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\s'"`]+(?:[\\/][^\s'"`]+)*)/i;
 
+const isHtmlSourceRequest = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    return /\b(?:html?|homepage|web\s*page|website|landing\s+page)\b/i.test(text)
+        && /\b(?:create|generate|build|make|add|insert|write|design|setup|set\s+up|update|modify|change|edit)\b/i.test(text);
+};
+
 const cleanRelativeDirectoryPath = (value) => {
     if (typeof value !== 'string') {
         return null;
@@ -219,14 +225,58 @@ const isDesktopExportRequest = (value) => {
     const text = String(value || '');
 
     return LOCAL_DESKTOP_OUTPUT_ENABLED
-        && ((/\b(?:local\s+computer|finder)\b/i.test(text)
+        && ((/\bfinder\b/i.test(text)
                 && /\b(?:show|save|export|copy|folder|directory|project|files?)\b/i.test(text))
             || /\b(?:show|export|copy|save)\b[\s\S]{0,80}\b(?:folder|directory|project|files?|desktop)\b/i.test(text));
+};
+
+const isDownloadsOutputRequest = (value) => {
+    const text = String(value || '');
+
+    return LOCAL_DESKTOP_OUTPUT_ENABLED
+        && (/\b(?:download|downloads|downloaded)\b/i.test(text)
+            || /\b(?:save|store|put)\b[\s\S]{0,60}\b(?:locally|local\s+computer|my\s+computer)\b/i.test(text)
+            || /\blocal\s+computer\b/i.test(text));
 };
 
 const isDesktopOutputRequest = (value) => {
     return isExplicitDesktopWriteRequest(value) || isDesktopExportRequest(value);
 };
+
+const isOutputProducingTask = (task) => {
+    const tool = String(task.assignedTool || '').trim().toLowerCase();
+    const action = String(task.toolInput?.action || '').trim().toLowerCase();
+    const text = String(task.instruction || task.title || task.description || '');
+
+    if (tool === 'imagegenerator' || tool === 'image_generator') {
+        return true;
+    }
+
+    if (tool === 'filemanager' || tool === 'file_manager') {
+        return new Set([
+            'createfile',
+            'createfiles',
+            'writefile',
+            'appendfile',
+            'updatefile',
+            'copyfile',
+            'createdesktopfile',
+            'exportworkspacetodesktop',
+            'exportworkspacetodownloads',
+        ]).has(action);
+    }
+
+    return (tool === 'executecommand' || tool === 'execute_command')
+        && /\b(?:create|generate|build|scaffold|write|save|export|compile|install)\b/i.test(text);
+};
+
+const hasLocalExportTask = (tasks) => tasks.some((task) => {
+    const tool = String(task.assignedTool || '').trim().toLowerCase();
+    const action = String(task.toolInput?.action || '').trim().toLowerCase();
+
+    return (tool === 'filemanager' || tool === 'file_manager')
+        && /^(?:exportworkspacetodesktop|exportworkspacetodownloads)$/.test(action);
+});
 
 const normalizeDirectoryTask = (task, goalPrompt) => {
     const toolInput = task.toolInput || {};
@@ -419,6 +469,47 @@ const appendDesktopExportTask = (tasks, goalPrompt) => {
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'exportWorkspaceToDesktop',
+                path: exportPath,
+            },
+        },
+    ];
+};
+
+const appendDownloadsExportTask = (tasks, goalPrompt) => {
+    if (
+        !LOCAL_DESKTOP_OUTPUT_ENABLED
+        || isDesktopOutputRequest(goalPrompt)
+        || hasLocalExportTask(tasks)
+    ) {
+        return tasks;
+    }
+
+    if (!isDownloadsOutputRequest(goalPrompt) && !tasks.some(isOutputProducingTask)) {
+        return tasks;
+    }
+
+    const exportPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    ) || cleanRelativeDirectoryPath(process.env.LOCAL_DOWNLOAD_OUTPUT_DIR) || 'kairo-workflow';
+
+    const existingKeys = new Set(tasks.map((task) => task.nodeKey));
+    let nodeKey = 'export_downloads';
+    let suffix = 2;
+    while (existingKeys.has(nodeKey)) {
+        nodeKey = `export_downloads_${suffix}`;
+        suffix += 1;
+    }
+
+    return [
+        ...tasks,
+        {
+            nodeKey,
+            title: `Export generated output to Downloads/${exportPath}`,
+            instruction: `Copy the completed workflow output to the local Downloads folder ${exportPath}.`,
+            dependencies: tasks.map((task) => task.nodeKey),
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'exportWorkspaceToDownloads',
                 path: exportPath,
             },
         },
@@ -737,6 +828,86 @@ const extractDesktopFileNames = (goalPrompt) => {
         .map((candidate) => cleanRelativeFilePath(candidate))
         .filter((candidate) => candidate && !candidate.includes('/'))
         .filter((candidate, index, all) => all.indexOf(candidate) === index);
+};
+
+const extractRequestedHtmlFileName = (goalPrompt) => {
+    return extractDesktopFileNames(goalPrompt)
+        .find((fileName) => /\.html?$/i.test(fileName)) || null;
+};
+
+const getHtmlContentFromTask = (task, fileName) => {
+    const toolInput = task.toolInput || {};
+
+    if (typeof toolInput.content === 'string') {
+        return toolInput.content;
+    }
+
+    const fileEntry = Array.isArray(toolInput.files)
+        ? toolInput.files.find((entry) => {
+            const entryPath = String(entry?.path || entry?.fileName || '').replace(/\\/g, '/');
+            return path.basename(entryPath).toLowerCase() === fileName.toLowerCase();
+        })
+        : null;
+
+    return typeof fileEntry?.content === 'string' ? fileEntry.content : null;
+};
+
+const ensureRequestedHtmlTask = (tasks, goalPrompt) => {
+    if (
+        !isHtmlSourceRequest(goalPrompt)
+        || isExplicitDesktopWriteRequest(goalPrompt)
+    ) {
+        return tasks;
+    }
+
+    const fileName = extractRequestedHtmlFileName(goalPrompt);
+    if (!fileName) {
+        return tasks;
+    }
+
+    const existingTask = tasks.find((task) => {
+        const taskPath = String(task.toolInput?.path || '').replace(/\\/g, '/');
+        const taskText = `${task.title || ''} ${task.instruction || ''} ${taskPath}`.toLowerCase();
+        return path.basename(taskPath).toLowerCase() === fileName.toLowerCase()
+            || taskText.includes(fileName.toLowerCase())
+            || (Array.isArray(task.toolInput?.files)
+                && task.toolInput.files.some((entry) => (
+                    path.basename(String(entry?.path || entry?.fileName || '').replace(/\\/g, '/')).toLowerCase()
+                    === fileName.toLowerCase()
+                )));
+    });
+
+    const content = existingTask ? getHtmlContentFromTask(existingTask, fileName) : null;
+    if (!existingTask || typeof content !== 'string' || !content.trim()) {
+        throw new Error(
+            `The planner must create the requested ${fileName} source file with complete HTML content. Do not generate ${fileName}.png or use imageGenerator unless the user explicitly requests an image.`,
+        );
+    }
+
+    if (existingTask.assignedTool === 'fileManager'
+        && String(existingTask.toolInput?.action || '').trim().toLowerCase() === 'createfiles') {
+        return tasks;
+    }
+
+    return tasks.map((task) => {
+        if (task !== existingTask) {
+            return task;
+        }
+
+        return {
+            ...task,
+            title: `Create ${fileName} homepage`,
+            instruction: `Create the requested ecommerce homepage in ${fileName}.`,
+            assignedTool: 'fileManager',
+            toolInput: {
+                ...task.toolInput,
+                action: 'create',
+                mode: task.toolInput?.mode || 'create',
+                path: fileName,
+                content,
+            },
+        };
+    });
 };
 
 const fallbackDesktopFileContent = (fileName, goalPrompt) => {
@@ -1424,6 +1595,26 @@ const normalizeNonImageTask = (task) => {
 const normalizeImageTasks = (tasks, goalPrompt) => {
     const imageGoal = IMAGE_INTENT_PATTERN.test(String(goalPrompt || ''));
     const remoteImageUrls = wantsRemoteImageUrls(goalPrompt);
+    const htmlSourceWithoutImages = isHtmlSourceRequest(goalPrompt)
+        && !IMAGE_KEYWORD_PATTERN.test(String(goalPrompt || ''))
+        && !IMAGE_URL_INTENT_PATTERN.test(String(goalPrompt || ''));
+
+    if (htmlSourceWithoutImages) {
+        const removedImageTaskKeys = new Set();
+        const remainingTasks = tasks.filter((task) => {
+            const isImageTask = task.assignedTool === IMAGE_GENERATOR_TOOL || isImageGenerationTask(task);
+            if (isImageTask) {
+                removedImageTaskKeys.add(task.nodeKey);
+            }
+            return !isImageTask;
+        });
+
+        tasks = remainingTasks.map((task) => ({
+            ...task,
+            dependencies: (task.dependencies || [])
+                .filter((dependency) => !removedImageTaskKeys.has(dependency)),
+        }));
+    }
 
     return tasks.map((task) => {
         const imageTask = isImageGenerationTask(task);
@@ -1533,8 +1724,11 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // Desktop asset discovery must use the constrained fileManager path, never a shell command.
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
+        plan.tasks = ensureRequestedHtmlTask(plan.tasks, goalPrompt);
         // Local development users should be able to open the generated project in Finder.
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
+        // File-producing workflows without an explicit destination are downloaded locally by default.
+        plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
 
         if (isExplicitDesktopWriteRequest(goalPrompt)) {
             const directoryPath = cleanRelativeDirectoryPath(
@@ -1698,14 +1892,14 @@ const planWorkflowRun = async ({
 
     if (!validatedPlan) {
         const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
-            ? `- Local Desktop access is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"requested-folder"}. For a project setup inside that folder, first create the folder with fileManager, then use executeCommand with a relative cwd and desktop:true for the approved package-manager command. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"requested-folder"}; never use executeCommand to create a Desktop directory or to access arbitrary absolute Desktop paths.`
+            ? `- Local file output is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"requested-folder"}. For a project setup inside that folder, first create the folder with fileManager, then use executeCommand with a relative cwd and desktop:true for the approved package-manager command. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"requested-folder"}. For a local Downloads request, use fileManager with {"action":"exportWorkspaceToDownloads","path":"requested-folder"}. If a file-producing workflow does not specify a destination, add exportWorkspaceToDownloads as the final task so the result is available under ~/Downloads/kairo-workflow. Never use executeCommand to create a Desktop directory or to access arbitrary absolute local paths.`
             : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
 1. 'executeCommand' - Run allowlisted workspace commands such as cat, head, tail, grep, ls, pwd, find, wc, npm, npx, node, and git. Never use executeCommand or mkdir for directory creation; use fileManager instead.
-2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, and {"action":"exportWorkspaceToDesktop","path":"requested-folder"} to export the completed project.
+2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
@@ -1723,6 +1917,8 @@ Rules:
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
+- A request containing a filename ending in .html or .htm is always a source-code request. Create that exact filename with fileManager and complete HTML content. Never rename it to .png, never use imageGenerator for it, and implement requested dark/light mode behavior with HTML, CSS, and JavaScript.
+- Use imageGenerator only when the user explicitly requests an image, photo, logo, banner, illustration, artwork, or image URL. Words such as homepage, ecommerce, product, dark mode, or light mode alone do not request an image.
 - If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 ${desktopInstruction}

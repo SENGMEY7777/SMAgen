@@ -9,7 +9,11 @@ const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
 
 const getImageDimensions = (aspectRatio) => ({
     width: aspectRatio === '16:9' ? 1280 : aspectRatio === '9:16' ? 720 : 1024,
-    height: aspectRatio === '16:9' ? 720 : aspectRatio === '9:16' ? 1280 : 1024,
+    height: aspectRatio === '16:9' ? 720
+        : aspectRatio === '9:16' ? 1280
+            : aspectRatio === '4:3' ? 768
+                : aspectRatio === '3:4' ? 1365
+                    : 1024,
 });
 
 const createRemoteImageUrl = (prompt, aspectRatio) => {

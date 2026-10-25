@@ -32,7 +32,7 @@ const list = async (userId) => {
     return workflowModel.listWorkflowsByUser(userId);
 }
 
-const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) => {
+const runWorkflow = async ({runId, workflowId, goalPrompt, localDestination = '', userId, io = null}) => {
     let executionRun;
 
     if (runId) {
@@ -108,6 +108,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, userId, io = null}) =
     const plan = await planWorkflowRun({
         runId: executionRun.id,
         goalPrompt: executionRun.goal_prompt,
+        localDestination,
         userId,
         io,
     });

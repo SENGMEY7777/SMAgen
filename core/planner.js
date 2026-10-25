@@ -47,29 +47,6 @@ const DIRECTORY_ACTIONS = new Set([
 const DESKTOP_FILE_ACTION = 'createDesktopFile';
 const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
 const IMAGE_GENERATOR_TOOL = 'imageGenerator';
-const DEFAULT_PINIA_STORE = `import { defineStore } from 'pinia'
-import { ref } from 'vue'
-
-export const useCounterStore = defineStore('counter', () => {
-  const count = ref(0)
-
-  function increment() {
-    count.value += 1
-  }
-
-  return {count, increment}
-})
-`;
-const DEFAULT_PINIA_MAIN = `import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import App from './App.vue'
-import './style.css'
-
-const app = createApp(App)
-app.use(createPinia())
-app.mount('#app')
-`;
-
 const extractHomepageTopic = (goalPrompt) => {
     const text = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
     const quotedMatch = text.match(
@@ -84,23 +61,6 @@ const extractHomepageTopic = (goalPrompt) => {
         .replace(/^(?:a|an|the)\s+/i, '')
         .replace(/\s+/g, ' ')
         .slice(0, 64)
-        .trim();
-};
-
-const extractRequestedMessage = (goalPrompt) => {
-    const text = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
-    const quotedMatch = text.match(
-        /\b(?:display|displya|displaying|print|printing|show|showing|say|says|output|outputs|write|writes)\s+(?:the\s+)?(?:message|text|content)?\s*["']([^"']+)["']/i,
-    );
-    const unquotedMatch = text.match(
-        /\b(?:display|displya|displaying|print|printing|show|showing|say|says|output|outputs|write|writes)\s+(?:the\s+)?(?:message|text|content)?\s+(.+?)(?=\s+(?:on|in|inside|under|within|from|to|as|named|called|folder|file)\b|[?.!,]|$)/i,
-    );
-    const message = (quotedMatch?.[1] || unquotedMatch?.[1] || '').trim();
-
-    return message
-        .replace(/^(?:the|a|an)\s+/i, '')
-        .replace(/\s+/g, ' ')
-        .slice(0, 160)
         .trim();
 };
 
@@ -471,7 +431,7 @@ const appendDesktopExportTask = (tasks, goalPrompt) => {
         {
             nodeKey,
             title: `Export generated output to Desktop/${exportPath}`,
-            instruction: `Copy the completed workflow output to the local Desktop folder ${exportPath}.`,
+            instruction: `Copy the completed workflow output to the local Desktop folder ${exportPath}, excluding generated node_modules dependencies.`,
             dependencies: tasks.map((task) => task.nodeKey),
             assignedTool: 'fileManager',
             toolInput: {
@@ -512,7 +472,7 @@ const appendDownloadsExportTask = (tasks, goalPrompt) => {
         {
             nodeKey,
             title: `Export generated output to Downloads/${exportPath}`,
-            instruction: `Copy the completed workflow output to the local Downloads folder ${exportPath}.`,
+            instruction: `Copy the completed workflow output to the local Downloads folder ${exportPath}, excluding generated node_modules dependencies.`,
             dependencies: tasks.map((task) => task.nodeKey),
             assignedTool: 'fileManager',
             toolInput: {
@@ -960,43 +920,6 @@ const ensureRequestedHtmlTask = (tasks, goalPrompt) => {
     });
 };
 
-const fallbackDesktopFileContent = (fileName, goalPrompt) => {
-    const extension = path.extname(fileName).toLowerCase();
-    const baseName = path.basename(fileName, extension);
-    const topic = extractHomepageTopic(goalPrompt) || baseName;
-    const requestedMessage = extractRequestedMessage(goalPrompt);
-    const className = baseName
-        .replace(/[^A-Za-z0-9]+/g, ' ')
-        .split(' ')
-        .filter(Boolean)
-        .map((part) => `${part[0].toUpperCase()}${part.slice(1)}`)
-        .join('') || 'Main';
-
-    if (extension === '.html' || extension === '.htm') {
-        return '';
-    }
-
-    if (extension === '.java') {
-        const message = requestedMessage || (/hello\s+world/i.test(goalPrompt) ? 'Hello World' : `Generated for ${topic}`);
-        return `public class ${className} {\n    public static void main(String[] args) {\n        System.out.println(${JSON.stringify(message)});\n    }\n}\n`;
-    }
-
-    if (extension === '.json') {
-        return `${JSON.stringify({title: topic, message: requestedMessage || `Generated for ${topic}`}, null, 2)}\n`;
-    }
-
-    if (extension === '.md' || extension === '.txt') {
-        return `# ${topic}\n\n${requestedMessage || `Content created for ${topic}.`}\n`;
-    }
-
-    if (extension === '.js' || extension === '.mjs' || extension === '.cjs') {
-        const message = requestedMessage || (/hello\s+world/i.test(goalPrompt) ? 'Hello World' : `Hello from ${topic}`);
-        return `// Generated for ${topic}\nconsole.log(${JSON.stringify(message)});\n`;
-    }
-
-    return `/* Generated for ${topic} */\n`;
-};
-
 const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
     if (!isExplicitDesktopWriteRequest(goalPrompt)) {
         return tasks;
@@ -1061,11 +984,6 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
             const existingContent = typeof existingTask.toolInput?.content === 'string'
                 ? existingTask.toolInput.content.trim()
                 : '';
-            const requestedMessage = extractRequestedMessage(goalPrompt);
-            const existingContentMatchesGoal = !requestedMessage
-                || existingContent.toLowerCase().includes(requestedMessage.toLowerCase());
-            const hasUnrelatedGeneratedContent = /(?:generated by kairo|kairo is ready|autonomous intelligence)/i.test(existingContent);
-            const fallbackContent = fallbackDesktopFileContent(fileName, goalPrompt);
             const isHomepageFile = /^index\.html?$/i.test(fileName) && isIndexHtmlRequest(goalPrompt);
 
             const taskIndex = nextTasks.indexOf(existingTask);
@@ -1084,11 +1002,9 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
                     action: DESKTOP_FILE_ACTION,
                     mode: existingTask.toolInput?.mode || 'create',
                     path: desktopPath,
-                    content: isHomepageFile
-                        ? existingContent
-                        : existingContent && existingContentMatchesGoal && !hasUnrelatedGeneratedContent
-                            ? existingContent
-                            : fallbackContent,
+                    // Preserve the content produced from the current user
+                    // prompt. Do not replace it with a generic file template.
+                    content: existingContent,
                 },
             };
             continue;
@@ -1113,9 +1029,9 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
                 action: DESKTOP_FILE_ACTION,
                 mode: 'create',
                 path: `${directoryPath}/${fileName}`,
-                content: /^index\.html?$/i.test(fileName) && isIndexHtmlRequest(goalPrompt)
-                    ? ''
-                    : fallbackDesktopFileContent(fileName, goalPrompt),
+                // Missing source content is left empty rather than filled with
+                // static Java/JSON/JS/Markdown boilerplate.
+                content: '',
             },
         });
     }
@@ -1169,6 +1085,131 @@ const getUniqueNodeKey = (tasks, baseKey) => {
     }
 
     return nodeKey;
+};
+
+// The command executor intentionally runs without a shell, so a planner
+// command must contain exactly one executable invocation. Expand the safe,
+// sequential `&&` form into dependent tasks before persistence.
+const splitSequentialCommand = (command) => {
+    if (typeof command !== 'string' || !command.includes('&&')) {
+        return null;
+    }
+
+    const parts = [];
+    let current = '';
+    let quote = null;
+    let escaped = false;
+
+    for (let index = 0; index < command.length; index += 1) {
+        const character = command[index];
+
+        if (escaped) {
+            current += character;
+            escaped = false;
+            continue;
+        }
+
+        if (character === '\\' && quote !== "'") {
+            current += character;
+            escaped = true;
+            continue;
+        }
+
+        if ((character === '"' || character === "'") && (!quote || quote === character)) {
+            quote = quote ? null : character;
+            current += character;
+            continue;
+        }
+
+        if (!quote && character === '&' && command[index + 1] === '&') {
+            const part = current.trim();
+            if (!part) return null;
+            parts.push(part);
+            current = '';
+            index += 1;
+            continue;
+        }
+
+        current += character;
+    }
+
+    const finalPart = current.trim();
+    if (!finalPart) return null;
+    parts.push(finalPart);
+
+    return parts.length > 1 ? parts : null;
+};
+
+const normalizeChainedCommandTasks = (tasks) => {
+    if (!Array.isArray(tasks) || !tasks.length) {
+        return tasks;
+    }
+
+    const usedKeys = new Set(tasks.map((task) => task.nodeKey));
+    const replacements = new Map();
+    const internalDependencies = new Map();
+    const expandedTasks = [];
+
+    for (const task of tasks) {
+        const commandParts = task.assignedTool === 'executeCommand'
+            ? splitSequentialCommand(task.toolInput?.command)
+            : null;
+
+        if (!commandParts) {
+            expandedTasks.push(task);
+            continue;
+        }
+
+        let previousNodeKey = null;
+        const expanded = commandParts.map((commandPart, index) => {
+            let nodeKey = index === 0 ? task.nodeKey : `${task.nodeKey}_${index + 1}`;
+
+            while (usedKeys.has(nodeKey) && nodeKey !== task.nodeKey) {
+                nodeKey = `${task.nodeKey}_${index + 1}_${usedKeys.size}`;
+            }
+            usedKeys.add(nodeKey);
+
+            const dependencies = index === 0
+                ? [...task.dependencies]
+                : [...task.dependencies, previousNodeKey];
+
+            const nextTask = {
+                ...task,
+                nodeKey,
+                title: commandParts.length > 1
+                    ? `${task.title} (${index + 1}/${commandParts.length})`
+                    : task.title,
+                instruction: commandParts.length > 1
+                    ? `Run command ${index + 1} of ${commandParts.length}: ${commandPart}`
+                    : task.instruction,
+                dependencies: [...new Set(dependencies.filter(Boolean))],
+                toolInput: {
+                    ...task.toolInput,
+                    command: commandPart,
+                },
+            };
+
+            internalDependencies.set(nodeKey, new Set(index === 0 ? [] : [previousNodeKey]));
+            previousNodeKey = nodeKey;
+            return nextTask;
+        });
+
+        replacements.set(task.nodeKey, previousNodeKey);
+        expandedTasks.push(...expanded);
+    }
+
+    if (!replacements.size) {
+        return expandedTasks;
+    }
+
+    return expandedTasks.map((task) => ({
+        ...task,
+        dependencies: [...new Set(task.dependencies
+            .map((dependency) => internalDependencies.get(task.nodeKey)?.has(dependency)
+                ? dependency
+                : (replacements.get(dependency) || dependency))
+            .filter((dependency) => dependency && dependency !== task.nodeKey))],
+    }));
 };
 
 const ensureVueDesktopProjectTasks = (tasks, goalPrompt) => {
@@ -1437,8 +1478,8 @@ const ensurePiniaDesktopProjectTasks = (tasks, goalPrompt) => {
         const storeIndex = nextTasks.indexOf(storeTask);
         storeTask = {
             ...storeTask,
-            title: 'Create Pinia counter store',
-            instruction: `Create a starter Pinia store at ${storePath}.`,
+            title: 'Update the requested Pinia store',
+            instruction: `Create the Pinia store requested by the user at ${storePath}.`,
             dependencies: [...new Set([...(storeTask.dependencies || []), installTask.nodeKey])]
                 .filter((dependency) => dependency !== storeTask.nodeKey),
             assignedTool: 'fileManager',
@@ -1446,22 +1487,24 @@ const ensurePiniaDesktopProjectTasks = (tasks, goalPrompt) => {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: storePath,
-                content: DEFAULT_PINIA_STORE,
+                content: typeof storeTask.toolInput?.content === 'string'
+                    ? storeTask.toolInput.content
+                    : '',
             },
         };
         nextTasks[storeIndex] = storeTask;
     } else {
         storeTask = {
             nodeKey: getUniqueNodeKey(nextTasks, 'create_pinia_store'),
-            title: 'Create Pinia counter store',
-            instruction: `Create a starter Pinia store at ${storePath}.`,
+            title: 'Create the requested Pinia store',
+            instruction: `Create the Pinia store requested by the user at ${storePath}.`,
             dependencies: [installTask.nodeKey],
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: storePath,
-                content: DEFAULT_PINIA_STORE,
+                content: '',
             },
         };
         nextTasks.push(storeTask);
@@ -1483,7 +1526,9 @@ const ensurePiniaDesktopProjectTasks = (tasks, goalPrompt) => {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: mainPath,
-                content: DEFAULT_PINIA_MAIN,
+                content: typeof mainTask.toolInput?.content === 'string'
+                    ? mainTask.toolInput.content
+                    : '',
             },
         };
         nextTasks[mainIndex] = mainTask;
@@ -1498,7 +1543,7 @@ const ensurePiniaDesktopProjectTasks = (tasks, goalPrompt) => {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: mainPath,
-                content: DEFAULT_PINIA_MAIN,
+                content: '',
             },
         };
         nextTasks.push(mainTask);
@@ -1752,6 +1797,10 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
             task.dependencies = [...new Set(task.dependencies)];
         });
 
+        // The executor rejects shell chaining. Expand planner output such as
+        // `php --version && composer --version` into ordered command tasks.
+        plan.tasks = normalizeChainedCommandTasks(plan.tasks);
+
         // A Desktop directory task establishes the destination for dependent file writes.
         // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
         plan.tasks = normalizeDesktopFileTasks(plan.tasks, goalPrompt);
@@ -1969,7 +2018,7 @@ const planWorkflowRun = async ({
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
-1. 'executeCommand' - Run allowlisted workspace commands such as cat, head, tail, grep, ls, pwd, find, wc, npm, npx, node, and git. Never use executeCommand or mkdir for directory creation; use fileManager instead.
+1. 'executeCommand' - Run one allowlisted workspace command at a time, such as cat, head, tail, grep, ls, pwd, find, wc, php, composer, npm, npx, node, and git. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines. If multiple commands are needed, create separate dependent executeCommand tasks. Never use executeCommand or mkdir for directory creation; use fileManager instead.
 2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
@@ -1988,6 +2037,8 @@ Rules:
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
+- For every project setup request, derive the project name, framework, runtime, dependencies, files, commands, and source content from the exact user prompt. Do not add a fixed demo project, fixed file names, fixed starter copy, or generic fallback source. If the user did not request a file, do not invent one.
+- Never replace model-generated source content with a generic fallback. If a requested source file has no generated content, preserve it as an empty file and keep the requested filename; do not fabricate unrelated code.
 - A request containing a filename ending in .html or .htm is always a source-code request. Create that exact filename with fileManager and complete HTML content. Never rename it to .png, never use imageGenerator for it, and implement requested dark/light mode behavior with HTML, CSS, and JavaScript.
 - Use imageGenerator only when the user explicitly requests an image, photo, logo, banner, illustration, artwork, or image URL. Words such as homepage, ecommerce, product, dark mode, or light mode alone do not request an image.
 - If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.

@@ -37,6 +37,7 @@ const normalizeTask = (task) => ({
     ...task,
     dependencies: parseJsonValue(task.dependencies, []),
     tool_input: parseJsonValue(task.tool_input, {}),
+    tool_output: parseJsonValue(task.tool_output ?? task.toolOutput, null),
 });
 
 const emitEvent = (io, runId, event, payload) => {
@@ -240,7 +241,17 @@ const triggerScheduler = async (runId, options = {}) => {
                 });
 
                 try {
-                    const executionResult = await executor(task);
+                    const dependencyOutputs = Object.fromEntries(
+                        task.dependencies.map((dependency) => {
+                            const dependencyTask = tasks.find((candidate) => candidate.node_key === dependency);
+                            return [dependency, dependencyTask?.tool_output ?? null];
+                        }),
+                    );
+                    const taskWithDependencies = {
+                        ...task,
+                        dependencyOutputs,
+                    };
+                    const executionResult = await executor(taskWithDependencies);
                     const output = executionResult && Object.prototype.hasOwnProperty.call(executionResult, 'outputData')
                         ? executionResult.outputData
                         : executionResult;

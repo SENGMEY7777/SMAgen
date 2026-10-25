@@ -1,4 +1,12 @@
-const rateLimit = require('express-rate-limit');
+const {ipKeyGenerator, rateLimit} = require('express-rate-limit');
+
+const requestKeyGenerator = (req) => {
+    if (req.user?.id) {
+        return `user:${String(req.user.id)}`;
+    }
+
+    return `ip:${ipKeyGenerator(req.ip || req.socket?.remoteAddress || 'unknown')}`;
+};
 
 const rateLimitMessage = (message, code) => ({
     success: false,
@@ -22,7 +30,7 @@ const isProduction = String(process.env.NODE_ENV || '').trim().toLowerCase() ===
 const workflowRunLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     limit: Number(process.env.WORKFLOW_RUN_LIMIT) || (isProduction ? 100 : 2000),
-    keyGenerator: (req) => String(req.user?.id || req.ip),
+    keyGenerator: requestKeyGenerator,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     message: rateLimitMessage(
@@ -35,7 +43,7 @@ const workflowRunLimiter = rateLimit({
 const chatLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     limit: Number(process.env.CHAT_LIMIT) || (isProduction ? 200 : 2000),
-    keyGenerator: (req) => String(req.user?.id || req.ip),
+    keyGenerator: requestKeyGenerator,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
     message: rateLimitMessage(

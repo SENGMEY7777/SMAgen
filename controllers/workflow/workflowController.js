@@ -38,6 +38,7 @@ const runWorkflow = async (req, res, next) => {
             runId: req.params.runId,
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
+            localDestination: body.localDestination,
             userId: req.user.id,
             io: req.app.get('io'),
         });
@@ -97,6 +98,7 @@ const runWorkflowStream = async (req, res) => {
             runId: req.params.runId,
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
+            localDestination: body.localDestination,
             userId: req.user.id,
             io: streamIo,
         });

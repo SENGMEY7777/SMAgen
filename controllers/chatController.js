@@ -187,6 +187,7 @@ const generateChatImage = async (message) => {
                 fileName,
                 aspectRatio: getRequestedImageAspectRatio(message),
                 outputMode,
+                watermarkFree: true,
             },
         });
     } catch (error) {

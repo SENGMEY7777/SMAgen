@@ -45,7 +45,18 @@ const DIRECTORY_ACTIONS = new Set([
 ]);
 
 const DESKTOP_FILE_ACTION = 'createDesktopFile';
-const FILE_WRITE_ACTIONS = new Set(['create', 'write', 'update', 'append']);
+const FILE_WRITE_ACTIONS = new Set([
+    'create',
+    'write',
+    'update',
+    'append',
+    'createfile',
+    'createfiles',
+    'writefile',
+    'writefiles',
+    'updatefile',
+    'appendfile',
+]);
 const IMAGE_GENERATOR_TOOL = 'imageGenerator';
 const extractHomepageTopic = (goalPrompt) => {
     const text = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
@@ -397,12 +408,76 @@ const shouldExportWorkspaceToDesktop = (goalPrompt, tasks) => {
     }
 
     const hasExistingDesktopFileOutput = tasks.some((task) => {
+        const tool = String(task.assignedTool || '').trim().toLowerCase();
         const action = String(task.toolInput?.action || '').trim().toLowerCase();
-        return action === 'createdesktopfile' || action === 'create_desktop_file'
-            || action === 'exportworkspacetodesktop' || action === 'export_workspace_to_desktop';
+        if (action === 'createdesktopfile' || action === 'create_desktop_file'
+            || action === 'exportworkspacetodesktop' || action === 'export_workspace_to_desktop') {
+            return true;
+        }
+
+        if (tool !== 'filemanager' && tool !== 'file_manager') {
+            return false;
+        }
+
+        const files = Array.isArray(task.toolInput?.files) ? task.toolInput.files : [];
+        return files.some((file) => /^(?:desktop[\\/]|~[\\/]?desktop[\\/])/i.test(String(file?.path || file?.fileName || '').trim()));
     });
 
     return !hasExistingDesktopFileOutput;
+};
+
+const normalizeLocalExportTasks = (tasks, goalPrompt) => {
+    if (!isExplicitDesktopWriteRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const keepsDownloads = isDownloadsOutputRequest(goalPrompt);
+    const hasDirectDesktopFileOutput = tasks.some((task) => {
+        const tool = String(task.assignedTool || '').trim().toLowerCase();
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (action === 'createdesktopfile' || action === 'create_desktop_file') {
+            return true;
+        }
+
+        if (tool !== 'filemanager' && tool !== 'file_manager') {
+            return false;
+        }
+
+        const filePath = String(task.toolInput?.path || '').trim();
+        const files = Array.isArray(task.toolInput?.files) ? task.toolInput.files : [];
+        return /^(?:desktop[\\/]|~[\\/]?desktop[\\/])/i.test(filePath)
+            || files.some((file) => /^(?:desktop[\\/]|~[\\/]?desktop[\\/])/i.test(String(file?.path || file?.fileName || '').trim()));
+    });
+
+    const removedKeys = new Set();
+    const filteredTasks = tasks.filter((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        const isDownloadsExport = action === 'exportworkspacetodownloads'
+            || action === 'export_workspace_to_downloads';
+        const isDesktopExport = action === 'exportworkspacetodesktop'
+            || action === 'export_workspace_to_desktop';
+
+        if (isDownloadsExport && !keepsDownloads) {
+            removedKeys.add(task.nodeKey);
+            return false;
+        }
+
+        if (isDesktopExport && hasDirectDesktopFileOutput) {
+            removedKeys.add(task.nodeKey);
+            return false;
+        }
+
+        return true;
+    });
+
+    if (!removedKeys.size) {
+        return tasks;
+    }
+
+    return filteredTasks.map((task) => ({
+        ...task,
+        dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
+    }));
 };
 
 const appendDesktopExportTask = (tasks, goalPrompt) => {
@@ -935,17 +1010,15 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
             || inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
     );
 
-    if (!directoryPath) {
-        return tasks;
-    }
-
     const nextTasks = [...tasks];
-    let directoryTask = nextTasks.find((task) => (
-        isDesktopDirectoryTask(task)
-        && cleanRelativeDirectoryPath(task.toolInput?.path) === directoryPath
-    ));
+    let directoryTask = directoryPath
+        ? nextTasks.find((task) => (
+            isDesktopDirectoryTask(task)
+            && cleanRelativeDirectoryPath(task.toolInput?.path) === directoryPath
+        ))
+        : null;
 
-    if (!directoryTask) {
+    if (directoryPath && !directoryTask) {
         const existingKeys = new Set(nextTasks.map((task) => task.nodeKey));
         let nodeKey = 'create_desktop_directory';
         let suffix = 2;
@@ -978,25 +1051,38 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
 
         if (existingTask) {
             const requestedPath = cleanRelativeFilePath(existingTask.toolInput?.path) || fileName;
-            const desktopPath = requestedPath === directoryPath || requestedPath.startsWith(`${directoryPath}/`)
-                ? requestedPath
-                : `${directoryPath}/${requestedPath}`;
+            const desktopPath = directoryPath
+                ? (requestedPath === directoryPath || requestedPath.startsWith(`${directoryPath}/`)
+                    ? requestedPath
+                    : `${directoryPath}/${requestedPath}`)
+                : requestedPath;
+            const fileEntry = Array.isArray(existingTask.toolInput?.files)
+                ? existingTask.toolInput.files.find((entry) => (
+                    path.basename(String(entry?.path || entry?.fileName || '').replace(/\\/g, '/')).toLowerCase()
+                    === fileName.toLowerCase()
+                ))
+                : null;
             const existingContent = typeof existingTask.toolInput?.content === 'string'
                 ? existingTask.toolInput.content.trim()
-                : '';
+                : typeof fileEntry?.content === 'string' ? fileEntry.content : '';
             const isHomepageFile = /^index\.html?$/i.test(fileName) && isIndexHtmlRequest(goalPrompt);
 
             const taskIndex = nextTasks.indexOf(existingTask);
             nextTasks[taskIndex] = {
                 ...existingTask,
                 title: isHomepageFile
-                    ? `Create ${directoryPath}/${fileName} homepage`
+                    ? `Create ${directoryPath ? `${directoryPath}/` : ''}${fileName} homepage`
                     : `Create Desktop file ${fileName}`,
                 instruction: isHomepageFile
-                    ? `Create a homepage for ${extractHomepageTopic(goalPrompt) || 'the requested subject'} in ${directoryPath}/${fileName}.`
-                    : `Create ${fileName} inside the Desktop directory ${directoryPath}.`,
+                    ? `Create a homepage for ${extractHomepageTopic(goalPrompt) || 'the requested subject'} in ${directoryPath ? `${directoryPath}/` : ''}${fileName}.`
+                    : directoryPath
+                        ? `Create ${fileName} inside the Desktop directory ${directoryPath}.`
+                        : `Create ${fileName} directly on the local Desktop.`,
                 assignedTool: 'fileManager',
-                dependencies: [...new Set([...(existingTask.dependencies || []), directoryTask.nodeKey])],
+                dependencies: [...new Set([
+                    ...(existingTask.dependencies || []),
+                    ...(directoryTask ? [directoryTask.nodeKey] : []),
+                ])],
                 toolInput: {
                     ...existingTask.toolInput,
                     action: DESKTOP_FILE_ACTION,
@@ -1022,13 +1108,15 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
         nextTasks.push({
             nodeKey,
             title: `Create Desktop file ${fileName}`,
-            instruction: `Create ${fileName} inside the Desktop directory ${directoryPath}.`,
-            dependencies: [directoryTask.nodeKey],
+            instruction: directoryPath
+                ? `Create ${fileName} inside the Desktop directory ${directoryPath}.`
+                : `Create ${fileName} directly on the local Desktop.`,
+            dependencies: directoryTask ? [directoryTask.nodeKey] : [],
             assignedTool: 'fileManager',
             toolInput: {
                 action: DESKTOP_FILE_ACTION,
                 mode: 'create',
-                path: `${directoryPath}/${fileName}`,
+                path: directoryPath ? `${directoryPath}/${fileName}` : fileName,
                 // Missing source content is left empty rather than filled with
                 // static Java/JSON/JS/Markdown boilerplate.
                 content: '',
@@ -1814,6 +1902,9 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // General Desktop prompts may mention Java, JSON, Vue, Markdown, or other files.
         // Ensure every explicitly requested filename has a safe Desktop file task too.
         plan.tasks = ensureDesktopPromptFileTasks(plan.tasks, goalPrompt);
+        // Explicit Desktop requests are already delivered locally. Remove any
+        // model-added Downloads/Desktop export that would duplicate the output.
+        plan.tasks = normalizeLocalExportTasks(plan.tasks, goalPrompt);
         // Vue/Vite project setup requires commands to run inside the requested Desktop folder.
         // The LLM plan may otherwise downgrade the request to a folder-only or file-only task.
         plan.tasks = ensureVueDesktopProjectTasks(plan.tasks, goalPrompt);
@@ -2018,7 +2109,7 @@ const planWorkflowRun = async ({
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
-1. 'executeCommand' - Run one allowlisted workspace command at a time, such as cat, head, tail, grep, ls, pwd, find, wc, php, composer, npm, npx, node, and git. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines. If multiple commands are needed, create separate dependent executeCommand tasks. Never use executeCommand or mkdir for directory creation; use fileManager instead.
+1. 'executeCommand' - Run one allowlisted workspace command at a time, such as cat, head, tail, grep, ls, pwd, find, wc, php, composer, mvn, npm, npx, node, and git. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines. If multiple commands are needed, create separate dependent executeCommand tasks. Never use executeCommand or mkdir for directory creation; use fileManager instead.
 2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
@@ -2038,6 +2129,7 @@ Rules:
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
 - For every project setup request, derive the project name, framework, runtime, dependencies, files, commands, and source content from the exact user prompt. Do not add a fixed demo project, fixed file names, fixed starter copy, or generic fallback source. If the user did not request a file, do not invent one.
+- For project setup requests, derive verification from the exact user prompt and the generated project. If the prompt asks for validation, testing, compilation, or a package-manager check, add the appropriate final command task using the requested runtime and command. Do not invent a framework, package manager, test command, file, dependency, or verification step that the user did not request or that the generated project does not support.
 - Never replace model-generated source content with a generic fallback. If a requested source file has no generated content, preserve it as an empty file and keep the requested filename; do not fabricate unrelated code.
 - A request containing a filename ending in .html or .htm is always a source-code request. Create that exact filename with fileManager and complete HTML content. Never rename it to .png, never use imageGenerator for it, and implement requested dark/light mode behavior with HTML, CSS, and JavaScript.
 - Use imageGenerator only when the user explicitly requests an image, photo, logo, banner, illustration, artwork, or image URL. Words such as homepage, ecommerce, product, dark mode, or light mode alone do not request an image.

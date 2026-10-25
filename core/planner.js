@@ -130,7 +130,7 @@ const extractProductCount = (goalPrompt) => {
 
 const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
-const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image\s+)?(?:url|urls|link|links)\b/i;
+const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|logo|logos|icon|icons|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image|logo|icon|banner)?\s*(?:url|urls|link|links)\b/i;
 const DESKTOP_ASSET_INTENT_PATTERN = /\b(?:list|read|inspect|scan|find|load|use|utili[sz]e|map|import|copy)\b[\s\S]{0,120}\b(?:asset|image|banner|product|file|folder|directory)\b/i;
 const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\s'"`]+(?:[\\/][^\s'"`]+)*)/i;
 
@@ -687,7 +687,21 @@ const ensureDesktopIndexTask = (tasks, goalPrompt) => {
 const isDynamicHomepageImageRequest = (goalPrompt) => {
     const text = String(goalPrompt || '');
     return isIndexHtmlRequest(goalPrompt)
-        && /\b(?:image|images|photo|photos|picture|pictures|url|urls|link|links|remote|external|cdn)\b/i.test(text);
+        && /\b(?:image|images|photo|photos|picture|pictures|logo|logos|icon|icons|banner|banners|url|urls|link|links|remote|external|cdn)\b/i.test(text);
+};
+
+const isLogoRequest = (goalPrompt) => /\b(?:logo|logos|brand\s+mark|wordmark|logomark|favicon)\b/i.test(String(goalPrompt || ''));
+
+const createHomepageImagePrompt = (goalPrompt, index, {logo = false} = {}) => {
+    const brief = String(goalPrompt || '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    const assetDescription = logo
+        ? 'a clean, recognizable brand logo or mark'
+        : 'a polished website image that matches the requested subject';
+    const logoRules = logo
+        ? 'Use a simple silhouette, strong contrast, and a transparent or plain background. Do not render a product mockup, browser screenshot, watermark, or unrelated text.'
+        : 'Use the requested subject, style, colors, composition, and mood. Do not add unrelated subjects, watermarks, or logos unless the user explicitly requested them.';
+
+    return `Create ${assetDescription} for image asset ${index + 1}, following this user brief exactly: "${brief}". ${logoRules} Return the visual asset itself, not a written explanation.`;
 };
 
 const normalizeHomepageImageReferences = (content, imagePrefix) => {
@@ -733,7 +747,8 @@ const ensureHomepageImageTasks = (tasks, goalPrompt) => {
     }
 
     const isProductHomepage = /\b(?:product|products|catalog|shop|store|collection)\b/i.test(String(goalPrompt || ''));
-    const imagePrefix = isProductHomepage ? 'homepage_product_image_' : 'homepage_feature_image_';
+    const logoHomepage = isLogoRequest(goalPrompt) && !isProductHomepage;
+    const imagePrefix = logoHomepage ? 'homepage_logo_image_' : (isProductHomepage ? 'homepage_product_image_' : 'homepage_feature_image_');
     const originalContent = typeof indexTask.toolInput?.content === 'string'
         ? indexTask.toolInput.content
         : '';
@@ -750,6 +765,7 @@ const ensureHomepageImageTasks = (tasks, goalPrompt) => {
         placeholderKeys.length,
     );
     const directoryTask = tasks.find(isDesktopDirectoryTask);
+    const homepageImageTaskPattern = /^homepage_(?:product|feature|logo)_image_/;
     const existingImageTasks = tasks.filter((task) => String(task.nodeKey || '').startsWith(imagePrefix));
     const imageTasks = [];
 
@@ -759,13 +775,13 @@ const ensureHomepageImageTasks = (tasks, goalPrompt) => {
 
         imageTasks.push(existingTask || {
             nodeKey,
-            title: `Generate homepage image ${index + 1}`,
-            instruction: `Generate a fresh remote image URL for image ${index + 1} in the requested homepage.`,
+            title: `${logoHomepage ? 'Generate homepage logo' : 'Generate homepage image'} ${index + 1}`,
+            instruction: `Generate a fresh remote image URL for ${logoHomepage ? 'the requested logo' : `image ${index + 1}`} in the requested homepage.`,
             dependencies: directoryTask ? [directoryTask.nodeKey] : [],
             assignedTool: IMAGE_GENERATOR_TOOL,
             toolInput: {
-                prompt: `Create a polished website image for ${extractHomepageTopic(goalPrompt) || 'the requested subject'}, image ${index + 1}, matching the user's requested style, subject, colors, and layout, clear subject, natural lighting, no text or logos`,
-                aspectRatio: '3:4',
+                prompt: createHomepageImagePrompt(goalPrompt, index, {logo: logoHomepage}),
+                aspectRatio: logoHomepage ? '1:1' : '3:4',
                 outputMode: 'url',
             },
         });
@@ -774,7 +790,7 @@ const ensureHomepageImageTasks = (tasks, goalPrompt) => {
     const imageNodeKeys = imageTasks.map((task) => task.nodeKey);
     const imageNodeKeySet = new Set(imageNodeKeys);
     const nextTasks = tasks
-        .filter((task) => !String(task.nodeKey || '').startsWith(imagePrefix) || imageNodeKeySet.has(task.nodeKey))
+        .filter((task) => !homepageImageTaskPattern.test(String(task.nodeKey || '')) || imageNodeKeySet.has(task.nodeKey))
         .map((task) => task === indexTask
             ? {
                 ...task,

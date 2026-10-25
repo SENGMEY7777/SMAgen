@@ -70,13 +70,6 @@ app.use(createPinia())
 app.mount('#app')
 `;
 
-const escapeHtml = (value) => String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
 const extractHomepageTopic = (goalPrompt) => {
     const text = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
     const quotedMatch = text.match(
@@ -111,67 +104,30 @@ const extractRequestedMessage = (goalPrompt) => {
         .trim();
 };
 
-const createRequestedHomepageContent = (goalPrompt) => {
-    const rawTopic = extractHomepageTopic(goalPrompt) || 'your idea';
-    const topic = rawTopic[0].toUpperCase() + rawTopic.slice(1);
-    const safeTopic = escapeHtml(topic);
-    const lowerTopic = rawTopic.toLowerCase();
-    const isCoffee = /\bcoffee|cafe|café|espresso|roast|latte|brew\b/i.test(lowerTopic);
-    const eyebrow = isCoffee ? 'Small-batch coffee, thoughtfully made' : `${safeTopic} made with intention`;
-    const headline = isCoffee ? 'Good coffee.<br><em>Great mornings.</em>' : `${safeTopic}.<br><em>Made to matter.</em>`;
-    const description = isCoffee
-        ? 'Explore rich roasts, smooth espresso, and the quiet ritual of a cup made just for you.'
-        : `Discover a considered homepage for ${safeTopic}, built around clarity, character, and a memorable first impression.`;
-    const featureOne = isCoffee ? 'Roasted with care' : 'Thoughtful details';
-    const featureTwo = isCoffee ? 'Fresh every morning' : 'A clear point of view';
-    const featureThree = isCoffee ? 'Made for your ritual' : 'Built for connection';
-
-    return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${safeTopic} | Made with intention</title>
-  <style>
-    :root { --ink:#211814; --muted:#776b63; --roast:#8b5e3c; --caramel:#c8955b; --cream:#f7f1e9; --paper:#fffdf9; }
-    * { box-sizing:border-box; }
-    body { margin:0; color:var(--ink); background:var(--cream); font-family:Inter,system-ui,sans-serif; }
-    .wrap { max-width:1120px; margin:auto; padding:0 28px; }
-    header { display:flex; justify-content:space-between; align-items:center; padding:28px 0; border-bottom:1px solid #dfd2c5; }
-    .brand { font-weight:800; letter-spacing:.16em; text-transform:uppercase; }
-    nav { display:flex; gap:24px; color:var(--muted); font-size:14px; }
-    nav a { color:inherit; text-decoration:none; }
-    .eyebrow { color:var(--roast); font-size:12px; font-weight:700; letter-spacing:.18em; text-transform:uppercase; }
-    .hero { display:grid; grid-template-columns:1.05fr .95fr; gap:64px; align-items:center; min-height:620px; }
-    h1 { max-width:700px; margin:20px 0; font:400 clamp(54px,8vw,92px)/.98 Georgia,serif; letter-spacing:-.06em; }
-    h1 em { color:var(--caramel); font-style:normal; }
-    .lead { max-width:520px; color:var(--muted); font-size:18px; line-height:1.75; }
-    .button { display:inline-block; margin-top:26px; padding:15px 24px; color:var(--paper); background:var(--ink); border-radius:999px; font-size:13px; font-weight:700; text-decoration:none; }
-    .visual { min-height:470px; border-radius:240px 240px 18px 18px; background:radial-gradient(circle at 35% 25%,#c8955b 0 8%,transparent 9%), linear-gradient(145deg,#2b1b16,#9b6a3d); box-shadow:0 30px 80px #2118142b; display:grid; place-items:center; color:var(--paper); }
-    .visual strong { font:400 82px Georgia,serif; letter-spacing:-.08em; }
-    .section { padding:76px 0; border-top:1px solid #dfd2c5; }
-    h2 { font:400 46px Georgia,serif; margin:12px 0 34px; }
-    .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
-    article { padding:26px; background:var(--paper); border:1px solid #e8ded4; }
-    article h3 { margin:48px 0 10px; font:400 27px Georgia,serif; }
-    article p, footer { color:var(--muted); line-height:1.7; }
-    footer { display:flex; justify-content:space-between; gap:20px; padding:30px 0; font-size:13px; }
-    @media (max-width:760px) { nav { display:none; } .hero { grid-template-columns:1fr; padding:58px 0; } .grid { grid-template-columns:1fr; } footer { display:block; } footer > * { margin:12px 0; } }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <header><div class="brand">${safeTopic}</div><nav><a href="#story">Story</a><a href="#details">Details</a><a href="#contact">Contact</a></nav><span class="eyebrow">Made with care</span></header>
-    <main>
-      <section class="hero"><div><div class="eyebrow">${eyebrow}</div><h1>${headline}</h1><p class="lead">${description}</p><a class="button" href="#details">Explore ${safeTopic}</a></div><div class="visual"><strong>${escapeHtml(topic[0] || '•')}</strong></div></section>
-      <section class="section" id="details"><div class="eyebrow">The details matter</div><h2>A little more intention in every moment.</h2><div class="grid"><article><div class="eyebrow">01 / 03</div><h3>${featureOne}</h3><p>Careful choices create an experience worth returning to.</p></article><article><div class="eyebrow">02 / 03</div><h3>${featureTwo}</h3><p>Simple, warm, and clear from the very first visit.</p></article><article><div class="eyebrow">03 / 03</div><h3>${featureThree}</h3><p>Designed to bring people closer to what they enjoy.</p></article></div></section>
-      <section class="section" id="story"><div class="eyebrow">A story worth sharing</div><h2>${safeTopic} with a point of view.</h2><p class="lead">This homepage is shaped around ${safeTopic.toLowerCase()} and ready for your own story, images, products, and contact details.</p></section>
-    </main>
-    <footer id="contact"><strong>${safeTopic}</strong><span>Thoughtfully made for curious people.</span><span>© 2026</span></footer>
-  </div>
-</body>
-</html>`;
+const PRODUCT_COUNT_WORDS = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
 };
+
+const extractProductCount = (goalPrompt) => {
+    const text = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
+    const match = text.match(/\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+products?\b/i);
+    if (!match) return 0;
+
+    const value = /^\d+$/.test(match[1])
+        ? Number(match[1])
+        : PRODUCT_COUNT_WORDS[match[1].toLowerCase()];
+    return Math.min(Math.max(value || 0, 1), 10);
+};
+
 const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s\S]{0,120}\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image\s+)?(?:url|urls|link|links)\b/i;
@@ -606,7 +562,6 @@ const ensureDesktopIndexTask = (tasks, goalPrompt) => {
                     action: DESKTOP_FILE_ACTION,
                     mode: task.toolInput?.mode || 'create',
                     path: desktopPath,
-                    content: createRequestedHomepageContent(goalPrompt),
                 },
             };
         });
@@ -632,10 +587,136 @@ const ensureDesktopIndexTask = (tasks, goalPrompt) => {
                 action: DESKTOP_FILE_ACTION,
                 mode: 'create',
                 path: `${directoryPath}/index.html`,
-                content: createRequestedHomepageContent(goalPrompt),
+                content: '',
             },
         },
     ];
+};
+
+const isDynamicHomepageImageRequest = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    return isIndexHtmlRequest(goalPrompt)
+        && /\b(?:image|images|photo|photos|picture|pictures|url|urls|link|links|remote|external|cdn)\b/i.test(text);
+};
+
+const normalizeHomepageImageReferences = (content, imagePrefix) => {
+    if (typeof content !== 'string' || !content.trim()) {
+        return content;
+    }
+
+    let imageIndex = 0;
+    const nextPlaceholder = () => {
+        imageIndex += 1;
+        return `{{imageUrl:${imagePrefix}${imageIndex}}}`;
+    };
+
+    let normalized = content.replace(/\{\{imageUrl:[A-Za-z0-9_-]+\}\}/g, nextPlaceholder);
+    normalized = normalized.replace(/(<img\b[^>]*\bsrc\s*=\s*)(["'])([^"']*)(\2)/gi, (match, prefix, quote, source) => {
+        if (/\{\{imageUrl:[A-Za-z0-9_-]+\}\}/i.test(source)) {
+            return match;
+        }
+
+        return /^https?:\/\//i.test(source.trim())
+            ? `${prefix}${quote}${nextPlaceholder()}${quote}`
+            : match;
+    });
+    normalized = normalized.replace(/url\(\s*(["']?)(https?:\/\/[^)"']+)\1\s*\)/gi, (match, quote) => {
+        return `url(${quote}${nextPlaceholder()}${quote})`;
+    });
+
+    return normalized;
+};
+
+const ensureHomepageImageTasks = (tasks, goalPrompt) => {
+    if (!isDynamicHomepageImageRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const indexTask = tasks.find((task) => {
+        const taskPath = String(task.toolInput?.path || '').replace(/\\/g, '/');
+        return /(?:^|\/)index\.html$/i.test(taskPath) || /\bindex\.html\b/i.test(`${task.title || ''} ${task.instruction || ''}`);
+    });
+
+    if (!indexTask) {
+        return tasks;
+    }
+
+    const isProductHomepage = /\b(?:product|products|catalog|shop|store|collection)\b/i.test(String(goalPrompt || ''));
+    const imagePrefix = isProductHomepage ? 'homepage_product_image_' : 'homepage_feature_image_';
+    const originalContent = typeof indexTask.toolInput?.content === 'string'
+        ? indexTask.toolInput.content
+        : '';
+    const normalizedContent = normalizeHomepageImageReferences(originalContent, imagePrefix);
+    const placeholderKeys = [...new Set(
+        [...normalizedContent.matchAll(/\{\{imageUrl:([A-Za-z0-9_-]+)\}\}/g)].map((match) => match[1]),
+    )];
+    if (!placeholderKeys.length) {
+        throw new Error('The planner must include dynamic image placeholders in index.html for the requested image URLs.');
+    }
+
+    const count = Math.max(
+        extractProductCount(goalPrompt) || (isProductHomepage ? 3 : 1),
+        placeholderKeys.length,
+    );
+    const directoryTask = tasks.find(isDesktopDirectoryTask);
+    const existingImageTasks = tasks.filter((task) => String(task.nodeKey || '').startsWith(imagePrefix));
+    const imageTasks = [];
+
+    for (let index = 0; index < count; index += 1) {
+        const nodeKey = `${imagePrefix}${index + 1}`;
+        const existingTask = existingImageTasks.find((task) => task.nodeKey === nodeKey);
+
+        imageTasks.push(existingTask || {
+            nodeKey,
+            title: `Generate homepage image ${index + 1}`,
+            instruction: `Generate a fresh remote image URL for image ${index + 1} in the requested homepage.`,
+            dependencies: directoryTask ? [directoryTask.nodeKey] : [],
+            assignedTool: IMAGE_GENERATOR_TOOL,
+            toolInput: {
+                prompt: `Create a polished website image for ${extractHomepageTopic(goalPrompt) || 'the requested subject'}, image ${index + 1}, matching the user's requested style, subject, colors, and layout, clear subject, natural lighting, no text or logos`,
+                aspectRatio: '3:4',
+                outputMode: 'url',
+            },
+        });
+    }
+
+    const imageNodeKeys = imageTasks.map((task) => task.nodeKey);
+    const imageNodeKeySet = new Set(imageNodeKeys);
+    const nextTasks = tasks
+        .filter((task) => !String(task.nodeKey || '').startsWith(imagePrefix) || imageNodeKeySet.has(task.nodeKey))
+        .map((task) => task === indexTask
+            ? {
+                ...task,
+                dependencies: [...new Set([...(task.dependencies || []), ...imageNodeKeys])],
+                toolInput: {
+                    ...task.toolInput,
+                    content: normalizedContent,
+                },
+            }
+            : task);
+
+    return [
+        ...nextTasks.filter((task) => !imageNodeKeySet.has(task.nodeKey)),
+        ...imageTasks,
+    ];
+};
+
+const ensureHomepageContent = (tasks, goalPrompt) => {
+    if (!isIndexHtmlRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const indexTask = tasks.find((task) => {
+        const taskPath = String(task.toolInput?.path || '').replace(/\\/g, '/');
+        return /(?:^|\/)index\.html$/i.test(taskPath) || /\bindex\.html\b/i.test(`${task.title || ''} ${task.instruction || ''}`);
+    });
+    const content = indexTask?.toolInput?.content;
+
+    if (!indexTask || typeof content !== 'string' || !content.trim()) {
+        throw new Error('The planner must generate complete index.html content from the user prompt; static homepage fallbacks are disabled.');
+    }
+
+    return tasks;
 };
 
 const extractDesktopFileNames = (goalPrompt) => {
@@ -671,7 +752,7 @@ const fallbackDesktopFileContent = (fileName, goalPrompt) => {
         .join('') || 'Main';
 
     if (extension === '.html' || extension === '.htm') {
-        return createRequestedHomepageContent(goalPrompt);
+        return '';
     }
 
     if (extension === '.java') {
@@ -782,9 +863,11 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
                     action: DESKTOP_FILE_ACTION,
                     mode: existingTask.toolInput?.mode || 'create',
                     path: desktopPath,
-                    content: existingContent && existingContentMatchesGoal && !hasUnrelatedGeneratedContent
+                    content: isHomepageFile
                         ? existingContent
-                        : fallbackContent,
+                        : existingContent && existingContentMatchesGoal && !hasUnrelatedGeneratedContent
+                            ? existingContent
+                            : fallbackContent,
                 },
             };
             continue;
@@ -809,7 +892,9 @@ const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
                 action: DESKTOP_FILE_ACTION,
                 mode: 'create',
                 path: `${directoryPath}/${fileName}`,
-                content: fallbackDesktopFileContent(fileName, goalPrompt),
+                content: /^index\.html?$/i.test(fileName) && isIndexHtmlRequest(goalPrompt)
+                    ? ''
+                    : fallbackDesktopFileContent(fileName, goalPrompt),
             },
         });
     }
@@ -1432,6 +1517,10 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // A direct Desktop request must always produce both the directory and index.html task,
         // even when the LLM returns an incomplete plan containing only the directory step.
         plan.tasks = ensureDesktopIndexTask(plan.tasks, goalPrompt);
+        // Website image URLs must be generated at runtime and resolved before index.html is written.
+        plan.tasks = ensureHomepageImageTasks(plan.tasks, goalPrompt);
+        // Homepage content must come from the planner model and the user's prompt, never a fixed template.
+        plan.tasks = ensureHomepageContent(plan.tasks, goalPrompt);
         // General Desktop prompts may mention Java, JSON, Vue, Markdown, or other files.
         // Ensure every explicitly requested filename has a safe Desktop file task too.
         plan.tasks = ensureDesktopPromptFileTasks(plan.tasks, goalPrompt);
@@ -1620,7 +1709,7 @@ Available Tools:
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
-6. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3'), and optional toolInput.outputMode ('file', 'url', or 'both').
+6. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3', '3:4'), and optional toolInput.outputMode ('file', 'url', or 'both').
 
 Rules:
 - Assign dependencies logically (for example, task_2 depends on ['task_1']).
@@ -1633,6 +1722,8 @@ Rules:
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
+- For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
+- If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:

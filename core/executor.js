@@ -191,6 +191,42 @@ const resolveLocalDesktopPath = async (requestedPath) => {
     return resolvedPath;
 };
 
+const resolveLocalDownloadsPath = async (requestedPath) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        throw new Error(
+            'Direct Downloads output is disabled. Set LOCAL_DESKTOP_OUTPUT=true only for local development.',
+        );
+    }
+
+    const downloadsRoot = path.join(os.homedir(), 'Downloads');
+    await fs.mkdir(downloadsRoot, {recursive: true});
+
+    if (typeof requestedPath !== 'string' || !requestedPath.trim()) {
+        throw new Error('A relative Downloads path is required');
+    }
+
+    if (path.isAbsolute(requestedPath) || requestedPath.split(/[\\/]/).includes('..')) {
+        throw new Error('Downloads paths must be relative and cannot contain ..');
+    }
+
+    const downloadsRelativePath = requestedPath.replace(/^downloads[\\/]+/i, '');
+
+    if (!downloadsRelativePath.trim()) {
+        throw new Error('A Downloads folder name is required');
+    }
+
+    const resolvedPath = path.resolve(downloadsRoot, downloadsRelativePath);
+    const realDownloadsRoot = await fs.realpath(downloadsRoot);
+
+    if (!isPathInside(realDownloadsRoot, resolvedPath)) {
+        throw new Error('Downloads path must remain inside the local Downloads directory');
+    }
+
+    await assertRealPathInsideWorkspace(downloadsRoot, resolvedPath);
+
+    return resolvedPath;
+};
+
 const validateContent = (content) => {
     if (typeof content !== 'string') {
         throw new Error('File content must be a string');
@@ -281,6 +317,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
             ? 'createFiles'
         : requestedAction === 'exportworkspacetodesktop' || requestedAction === 'export_workspace_to_desktop'
             ? 'exportWorkspaceToDesktop'
+        : requestedAction === 'exportworkspacetodownloads' || requestedAction === 'export_workspace_to_downloads'
+            ? 'exportWorkspaceToDownloads'
         : requestedAction === 'listdesktopdirectory' || requestedAction === 'list_desktop_directory'
             ? 'listDesktopDirectory'
         : requestedAction === 'listdesktopfiles' || requestedAction === 'list_desktop_files'
@@ -356,9 +394,12 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
-    if (action === 'exportWorkspaceToDesktop') {
-        const desktopTarget = await resolveLocalDesktopPath(input.path || 'kairo-ecommerce');
-        await fs.mkdir(desktopTarget, {recursive: true});
+    if (action === 'exportWorkspaceToDesktop' || action === 'exportWorkspaceToDownloads') {
+        const isDownloadsExport = action === 'exportWorkspaceToDownloads';
+        const targetPath = isDownloadsExport
+            ? await resolveLocalDownloadsPath(input.path || 'kairo-workflow')
+            : await resolveLocalDesktopPath(input.path || 'kairo-ecommerce');
+        await fs.mkdir(targetPath, {recursive: true});
 
         const copiedFiles = [];
         const copyWorkspaceEntry = async (sourcePath, relativePath) => {
@@ -368,12 +409,14 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 throw new Error(`Workspace symlinks cannot be exported: ${relativePath}`);
             }
 
-            const destinationPath = path.resolve(desktopTarget, relativePath);
-            if (!isPathInside(desktopTarget, destinationPath)) {
-                throw new Error('Export path must remain inside the local Desktop output folder');
+            const destinationPath = path.resolve(targetPath, relativePath);
+            if (!isPathInside(targetPath, destinationPath)) {
+                throw new Error(
+                    `Export path must remain inside the local ${isDownloadsExport ? 'Downloads' : 'Desktop'} output folder`,
+                );
             }
 
-            await assertRealPathInsideWorkspace(desktopTarget, destinationPath);
+            await assertRealPathInsideWorkspace(targetPath, destinationPath);
 
             if (sourceStats.isDirectory()) {
                 await fs.mkdir(destinationPath, {recursive: true});
@@ -408,8 +451,9 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
         return {
             action,
-            path: input.path || 'kairo-ecommerce',
-            location: 'local Desktop',
+            path: input.path || (isDownloadsExport ? 'kairo-workflow' : 'kairo-ecommerce'),
+            location: isDownloadsExport ? 'local Downloads' : 'local Desktop',
+            downloaded: isDownloadsExport,
             exported: true,
             files: copiedFiles,
         };

@@ -15,7 +15,15 @@ const getAiClient = () => {
         error.status = 503;
         throw error;
     }
-    return new GoogleGenAI({ apiKey });
+    return new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+            timeout: LLM_TIMEOUT_MS,
+            retryOptions: {
+                attempts: 1,
+            },
+        },
+    });
 };
 
 const wait = (milliseconds) => new Promise((resolve) => {
@@ -47,7 +55,7 @@ const isRetryableError = (error) => {
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
-    : 15000;
+    : 30000;
 
 const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS);
 const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)

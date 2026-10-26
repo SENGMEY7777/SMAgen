@@ -284,7 +284,22 @@ const emitWorkflowEvent = ({io, runId, event, payload = null, source, level}) =>
     });
 
     if (io) {
-        io.to(`run_${runId}`).emit(event, envelope.payload);
+        const eventPayload = envelope.payload && typeof envelope.payload === 'object' && !Array.isArray(envelope.payload)
+            ? {
+                ...envelope.payload,
+                event,
+                telemetryId: envelope.telemetryId,
+                createdAt: envelope.createdAt,
+            }
+            : {
+                runId,
+                event,
+                telemetryId: envelope.telemetryId,
+                createdAt: envelope.createdAt,
+                payload: envelope.payload,
+            };
+
+        io.to(`run_${runId}`).emit(event, eventPayload);
     }
 
     emitTelemetry(io, envelope);

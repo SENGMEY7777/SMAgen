@@ -55,7 +55,7 @@ const isRetryableError = (error) => {
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
-    : 30000;
+    : 60000;
 
 const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS);
 const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)
@@ -94,6 +94,42 @@ const getModelCandidates = (model) => {
     return [...new Set(candidates)].slice(0, MAX_MODEL_ATTEMPTS);
 };
 
+const createLlmFailure = (lastError, operation = 'Gemini request') => {
+    const providerStatus = getErrorCode(lastError);
+    let code = 'LLM_UNAVAILABLE';
+    let status = 503;
+    let message = 'The Gemini service is temporarily unavailable. Please try again.';
+
+    if (providerStatus === 408 || providerStatus === 504) {
+        code = 'LLM_TIMEOUT';
+        status = 504;
+        message = 'The Gemini service did not respond in time. Please try again in a moment.';
+    } else if (providerStatus === 429) {
+        code = 'LLM_UNAVAILABLE';
+        status = 503;
+        message = 'The Gemini service is temporarily rate-limited. Please try again shortly.';
+    } else if (providerStatus === 404) {
+        code = 'LLM_UNAVAILABLE';
+        status = 503;
+        message = 'The configured Gemini model was not found. Check GEMINI_MODEL and GEMINI_FALLBACK_MODEL.';
+    } else if (providerStatus && providerStatus < 500) {
+        code = 'LLM_ERROR';
+        status = 503;
+        message = 'Gemini rejected the request. Check the model configuration and request format.';
+    } else if (lastError?.code === 'ENOTFOUND' || lastError?.code === 'EAI_AGAIN') {
+        code = 'LLM_UNAVAILABLE';
+        status = 503;
+        message = 'The Gemini service could not be reached. Check the server network connection and API configuration.';
+    }
+
+    const error = new Error(`${operation} failed: ${message}`);
+    error.code = code;
+    error.status = status;
+    error.providerStatus = providerStatus || null;
+    error.cause = lastError;
+    return error;
+};
+
 const generateContentWithRetry = async ({model, contents, config}) => {
     const ai = getAiClient();
     const models = getModelCandidates(model);
@@ -129,14 +165,7 @@ const generateContentWithRetry = async ({model, contents, config}) => {
         }
     }
 
-    const finalError = new Error(
-        `Gemini request failed: ${lastError?.message || 'LLM service unavailable'}`,
-    );
-    const lastErrorCode = getErrorCode(lastError);
-    finalError.code = lastErrorCode === 408 ? 'LLM_TIMEOUT' : lastErrorCode || 'LLM_ERROR';
-    finalError.status = lastErrorCode || 503;
-    finalError.cause = lastError;
-    throw finalError;
+    throw createLlmFailure(lastError);
 };
 
 const getResponseText = (response) => {
@@ -251,14 +280,7 @@ const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
         }
     }
 
-    const finalError = new Error(
-        `Gemini Stream failed: ${lastError?.message || 'LLM stream service unavailable'}`,
-    );
-    const lastErrorCode = getErrorCode(lastError);
-    finalError.code = lastErrorCode === 408 ? 'LLM_TIMEOUT' : lastErrorCode || 'LLM_ERROR';
-    finalError.status = lastErrorCode || 503;
-    finalError.cause = lastError;
-    throw finalError;
+    throw createLlmFailure(lastError, 'Gemini stream');
 };
 
 const generateStructureClient = async ({

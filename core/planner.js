@@ -2195,7 +2195,16 @@ ${desktopInstruction}
             } catch (error) {
                 lastPlannerError = error;
                 console.error(`❌ [Planner Attempt Error]:`, error.message);
-                if (['LLM_UNAVAILABLE', 'LLM_ERROR'].includes(error.code) || error.status === 503 || error.status === 401) {
+                const errorCode = Number(error.code);
+                const shouldStopPlannerRetries = [
+                    'LLM_UNAVAILABLE',
+                    'LLM_ERROR',
+                    'LLM_TIMEOUT',
+                ].includes(error.code)
+                    || [400, 401, 403, 404, 503].includes(errorCode)
+                    || [400, 401, 403, 404, 503].includes(Number(error.status));
+
+                if (shouldStopPlannerRetries) {
                     break;
                 }
                 currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${planningGoalPrompt}`;
@@ -2207,9 +2216,11 @@ ${desktopInstruction}
 
             const errorMessage = lastPlannerError?.message || 'Failed to generate a valid acyclic DAG plan after maximum attempts.';
             const error = new Error(errorMessage);
-            error.code = [500, 502, 503, 504].includes(Number(lastPlannerError?.code)) || lastPlannerError?.code === 'LLM_UNAVAILABLE'
+            error.code = [408, 500, 502, 503, 504].includes(Number(lastPlannerError?.code))
+                || ['LLM_UNAVAILABLE', 'LLM_ERROR', 'LLM_TIMEOUT'].includes(lastPlannerError?.code)
                 ? 'LLM_UNAVAILABLE'
                 : 'PLANNER_ERROR';
+            error.status = Number(lastPlannerError?.status) || undefined;
             error.cause = lastPlannerError;
             throw error;
         }

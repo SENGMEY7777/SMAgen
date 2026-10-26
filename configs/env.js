@@ -24,6 +24,7 @@ const DEFAULTS = {
     DB_POOL_IDLE_TIMEOUT_MS: '60000',
     DB_CONNECT_TIMEOUT_MS: '10000',
     DB_QUERY_TIMEOUT_MS: '10000',
+    SERVER_FILE_ACCESS: 'read-write',
 };
 
 const PLACEHOLDER_PATTERN = /^(?:your_|replace_with_|change_me|example|xxx|<.+>)|(?:_here$)/i;
@@ -154,6 +155,7 @@ const validateEnvironment = ({
     const dbSsl = parseBoolean(env.DB_SSL, false);
     const dbSslRejectUnauthorized = parseBoolean(env.DB_SSL_REJECT_UNAUTHORIZED, true);
     const localDesktopOutput = parseBoolean(env.LOCAL_DESKTOP_OUTPUT, false);
+    const serverFileAccess = String(getValue(env, 'SERVER_FILE_ACCESS')).trim().toLowerCase();
     const dbPoolLimit = Number(getValue(env, 'DB_POOL_LIMIT'));
     const dbPoolMaxIdle = Number(getValue(env, 'DB_POOL_MAX_IDLE'));
 
@@ -167,6 +169,10 @@ const validateEnvironment = ({
 
     if (localDesktopOutput === null) {
         addIssue(issues, 'LOCAL_DESKTOP_OUTPUT must be a boolean value');
+    }
+
+    if (!['read-only', 'read-write'].includes(serverFileAccess)) {
+        addIssue(issues, 'SERVER_FILE_ACCESS must be read-only or read-write');
     }
 
     if (normalizedNodeEnv === 'production' && localDesktopOutput === true) {
@@ -230,6 +236,7 @@ const validateEnvironment = ({
         port: Number(getValue(env, 'PORT')),
         corsOrigins,
         localDesktopOutput: localDesktopOutput === true,
+        serverFileAccess,
         emailSimulationAllowed: parseBoolean(env.ALLOW_EMAIL_SIMULATION, false) === true,
         database: {
             host: env.DB_HOST,

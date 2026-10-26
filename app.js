@@ -160,6 +160,10 @@ app.get('/health', async (req, res) => {
         status: isHealthy ? 'UP' : 'DOWN',
         uptime: process.uptime(),
         database: dbStatus,
+        workflow: {
+            execution: 'server',
+            fileAccess: config.serverFileAccess,
+        },
         timestamp: new Date().toISOString(),
     });
 });

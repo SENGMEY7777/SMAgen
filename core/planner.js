@@ -199,6 +199,53 @@ const isExplicitDesktopWriteRequest = (value) => {
     return LOCAL_DESKTOP_OUTPUT_ENABLED && hasWriteVerb && hasDesktopTarget && hasFileOrDirectoryTarget;
 };
 
+const isRemovalRequest = (value) => {
+    const text = String(value || '');
+    return /\b(?:remove|delete|erase|destroy)\b/i.test(text)
+        && /\b(?:file|folder|directory|project|path)\b/i.test(text);
+};
+
+const extractRemovalTarget = (value) => {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    const quotedMatch = text.match(
+        /\b(?:file|folder|directory|project|path)\b[\s\S]{0,40}["'`]([^"'`]+)["'`]/i,
+    );
+    const plainMatch = text.match(
+        /\b(?:file|folder|directory|project|path)\b\s+(?:(?:named|called|name(?:\s+is)?)\s+)?([A-Za-z0-9][A-Za-z0-9._-]*(?:[\\/][A-Za-z0-9._-]+)*)/i,
+    );
+    const candidate = quotedMatch?.[1] || plainMatch?.[1] || '';
+
+    return cleanRelativeDirectoryPath(candidate);
+};
+
+const normalizeRemovalPlan = (tasks, goalPrompt) => {
+    if (!isRemovalRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const targetPath = extractRemovalTarget(goalPrompt);
+    if (!targetPath) {
+        return tasks;
+    }
+
+    const targetIsFile = /\bfile\b/i.test(String(goalPrompt || ''))
+        && !/\b(?:folder|directory|project)\b/i.test(String(goalPrompt || ''));
+    const action = LOCAL_DESKTOP_OUTPUT_ENABLED ? 'deleteDesktopPath' : 'delete';
+    const location = LOCAL_DESKTOP_OUTPUT_ENABLED ? 'Desktop' : 'workflow workspace';
+
+    return [{
+        nodeKey: 'remove_requested_target',
+        title: `Remove ${targetIsFile ? 'file' : 'folder'} ${location}/${targetPath}`,
+        instruction: `Remove the requested ${targetIsFile ? 'file' : 'folder'} ${targetPath} from the local ${location}. Do not create or modify any other files.`,
+        dependencies: [],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action,
+            path: targetPath,
+        },
+    }];
+};
+
 const isDesktopExportRequest = (value) => {
     const text = String(value || '');
 
@@ -1885,6 +1932,11 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
             task.dependencies = [...new Set(task.dependencies)];
         });
 
+        // A destructive request is a single-target operation. Replace any
+        // model-added create, export, or setup tasks so removal never causes
+        // unrelated files such as index.js to be created.
+        plan.tasks = normalizeRemovalPlan(plan.tasks, goalPrompt);
+
         // The executor rejects shell chaining. Expand planner output such as
         // `php --version && composer --version` into ordered command tasks.
         plan.tasks = normalizeChainedCommandTasks(plan.tasks);
@@ -1919,6 +1971,14 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
+
+        if (isRemovalRequest(goalPrompt) && plan.tasks.length === 1) {
+            const targetPath = extractRemovalTarget(goalPrompt);
+            if (targetPath) {
+                plan.workflowTitle = `Remove ${targetPath}`;
+                plan.summary = `Remove only the requested target ${targetPath}.`;
+            }
+        }
 
         if (isExplicitDesktopWriteRequest(goalPrompt)) {
             const directoryPath = cleanRelativeDirectoryPath(
@@ -2110,7 +2170,7 @@ You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
 1. 'executeCommand' - Run one allowlisted workspace command at a time, such as cat, head, tail, grep, ls, pwd, find, wc, php, composer, mvn, go, npm, npx, node, and git. Never invent commands such as 'check' or 'list'. For file inspection, prefer fileManager with action 'read' or 'list' so the exact path and filename case are preserved. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines. If multiple commands are needed, create separate dependent executeCommand tasks. Never use executeCommand or mkdir for directory creation; use fileManager instead.
-2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
+2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"deleteDesktopPath","path":"requested-folder"} for an explicit local Desktop removal request, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
@@ -2123,6 +2183,7 @@ Rules:
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
 - Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.
+- For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.

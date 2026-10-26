@@ -58,6 +58,7 @@ const WORKSPACE_WRITE_ACTIONS = new Set([
     'remove',
     'createDesktopDirectory',
     'createDesktopFile',
+    'deleteDesktopPath',
     'exportWorkspaceToDesktop',
     'exportWorkspaceToDownloads',
 ]);
@@ -329,6 +330,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
             ? 'createDesktopDirectory'
         : requestedAction === 'createdesktopfile' || requestedAction === 'create_desktop_file'
             ? 'createDesktopFile'
+        : requestedAction === 'deletedesktoppath' || requestedAction === 'delete_desktop_path'
+            ? 'deleteDesktopPath'
         : requestedAction === 'createfile' || requestedAction === 'create_file'
             ? 'create'
         : requestedAction === 'writefile' || requestedAction === 'write_file'
@@ -362,6 +365,24 @@ const fileManager = async (input, workspacePath, task = {}) => {
             path: input.path,
             location: 'local Desktop',
             created: true,
+        };
+    }
+
+    if (action === 'deleteDesktopPath') {
+        const desktopPath = await resolveLocalDesktopPath(input.path);
+        const desktopRoot = path.join(os.homedir(), 'Desktop');
+
+        if (desktopPath === path.resolve(desktopRoot)) {
+            throw new Error('The local Desktop root cannot be deleted');
+        }
+
+        await fs.rm(desktopPath, {recursive: true, force: false});
+
+        return {
+            action,
+            path: input.path,
+            location: 'local Desktop',
+            deleted: true,
         };
     }
 

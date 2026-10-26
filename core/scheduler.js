@@ -49,9 +49,53 @@ const emitEvent = (io, runId, event, payload) => {
     });
 };
 
+const finalizeUnfinishedTasks = async (runId, tasks, reason, io) => {
+    const unfinishedTasks = tasks.filter((task) => (
+        !['SUCCESS', 'COMPLETED', 'FAILED', 'SKIPPED'].includes(task.status)
+    ));
+    const completedAt = new Date();
+
+    await Promise.all(unfinishedTasks.map(async (task) => {
+        const nextStatus = task.status === 'RUNNING' ? 'FAILED' : 'SKIPPED';
+        const errorMessage = nextStatus === 'FAILED'
+            ? reason
+            : `Skipped because the workflow stopped before this task ran. ${reason}`;
+
+        try {
+            await updateTaskNode(task.id, {
+                status: nextStatus,
+                errorMessage,
+                completedAt,
+            });
+        } catch (error) {
+            console.error(`❌ [Scheduler] Unable to finalize task ${task.id}:`, error.message);
+            return;
+        }
+
+        emitEvent(io, runId, nextStatus === 'FAILED' ? 'node_failed' : 'node_skipped', {
+            runId,
+            taskId: task.id,
+            nodeKey: task.node_key,
+            status: nextStatus,
+            error: errorMessage,
+            reason: errorMessage,
+        });
+    }));
+};
+
 const finishRun = async (runId, tasks, io) => {
     const hasFailedTask = tasks.some((task) => ['FAILED', 'SKIPPED'].includes(task.status));
     const finalStatus = hasFailedTask ? 'FAILED' : 'COMPLETED';
+
+    if (hasFailedTask) {
+        const failedTask = tasks.find((task) => task.status === 'FAILED');
+        await finalizeUnfinishedTasks(
+            runId,
+            tasks,
+            failedTask?.error_message || failedTask?.errorMessage || 'A workflow task failed.',
+            io,
+        );
+    }
 
     await updateExecutionRunStatus(runId, finalStatus);
 

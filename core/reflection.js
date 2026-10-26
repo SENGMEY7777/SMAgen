@@ -21,6 +21,10 @@ const parseRetryLimit = (value, fallback = 3) => {
 };
 
 const MAX_SELF_HEAL_RETRIES = parseRetryLimit(process.env.MAX_SELF_HEAL_RETRIES);
+const configuredReflectionTimeout = Number.parseInt(process.env.LLM_REFLECTION_TIMEOUT_MS || '15000', 10);
+const REFLECTION_LLM_TIMEOUT_MS = Number.isInteger(configuredReflectionTimeout) && configuredReflectionTimeout >= 1000
+    ? configuredReflectionTimeout
+    : 15000;
 
 const emitEvent = (io, runId, event, payload) => {
     emitWorkflowEvent({
@@ -91,6 +95,10 @@ const getNonRepairableFailureReason = ({task, error, errorTrace}) => {
 
     if (/workspace symlinks cannot be exported|symlinks cannot be exported/.test(text)) {
         return 'The export contains a dependency symlink that cannot be copied safely.';
+    }
+
+    if (/file already exists|eexist|overwrite.*not permitted|already exists.*overwrite/.test(text)) {
+        return 'The requested file or folder already exists, and safe automatic overwrite is not allowed.';
     }
 
     if (
@@ -192,7 +200,15 @@ const validateCorrection = (data) => {
 };
 
 const getDependentTasks = (tasks, nodeKey) => {
-    const descendants = new Set([nodeKey]);
+    const identityToNodeKey = new Map();
+
+    for (const task of tasks) {
+        if (task.node_key) identityToNodeKey.set(String(task.node_key), String(task.node_key));
+        if (task.id) identityToNodeKey.set(String(task.id), String(task.node_key));
+    }
+
+    const rootNodeKey = identityToNodeKey.get(String(nodeKey)) || String(nodeKey);
+    const descendants = new Set([rootNodeKey]);
     let changed = true;
 
     while (changed) {
@@ -200,18 +216,24 @@ const getDependentTasks = (tasks, nodeKey) => {
 
         for (const task of tasks) {
             const dependencies = parseJsonValue(task.dependencies, []);
+            const normalizedDependencies = Array.isArray(dependencies)
+                ? dependencies.map((dependency) => identityToNodeKey.get(String(dependency)) || String(dependency))
+                : [];
 
             if (
-                !descendants.has(task.node_key)
-                && dependencies.some((dependency) => descendants.has(dependency))
+                !descendants.has(String(task.node_key))
+                && normalizedDependencies.some((dependency) => descendants.has(dependency))
             ) {
-                descendants.add(task.node_key);
+                descendants.add(String(task.node_key));
                 changed = true;
             }
         }
     }
 
-    return tasks.filter((task) => descendants.has(task.node_key) && task.node_key !== nodeKey);
+    return tasks.filter((task) => (
+        descendants.has(String(task.node_key))
+        && String(task.node_key) !== rootNodeKey
+    ));
 };
 
 const markTaskFailedAndSkipDependents = async ({
@@ -345,6 +367,8 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
             ...prompt,
             runId,
             io,
+            maxModelAttempts: 1,
+            timeoutMs: REFLECTION_LLM_TIMEOUT_MS,
         });
     } catch (reflectionError) {
         const reflectionTrace = {

@@ -81,7 +81,7 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     ]).finally(() => clearTimeout(timeoutId));
 };
 
-const getModelCandidates = (model) => {
+const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
@@ -91,7 +91,7 @@ const getModelCandidates = (model) => {
             .map((candidate) => candidate.trim())
             .filter(Boolean),
     ].filter(Boolean);
-    return [...new Set(candidates)].slice(0, MAX_MODEL_ATTEMPTS);
+    return [...new Set(candidates)].slice(0, maxAttempts);
 };
 
 const createLlmFailure = (lastError, operation = 'Gemini request') => {
@@ -130,9 +130,15 @@ const createLlmFailure = (lastError, operation = 'Gemini request') => {
     return error;
 };
 
-const generateContentWithRetry = async ({model, contents, config}) => {
+const generateContentWithRetry = async ({
+    model,
+    contents,
+    config,
+    maxModelAttempts = MAX_MODEL_ATTEMPTS,
+    timeoutMs = LLM_TIMEOUT_MS,
+}) => {
     const ai = getAiClient();
-    const models = getModelCandidates(model);
+    const models = getModelCandidates(model, Math.max(1, maxModelAttempts));
     let lastError;
 
     for (const currentModel of models) {
@@ -143,7 +149,7 @@ const generateContentWithRetry = async ({model, contents, config}) => {
                     contents,
                     config,
                 }),
-                LLM_TIMEOUT_MS
+                timeoutMs
             );
         } catch (error) {
             lastError = error;
@@ -289,6 +295,8 @@ const generateStructureClient = async ({
     model = process.env.GEMINI_MODEL || DEFAULT_MODEL,
     runId = null,
     io = null,
+    maxModelAttempts = MAX_MODEL_ATTEMPTS,
+    timeoutMs = LLM_TIMEOUT_MS,
 }) => {
     try {
         const response = await generateContentWithRetry({
@@ -298,6 +306,8 @@ const generateStructureClient = async ({
                 responseMimeType: 'application/json',
                 temperature: 0.2,
             },
+            maxModelAttempts,
+            timeoutMs,
         });
 
         const rawText = getResponseText(response);

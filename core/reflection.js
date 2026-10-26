@@ -7,10 +7,20 @@ const {secureObject} = require('../validators/commonValidator');
 const {createErrorTrace} = require('./selfHealing');
 const {emitWorkflowEvent} = require('./telemetry');
 
-const MAX_SELF_HEAL_RETRIES = Math.max(
-    0,
-    Number.parseInt(process.env.MAX_SELF_HEAL_RETRIES || '3', 10) || 3,
-);
+const parseRetryLimit = (value, fallback = 3) => {
+    if (value === undefined || value === null || String(value).trim() === '') {
+        return fallback;
+    }
+
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+        return fallback;
+    }
+
+    return Math.min(parsed, 5);
+};
+
+const MAX_SELF_HEAL_RETRIES = parseRetryLimit(process.env.MAX_SELF_HEAL_RETRIES);
 
 const emitEvent = (io, runId, event, payload) => {
     emitWorkflowEvent({
@@ -46,6 +56,53 @@ const getRetryCount = (task) => {
     return Number.isInteger(retryCount) && retryCount >= 0 ? retryCount : 0;
 };
 
+const stableSerialize = (value) => {
+    if (Array.isArray(value)) {
+        return `[${value.map(stableSerialize).join(',')}]`;
+    }
+
+    if (isPlainObject(value)) {
+        return `{${Object.keys(value).sort().map((key) => (
+            `${JSON.stringify(key)}:${stableSerialize(value[key])}`
+        )).join(',')}}`;
+    }
+
+    return JSON.stringify(value);
+};
+
+const getFailureText = ({error, errorTrace}) => [
+    error?.message,
+    errorTrace?.error?.message,
+    errorTrace?.telemetry?.stderr,
+].filter(Boolean).join(' ').toLowerCase();
+
+const getNonRepairableFailureReason = ({task, error, errorTrace}) => {
+    const code = String(error?.code || errorTrace?.error?.code || '').toUpperCase();
+    const text = getFailureText({error, errorTrace});
+    const assignedTool = String(task?.assigned_tool || task?.assignedTool || '').trim();
+
+    if (code === 'SERVER_FILE_ACCESS_READ_ONLY' || /server file access is read-only/.test(text)) {
+        return 'The server is configured for read-only file access.';
+    }
+
+    if (/shell operators and command chaining|permanently blocked by the security policy|security policy/.test(text)) {
+        return 'The execution safety policy blocked the command.';
+    }
+
+    if (/workspace symlinks cannot be exported|symlinks cannot be exported/.test(text)) {
+        return 'The export contains a dependency symlink that cannot be copied safely.';
+    }
+
+    if (
+        assignedTool === 'httpRequester'
+        && /(?:\b5\d{2}\b|internal server error|remote server itself)/.test(text)
+    ) {
+        return 'The remote server returned an internal error; the workflow cannot repair that server without its source code.';
+    }
+
+    return '';
+};
+
 const buildReflectionPrompt = ({task, errorTrace}) => {
     const lastToolInput = parseJsonValue(task.tool_input || task.toolInput, {});
 
@@ -72,6 +129,7 @@ Rules:
 - Change only toolInput arguments.
 - Preserve the task's intended scope and workspace safety restrictions.
 - Do not invent credentials, secrets, private keys, or authorization headers.
+- Never invent shell commands such as 'check' or 'list'. For directory inspection use 'ls'; for file contents use 'cat' or fileManager action 'read'/'list', preserving exact path and filename case.
 - Use exactly one executable command per executeCommand task. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines; if the failed input contains multiple sequential commands, repair only the current command and let the planner keep the remaining commands as separate dependent tasks.
 - For directory creation, use fileManager with action 'createDirectory' and a relative path inside the workspace. Never use an absolute path or '..'.
 - When local Desktop output is explicitly enabled and the task targets the host Desktop, use fileManager with action 'createDesktopDirectory' and a relative folder name.
@@ -230,6 +288,31 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
     emitEvent(io, runId, 'self_healing_required', errorTrace);
     emitEvent(io, runId, 'node_error_trace', errorTrace);
 
+    const nonRepairableReason = getNonRepairableFailureReason({
+        task,
+        error,
+        errorTrace,
+    });
+
+    if (nonRepairableReason) {
+        emitEvent(io, runId, 'self_healing_skipped', {
+            runId,
+            taskId: task.id,
+            nodeKey: task.node_key || task.nodeKey,
+            reason: nonRepairableReason,
+            errorTrace,
+        });
+
+        return markTaskFailedAndSkipDependents({
+            runId,
+            task,
+            errorMessage: `Self-healing skipped: ${nonRepairableReason}`,
+            errorTrace,
+            executionTimeMs: telemetry?.latencyMs,
+            io,
+        });
+    }
+
     if (retryCount >= MAX_SELF_HEAL_RETRIES) {
         return markTaskFailedAndSkipDependents({
             runId,
@@ -295,6 +378,28 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
         });
     }
 
+    const previousToolInput = parseJsonValue(task.tool_input || task.toolInput, {});
+    if (stableSerialize(previousToolInput) === stableSerialize(correction.toolInput)) {
+        const unchangedReason = 'Self-healing stopped because the proposed tool input is unchanged.';
+
+        emitEvent(io, runId, 'self_healing_skipped', {
+            runId,
+            taskId: task.id,
+            nodeKey: task.node_key || task.nodeKey,
+            reason: unchangedReason,
+            errorTrace,
+        });
+
+        return markTaskFailedAndSkipDependents({
+            runId,
+            task,
+            errorMessage: unchangedReason,
+            errorTrace,
+            executionTimeMs: telemetry?.latencyMs,
+            io,
+        });
+    }
+
     await updateTaskNode(task.id, {
         status: 'PENDING',
         toolInput: correction.toolInput,
@@ -335,6 +440,7 @@ module.exports = {
     MAX_SELF_HEAL_RETRIES,
     buildReflectionPrompt,
     validateCorrection,
+    getNonRepairableFailureReason,
     getDependentTasks,
     markTaskFailedAndSkipDependents,
     reflectOnTaskFailure,

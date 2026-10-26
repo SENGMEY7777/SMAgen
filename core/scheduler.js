@@ -68,6 +68,43 @@ const finishRun = async (runId, tasks, io) => {
     };
 };
 
+const finalizeTasksAfterSchedulerError = async (runId, error, io) => {
+    let tasks = [];
+
+    try {
+        tasks = (await listTaskNodesByRunId(runId)).map(normalizeTask);
+    } catch (loadError) {
+        console.error(`❌ [Scheduler] Unable to load tasks while finalizing Run ${runId}:`, loadError.message);
+        return;
+    }
+
+    const errorMessage = error?.message || 'The workflow scheduler stopped unexpectedly.';
+    const completedAt = new Date();
+    const unfinishedTasks = tasks.filter((task) => !['SUCCESS', 'COMPLETED', 'FAILED', 'SKIPPED'].includes(task.status));
+
+    await Promise.all(unfinishedTasks.map(async (task) => {
+        try {
+            await updateTaskNode(task.id, {
+                status: 'FAILED',
+                errorMessage,
+                completedAt,
+            });
+        } catch (updateError) {
+            console.error(`❌ [Scheduler] Unable to finalize task ${task.id}:`, updateError.message);
+            return;
+        }
+
+        emitEvent(io, runId, 'node_failed', {
+            runId,
+            taskId: task.id,
+            nodeKey: task.node_key,
+            status: 'FAILED',
+            error: errorMessage,
+            reason: 'The workflow scheduler stopped before this task completed.',
+        });
+    }));
+};
+
 const activeSchedulers = new Map();
 
 const triggerScheduler = async (runId, options = {}) => {
@@ -364,7 +401,14 @@ const triggerScheduler = async (runId, options = {}) => {
             }
         }
     } catch (error) {
+        await finalizeTasksAfterSchedulerError(runId, error, io);
         await updateExecutionRunStatus(runId, 'FAILED');
+        emitEvent(io, runId, 'run_finished', {
+            runId,
+            status: 'FAILED',
+            error: error.message || 'The workflow scheduler stopped unexpectedly.',
+            completedAt: new Date(),
+        });
         console.error(`❌ [Scheduler Error]:`, error.message);
         throw error;
     }

@@ -6,7 +6,6 @@ const {
 require('./env');
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
-const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash';
 
 const getAiClient = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -48,7 +47,13 @@ const isRetryableError = (error) => {
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
-    : 30000;
+    : 15000;
+
+const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS);
+const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)
+    && configuredMaxModelAttempts >= 1
+    ? Math.min(configuredMaxModelAttempts, 5)
+    : 2;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     let timeoutId;
@@ -72,15 +77,13 @@ const getModelCandidates = (model) => {
     const candidates = [
         model,
         process.env.GEMINI_MODEL,
-        'gemini-3.5-flash-lite',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3.8-flash',
-        'gemini-flash-lite-latest',
-        'gemini-flash-latest',
-        FALLBACK_MODEL,
+        process.env.GEMINI_FALLBACK_MODEL,
+        ...String(process.env.GEMINI_EXTRA_MODELS || '')
+            .split(',')
+            .map((candidate) => candidate.trim())
+            .filter(Boolean),
     ].filter(Boolean);
-    return [...new Set(candidates)];
+    return [...new Set(candidates)].slice(0, MAX_MODEL_ATTEMPTS);
 };
 
 const generateContentWithRetry = async ({model, contents, config}) => {
@@ -101,18 +104,29 @@ const generateContentWithRetry = async ({model, contents, config}) => {
         } catch (error) {
             lastError = error;
             const code = getErrorCode(error);
-            console.warn(`⚠️ Gemini model '${currentModel}' failed (${code || error.message}). Trying next candidate...`);
+            const shouldTryNextModel = isRetryableError(error) || code === 404;
+            const hasNextModel = currentModel !== models[models.length - 1];
 
-            if (isRetryableError(error)) {
+            console.warn(
+                `⚠️ Gemini model '${currentModel}' failed (${code || error.message}). `
+                + (shouldTryNextModel && hasNextModel ? 'Trying next candidate...' : 'Stopping model retries.'),
+            );
+
+            if (shouldTryNextModel && hasNextModel) {
                 await wait(200);
+                continue;
             }
+
+            break;
         }
     }
 
     const finalError = new Error(
         `Gemini request failed: ${lastError?.message || 'LLM service unavailable'}`,
     );
-    finalError.code = getErrorCode(lastError) || 'LLM_ERROR';
+    const lastErrorCode = getErrorCode(lastError);
+    finalError.code = lastErrorCode === 408 ? 'LLM_TIMEOUT' : lastErrorCode || 'LLM_ERROR';
+    finalError.status = lastErrorCode || 503;
     finalError.cause = lastError;
     throw finalError;
 };
@@ -232,7 +246,9 @@ const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
     const finalError = new Error(
         `Gemini Stream failed: ${lastError?.message || 'LLM stream service unavailable'}`,
     );
-    finalError.code = getErrorCode(lastError) || 'LLM_ERROR';
+    const lastErrorCode = getErrorCode(lastError);
+    finalError.code = lastErrorCode === 408 ? 'LLM_TIMEOUT' : lastErrorCode || 'LLM_ERROR';
+    finalError.status = lastErrorCode || 503;
     finalError.cause = lastError;
     throw finalError;
 };

@@ -15,6 +15,7 @@ const DEFAULT_WORKSPACE_ROOT = path.resolve(
 );
 const LOCAL_DESKTOP_OUTPUT_ENABLED = String(process.env.NODE_ENV || 'development').trim().toLowerCase() !== 'production'
     && String(process.env.LOCAL_DESKTOP_OUTPUT || '').trim().toLowerCase() === 'true';
+const SERVER_FILE_ACCESS = String(process.env.SERVER_FILE_ACCESS || 'read-write').trim().toLowerCase();
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const MAX_COMMAND_TIMEOUT_MS = 120_000;
@@ -46,6 +47,31 @@ const COMMAND_BLACKLIST_PATTERNS = [
 ];
 const SENSITIVE_HEADER_PATTERN = /authorization|cookie|set-cookie|token|secret|api[-_]?key|password/i;
 const SAFE_WORKSPACE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
+const WORKSPACE_WRITE_ACTIONS = new Set([
+    'create',
+    'write',
+    'update',
+    'append',
+    'createFiles',
+    'createDirectory',
+    'delete',
+    'remove',
+    'createDesktopDirectory',
+    'createDesktopFile',
+    'exportWorkspaceToDesktop',
+    'exportWorkspaceToDownloads',
+]);
+
+const assertServerFileWriteAccess = (action) => {
+    if (SERVER_FILE_ACCESS === 'read-only' && WORKSPACE_WRITE_ACTIONS.has(action)) {
+        const error = new Error(
+            'Server file access is read-only. Set SERVER_FILE_ACCESS=read-write to allow workflow file changes.',
+        );
+        error.code = 'SERVER_FILE_ACCESS_READ_ONLY';
+        error.status = 403;
+        throw error;
+    }
+};
 
 const isPathInside = (rootPath, targetPath) => {
     const normalizedRoot = path.resolve(rootPath);
@@ -324,6 +350,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
         : requestedAction === 'listdesktopfiles' || requestedAction === 'list_desktop_files'
             ? 'listDesktopDirectory'
         : requestedAction;
+
+    assertServerFileWriteAccess(action);
 
     if (action === 'createDesktopDirectory') {
         const desktopPath = await resolveLocalDesktopPath(input.path);
@@ -870,6 +898,9 @@ const httpRequester = async (input) => {
         validateStatus: () => true,
     });
 
+    const ok = response.status >= 200 && response.status < 400;
+    const allowFailure = input.allowFailure === true || input.expectFailure === true;
+
     return {
         method,
         url,
@@ -878,7 +909,9 @@ const httpRequester = async (input) => {
         statusText: response.statusText,
         headers: maskHeaders(response.headers),
         data: response.data,
-        ok: response.status >= 200 && response.status < 400,
+        ok,
+        exitCode: ok || allowFailure ? 0 : 1,
+        stderr: ok || allowFailure ? '' : `HTTP ${method} ${url} failed with status ${response.status} (${response.statusText || 'Error'}): ${typeof response.data === 'string' ? response.data.slice(0, 500) : JSON.stringify(response.data || {}).slice(0, 500)}`,
     };
 };
 

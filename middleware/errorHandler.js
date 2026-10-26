@@ -23,6 +23,7 @@ const DOMAIN_ERROR_MAP = {
   EXPIRED_VERIFICATION_TOKEN: { statusCode: 400, title: 'EXPIRED_VERIFICATION_TOKEN' },
   VERIFICATION_TOKEN_REQUIRED: { statusCode: 400, title: 'VALIDATION_ERROR' },
   LLM_UNAVAILABLE: { statusCode: 503, title: 'SERVICE_UNAVAILABLE' },
+  LLM_TIMEOUT: { statusCode: 504, title: 'GATEWAY_TIMEOUT' },
   LLM_ERROR: { statusCode: 503, title: 'SERVICE_UNAVAILABLE' },
   LLM_EMPTY_RESPONSE: { statusCode: 503, title: 'SERVICE_UNAVAILABLE' },
   PLANNER_ERROR: { statusCode: 502, title: 'BAD_GATEWAY' },

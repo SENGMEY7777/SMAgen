@@ -84,6 +84,12 @@ const getNonRepairableFailureReason = ({task, error, errorTrace}) => {
     const code = String(error?.code || errorTrace?.error?.code || '').toUpperCase();
     const text = getFailureText({error, errorTrace});
     const assignedTool = String(task?.assigned_tool || task?.assignedTool || '').trim();
+    const toolInput = parseJsonValue(task?.tool_input || task?.toolInput, {});
+    const action = String(toolInput?.action || '').trim().toLowerCase();
+
+    if (assignedTool === 'fileManager' && action === 'deleteDesktopPath') {
+        return 'Local file removal is deterministic and does not require AI repair.';
+    }
 
     if (code === 'SERVER_FILE_ACCESS_READ_ONLY' || /server file access is read-only/.test(text)) {
         return 'The server is configured for read-only file access.';

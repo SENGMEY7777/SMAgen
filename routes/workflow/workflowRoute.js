@@ -39,6 +39,12 @@ router.post(
     workflowController.runWorkflow,
 );
 router.get('/runs', isLogin, workflowController.listRuns);
+router.post(
+    '/runs/:runId/cancel',
+    isLogin,
+    validateParams(workflowRunParamsSchema),
+    workflowController.cancelWorkflow,
+);
 router.get(
     '/runs/:runId',
     isLogin,

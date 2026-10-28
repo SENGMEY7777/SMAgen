@@ -385,10 +385,13 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
             },
         };
 
+        const originalTaskError = error?.message || 'The task execution failed.';
+        const repairError = reflectionError?.message || 'The repair service was unavailable.';
+
         return markTaskFailedAndSkipDependents({
             runId,
             task,
-            errorMessage: `Self-healing reflection failed: ${reflectionError.message}`,
+            errorMessage: `Task failed: ${originalTaskError}. Automatic repair was unavailable: ${repairError}`,
             errorTrace: reflectionTrace,
             executionTimeMs: telemetry?.latencyMs,
             io,

@@ -22,6 +22,43 @@ const ACTIVE_TASK_STATUSES = [
     'AWAITING_APPROVAL',
 ];
 
+const CONTINUE_ON_ERROR_PATTERNS = [
+    /\bcontinue\s+(?:the\s+)?(?:workflow|run|execution)\s+(?:on|after|despite|even\s+with)\s+(?:an?\s+)?(?:error|failure|failed\s+task)\b/i,
+    /\b(?:continue|proceed|keep\s+going|carry\s+on)\b[\s\S]{0,45}\b(?:error|failure|failed\s+task)\b/i,
+    /\b(?:skip|ignore)\b[\s\S]{0,20}\b(?:failed|failing|error|failure)\b[\s\S]{0,30}\b(?:task|step|work)\b/i,
+    /\b(?:run|execute|complete)\b[\s\S]{0,20}\b(?:remaining|other|independent)\s+(?:tasks?|steps?)\b/i,
+    /\bif\b[\s\S]{0,20}\b(?:error|failure|failed)\b[\s\S]{0,45}\b(?:continue|proceed|keep\s+going|skip)\b/i,
+    /\b(?:do\s+not|don't|never)\s+(?:stop|abort|halt)\b[\s\S]{0,45}\b(?:error|failure|failed|task|workflow|run)\b/i,
+];
+
+const STOP_ON_ERROR_PATTERNS = [
+    /\b(?:stop|abort|halt|cancel|fail\s+fast)\b[\s\S]{0,35}\b(?:on|after|when|if)\b[\s\S]{0,35}\b(?:error|failure|failed|task)\b/i,
+    /\b(?:stop|abort|halt|cancel)\s+(?:the\s+)?(?:workflow|run|execution)\b/i,
+    /\b(?:do\s+not|don't|never)\s+(?:continue|proceed|keep\s+going)\b[\s\S]{0,35}\b(?:error|failure|failed|task)\b/i,
+];
+
+const resolveFailurePolicy = ({goalPrompt = '', requestedPolicy = ''} = {}) => {
+    const explicitPolicy = String(requestedPolicy || '').trim().toLowerCase();
+    if (['continue', 'continue_on_error', 'continue-on-error'].includes(explicitPolicy)) {
+        return 'CONTINUE_ON_ERROR';
+    }
+    if (['stop', 'stop_on_error', 'stop-on-error'].includes(explicitPolicy)) {
+        return 'STOP_ON_ERROR';
+    }
+
+    const prompt = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
+    if (STOP_ON_ERROR_PATTERNS.some((pattern) => pattern.test(prompt))) {
+        return 'STOP_ON_ERROR';
+    }
+    if (CONTINUE_ON_ERROR_PATTERNS.some((pattern) => pattern.test(prompt))) {
+        return 'CONTINUE_ON_ERROR';
+    }
+
+    // Safe default: destructive or dependent work should not continue after
+    // an unrecoverable task failure unless the user explicitly requests it.
+    return 'STOP_ON_ERROR';
+};
+
 const parseJsonValue = (value, fallback) => {
     if (typeof value !== 'string') {
         return value ?? fallback;
@@ -181,6 +218,7 @@ const triggerScheduler = async (runId, options = {}) => {
         riskGate = createRiskGate(),
         executor = null,
         selfHealing = sendErrorTraceToSelfHealingEngine,
+        failurePolicy = '',
     } = options;
 
     if (typeof executor !== 'function') {
@@ -203,6 +241,16 @@ const triggerScheduler = async (runId, options = {}) => {
                 tasksProcessed,
             };
         }
+
+        const resolvedFailurePolicy = resolveFailurePolicy({
+            goalPrompt: initialRun.goal_prompt || initialRun.goalPrompt || '',
+            requestedPolicy: failurePolicy,
+        });
+        const stopOnError = resolvedFailurePolicy === 'STOP_ON_ERROR';
+
+        console.log(
+            `⚙️ [Scheduler] Failure policy for Run ${runId}: ${resolvedFailurePolicy}`,
+        );
 
         await updateExecutionRunStatus(runId, 'RUNNING');
 
@@ -318,9 +366,32 @@ const triggerScheduler = async (runId, options = {}) => {
                 continue;
             }
 
+            let batchFailed = false;
             const results = await Promise.all(readyTasks.map((task) => limit(async () => {
                 if (await isRunCancelled(runId, cancellationController.signal)) {
                     return 'CANCELLED';
+                }
+
+                if (stopOnError && batchFailed) {
+                    const completedAt = new Date();
+                    const errorMessage = 'Skipped because another task in this batch failed.';
+
+                    await updateTaskNode(task.id, {
+                        status: 'SKIPPED',
+                        errorMessage,
+                        completedAt,
+                    });
+
+                    emitEvent(io, runId, 'node_skipped', {
+                        runId,
+                        taskId: task.id,
+                        nodeKey: task.node_key,
+                        status: 'SKIPPED',
+                        error: errorMessage,
+                        reason: errorMessage,
+                    });
+
+                    return 'SKIPPED';
                 }
 
                 const gateResult = typeof riskGate === 'function'
@@ -492,6 +563,10 @@ const triggerScheduler = async (runId, options = {}) => {
                         return 'RETRY';
                     }
 
+                    if (stopOnError) {
+                        batchFailed = true;
+                    }
+
                     if (!recovery?.finalized) {
                         await updateTaskNode(task.id, {
                             status: 'FAILED',
@@ -528,6 +603,16 @@ const triggerScheduler = async (runId, options = {}) => {
                     status: 'CANCELLED',
                     tasksProcessed,
                 };
+            }
+
+            // Stop-on-error is the safe default for workflow runs. A failed
+            // task must not allow unrelated pending tasks to start on the
+            // next DAG pass, especially when self-healing is unavailable.
+            // Tasks already running in this batch are allowed to settle, then
+            // finishRun marks the remaining pending work as SKIPPED.
+            if (stopOnError && results.includes('FAILED')) {
+                const latestTasks = (await listTaskNodesByRunId(runId)).map(normalizeTask);
+                return finishRun(runId, latestTasks, io);
             }
 
             if (results.includes('WAITING')) {

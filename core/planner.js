@@ -504,6 +504,9 @@ const normalizeLocalExportTasks = (tasks, goalPrompt) => {
     }
 
     const keepsDownloads = isDownloadsOutputRequest(goalPrompt);
+    const requestedDesktopPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
     const hasDirectDesktopFileOutput = tasks.some((task) => {
         const tool = String(task.assignedTool || '').trim().toLowerCase();
         const action = String(task.toolInput?.action || '').trim().toLowerCase();
@@ -542,14 +545,34 @@ const normalizeLocalExportTasks = (tasks, goalPrompt) => {
         return true;
     });
 
-    if (!removedKeys.size) {
+    if (!removedKeys.size && !requestedDesktopPath) {
         return tasks;
     }
 
-    return filteredTasks.map((task) => ({
-        ...task,
-        dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
-    }));
+    return filteredTasks.map((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        const isDesktopExport = action === 'exportworkspacetodesktop'
+            || action === 'export_workspace_to_desktop';
+
+        if (isDesktopExport && requestedDesktopPath) {
+            return {
+                ...task,
+                title: `Export generated output to Desktop/${requestedDesktopPath}`,
+                instruction: `Copy the completed workflow output to the local Desktop folder ${requestedDesktopPath}, excluding generated node_modules dependencies.`,
+                dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
+                toolInput: {
+                    ...task.toolInput,
+                    action: 'exportWorkspaceToDesktop',
+                    path: requestedDesktopPath,
+                },
+            };
+        }
+
+        return {
+            ...task,
+            dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
+        };
+    });
 };
 
 const appendDesktopExportTask = (tasks, goalPrompt) => {

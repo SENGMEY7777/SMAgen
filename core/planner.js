@@ -695,6 +695,7 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
                     ? Object.entries(task.toolInput.files).map(([filePath, content]) => ({path: filePath, content}))
                     : [];
             const directoryPath = cleanRelativeDirectoryPath(inferredDirectoryPath);
+            const projectRootPath = directoryPath?.split('/')[0];
             const desktopFiles = fileEntries
                 .map((entry) => {
                     const filePath = cleanRelativeFilePath(entry?.path || entry?.fileName);
@@ -703,6 +704,8 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
                     const desktopPath = directoryPath
                         && filePath !== directoryPath
                         && !filePath.startsWith(directoryPath + '/')
+                        && filePath !== projectRootPath
+                        && !filePath.startsWith(`${projectRootPath}/`)
                         ? directoryPath + '/' + filePath
                         : filePath;
 
@@ -733,9 +736,12 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
         }
 
         const directoryPath = cleanRelativeDirectoryPath(inferredDirectoryPath);
+        const projectRootPath = directoryPath?.split('/')[0];
         const desktopPath = directoryPath
             && filePath !== directoryPath
             && !filePath.startsWith(`${directoryPath}/`)
+            && filePath !== projectRootPath
+            && !filePath.startsWith(`${projectRootPath}/`)
             ? `${directoryPath}/${filePath}`
             : filePath;
 
@@ -1312,13 +1318,22 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
         || action === 'create_desktop_file'
         || action === 'createdesktopfiles'
         || action === 'create_desktop_files';
+    // A generated file may already include the project root, for example
+    // `Testing-Project/app/services/AuthService.js`. The requested directory
+    // can be a nested MVC folder such as `Testing-Project/app/controllers`.
+    // Only prefix paths that are truly relative; otherwise controllers could
+    // be incorrectly inserted before services/models.
+    const projectRootPath = directoryPath.split('/')[0];
     const prefixFilePath = (filePath) => {
         const cleanPath = cleanRelativeFilePath(filePath);
         if (!cleanPath) {
             return null;
         }
 
-        return cleanPath === directoryPath || cleanPath.startsWith(directoryPath + '/')
+        return cleanPath === directoryPath
+            || cleanPath.startsWith(directoryPath + '/')
+            || cleanPath === projectRootPath
+            || cleanPath.startsWith(projectRootPath + '/')
             ? cleanPath
             : directoryPath + '/' + cleanPath;
     };

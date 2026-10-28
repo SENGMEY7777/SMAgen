@@ -1,7 +1,7 @@
 const workflowModel = require('../../models/workflow/workflowModel');
 const { v4: uuidv4 } = require('uuid');
 const { planWorkflowRun } = require('../../core/planner');
-const { triggerScheduler } = require('../../core/scheduler');
+const { triggerScheduler, cancelActiveRun } = require('../../core/scheduler');
 const { executeTaskNode } = require('../../core/executor');
 
 const startScheduler = (runId, io = null) => triggerScheduler(runId, {
@@ -153,10 +153,32 @@ const getWorkflowRun = async (runId, userId) => {
     };
 }
 
+const cancelRun = async ({runId, userId, reason = 'Workflow cancelled by user'}) => {
+    const result = await workflowModel.cancelExecutionRun(runId, userId, reason);
+
+    if (!result.run) {
+        const error = new Error('Workflow run not found');
+        error.code = 'RUN_NOT_FOUND';
+        throw error;
+    }
+
+    if (result.updated) {
+        cancelActiveRun(runId);
+    }
+
+    return {
+        runId,
+        status: result.run.status,
+        updated: result.updated,
+        run: result.run,
+    };
+}
+
 module.exports = {
     create,
     list,
     runWorkflow,
     listRuns,
     getWorkflowRun,
+    cancelRun,
 }

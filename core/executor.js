@@ -58,6 +58,7 @@ const WORKSPACE_WRITE_ACTIONS = new Set([
     'remove',
     'createDesktopDirectory',
     'createDesktopFile',
+    'createDesktopFiles',
     'deleteDesktopPath',
     'exportWorkspaceToDesktop',
     'exportWorkspaceToDownloads',
@@ -430,6 +431,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
             ? 'createDesktopDirectory'
         : requestedAction === 'createdesktopfile' || requestedAction === 'create_desktop_file'
             ? 'createDesktopFile'
+        : requestedAction === 'createdesktopfiles' || requestedAction === 'create_desktop_files'
+            ? 'createDesktopFiles'
         : requestedAction === 'deletedesktoppath' || requestedAction === 'delete_desktop_path'
             ? 'deleteDesktopPath'
         : requestedAction === 'createfile' || requestedAction === 'create_file'
@@ -670,7 +673,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
-    if (action === 'createFiles') {
+    if (action === 'createFiles' || action === 'createDesktopFiles') {
         const fileEntries = Array.isArray(input.files)
             ? input.files
             : input.files && typeof input.files === 'object' && !Array.isArray(input.files)
@@ -687,7 +690,9 @@ const fileManager = async (input, workspacePath, task = {}) => {
             }
 
             const requestedFilePath = entry.path || entry.fileName;
-            const targetPath = await resolveWorkspaceFile(workspacePath, requestedFilePath);
+            const targetPath = action === 'createDesktopFiles'
+                ? await resolveLocalDesktopPath(requestedFilePath)
+                : await resolveWorkspaceFile(workspacePath, requestedFilePath);
             const content = resolveContent(entry.content);
             validateContent(content);
 
@@ -695,19 +700,21 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 requestedFilePath,
                 targetPath,
                 content,
+                mode: String(entry.mode || input.mode || 'create').trim().toLowerCase(),
             };
         }));
 
-        await Promise.all(preparedFiles.map(async ({targetPath, content}) => {
+        await Promise.all(preparedFiles.map(async ({targetPath, content, mode}) => {
             await fs.mkdir(path.dirname(targetPath), {recursive: true});
             await fs.writeFile(targetPath, content, {
                 encoding: 'utf8',
-                flag: input.overwrite === true ? 'w' : 'wx',
+                flag: input.overwrite === true || ['write', 'update'].includes(mode) ? 'w' : 'wx',
             });
         }));
 
         return {
             action,
+            ...(action === 'createDesktopFiles' ? {location: 'local Desktop'} : {}),
             files: preparedFiles.map(({requestedFilePath, content}) => ({
                 path: requestedFilePath,
                 bytesWritten: Buffer.byteLength(content, 'utf8'),

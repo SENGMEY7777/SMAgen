@@ -218,6 +218,106 @@ const resolveLocalDesktopPath = async (requestedPath) => {
     return resolvedPath;
 };
 
+const getLocalDesktopRoot = async () => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        throw new Error(
+            'Direct Desktop output is disabled. Set LOCAL_DESKTOP_OUTPUT=true only for local development.',
+        );
+    }
+
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+
+    try {
+        await fs.realpath(desktopRoot);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            const missingError = new Error(
+                'Local Desktop directory does not exist: ' + desktopRoot,
+            );
+            missingError.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
+            missingError.status = 404;
+            throw missingError;
+        }
+
+        throw error;
+    }
+
+    await assertRealPathInsideWorkspace(desktopRoot, desktopRoot);
+    return desktopRoot;
+};
+
+const findLocalDesktopFiles = async (fileName, searchPath = '') => {
+    const desktopRoot = await getLocalDesktopRoot();
+    const searchRoot = searchPath
+        ? await resolveLocalDesktopPath(searchPath)
+        : desktopRoot;
+    const matches = [];
+    const ignoredDirectories = new Set(['.git', 'node_modules']);
+
+    const visit = async (currentPath, depth = 0) => {
+        if (depth > 12) return;
+        if (matches.length > 50) return;
+
+        let entries;
+        try {
+            entries = await fs.readdir(currentPath, {withFileTypes: true});
+        } catch (error) {
+            if (error.code === 'ENOENT') return;
+            throw error;
+        }
+
+        for (const entry of entries) {
+            if (entry.isSymbolicLink()) continue;
+
+            const entryPath = path.join(currentPath, entry.name);
+            if (entry.isDirectory()) {
+                if (!ignoredDirectories.has(entry.name)) {
+                    await visit(entryPath, depth + 1);
+                }
+            } else if (entry.isFile() && entry.name === fileName) {
+                matches.push(entryPath);
+            }
+        }
+    };
+
+    await visit(searchRoot);
+
+    if (matches.length > 0) return matches;
+
+    const normalizedName = String(fileName || '').toLowerCase();
+    if (!normalizedName) return matches;
+
+    const caseInsensitiveMatches = [];
+    const visitCaseInsensitive = async (currentPath, depth = 0) => {
+        if (depth > 12) return;
+        if (caseInsensitiveMatches.length > 50) return;
+
+        let entries;
+        try {
+            entries = await fs.readdir(currentPath, {withFileTypes: true});
+        } catch (error) {
+            if (error.code === 'ENOENT') return;
+            throw error;
+        }
+
+        for (const entry of entries) {
+            if (entry.isSymbolicLink()) continue;
+
+            const entryPath = path.join(currentPath, entry.name);
+            if (entry.isDirectory()) {
+                if (!ignoredDirectories.has(entry.name)) {
+                    await visitCaseInsensitive(entryPath, depth + 1);
+                }
+            } else if (entry.isFile() && entry.name.toLowerCase() === normalizedName) {
+                caseInsensitiveMatches.push(entryPath);
+            }
+        }
+    };
+
+    await visitCaseInsensitive(searchRoot);
+    return caseInsensitiveMatches;
+};
+
 const resolveLocalDownloadsPath = async (requestedPath) => {
     if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
         throw new Error(
@@ -369,18 +469,65 @@ const fileManager = async (input, workspacePath, task = {}) => {
     }
 
     if (action === 'deleteDesktopPath') {
-        const desktopPath = await resolveLocalDesktopPath(input.path);
+        const requestedPath = String(input.path || '').trim();
+        const isFileTarget = input.kind === 'file' || input.file === true;
+        let desktopPath = await resolveLocalDesktopPath(requestedPath);
         const desktopRoot = path.join(os.homedir(), 'Desktop');
 
         if (desktopPath === path.resolve(desktopRoot)) {
             throw new Error('The local Desktop root cannot be deleted');
         }
 
-        await fs.rm(desktopPath, {recursive: true, force: false});
+        try {
+            const stats = await fs.lstat(desktopPath);
+            if (isFileTarget && !stats.isFile()) {
+                const typeError = new Error(
+                    'The requested Desktop path is not a file: ' + requestedPath,
+                );
+                typeError.code = 'LOCAL_DESKTOP_PATH_TYPE_MISMATCH';
+                typeError.status = 409;
+                throw typeError;
+            }
+        } catch (error) {
+            if (error.code !== 'ENOENT' || !isFileTarget) {
+                if (error.code === 'ENOENT') {
+                    error.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
+                    error.status = 404;
+                    error.message = 'The requested Desktop path was not found: ' + requestedPath;
+                }
+                throw error;
+            }
+
+            const requestedFileName = path.basename(requestedPath);
+            const matches = await findLocalDesktopFiles(requestedFileName, input.searchPath);
+
+            if (matches.length === 0) {
+                const notFoundError = new Error(
+                    'The requested Desktop file was not found: ' + requestedFileName,
+                );
+                notFoundError.code = 'LOCAL_DESKTOP_FILE_NOT_FOUND';
+                notFoundError.status = 404;
+                throw notFoundError;
+            }
+
+            if (matches.length > 1) {
+                const ambiguousError = new Error(
+                    'More than one Desktop file matches "' + requestedFileName
+                    + '". Specify its project-relative path.',
+                );
+                ambiguousError.code = 'LOCAL_DESKTOP_FILE_AMBIGUOUS';
+                ambiguousError.status = 409;
+                throw ambiguousError;
+            }
+
+            desktopPath = matches[0];
+        }
+
+        await fs.rm(desktopPath, {recursive: !isFileTarget, force: false});
 
         return {
             action,
-            path: input.path,
+            path: path.relative(desktopRoot, desktopPath),
             location: 'local Desktop',
             deleted: true,
         };

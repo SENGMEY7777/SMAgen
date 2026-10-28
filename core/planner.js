@@ -45,6 +45,7 @@ const DIRECTORY_ACTIONS = new Set([
 ]);
 
 const DESKTOP_FILE_ACTION = 'createDesktopFile';
+const DESKTOP_FILES_ACTION = 'createDesktopFiles';
 const FILE_WRITE_ACTIONS = new Set([
     'create',
     'write',
@@ -205,6 +206,11 @@ const isRemovalRequest = (value) => {
         && /\b(?:file|folder|directory|project|path)\b/i.test(text);
 };
 
+const getUserGoalText = (value) => String(value || '')
+    .split(/\n\s*\[Follow-up execution context:/i, 1)[0]
+    .replace(/\s+/g, ' ')
+    .trim();
+
 const extractRemovalTarget = (value) => {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     const quotedMatch = text.match(
@@ -218,30 +224,41 @@ const extractRemovalTarget = (value) => {
     return cleanRelativeDirectoryPath(candidate);
 };
 
-const normalizeRemovalPlan = (tasks, goalPrompt) => {
-    if (!isRemovalRequest(goalPrompt)) {
+const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
+    const userGoal = getUserGoalText(goalPrompt);
+
+    if (!isRemovalRequest(userGoal)) {
         return tasks;
     }
 
-    const targetPath = extractRemovalTarget(goalPrompt);
+    const targetPath = extractRemovalTarget(userGoal);
     if (!targetPath) {
         return tasks;
     }
 
-    const targetIsFile = /\bfile\b/i.test(String(goalPrompt || ''))
-        && !/\b(?:folder|directory|project)\b/i.test(String(goalPrompt || ''));
+    const explicitlyFolder = /\b(?:folder|directory|project)\b/i.test(userGoal);
+    const targetLooksLikeFile = /(?:^|[\\/])[^\\/]+\.[A-Za-z0-9]{1,16}$/.test(targetPath);
+    const targetIsFile = !explicitlyFolder && (/\bfile\b/i.test(userGoal) || targetLooksLikeFile);
     const action = LOCAL_DESKTOP_OUTPUT_ENABLED ? 'deleteDesktopPath' : 'delete';
     const location = LOCAL_DESKTOP_OUTPUT_ENABLED ? 'Desktop' : 'workflow workspace';
+    const destination = LOCAL_DESKTOP_OUTPUT_ENABLED ? normalizeLocalDestination(localDestination) : null;
+    const destinationScope = destination?.location === 'Desktop' ? destination.relativePath : '';
+    const hasNestedTarget = targetPath.includes('/') || targetPath.includes('\\');
+    const scopedTargetPath = targetIsFile && destinationScope && !hasNestedTarget
+        ? `${destinationScope}/${targetPath}`
+        : targetPath;
 
     return [{
         nodeKey: 'remove_requested_target',
-        title: `Remove ${targetIsFile ? 'file' : 'folder'} ${location}/${targetPath}`,
-        instruction: `Remove the requested ${targetIsFile ? 'file' : 'folder'} ${targetPath} from the local ${location}. Do not create or modify any other files.`,
+        title: `Remove ${targetIsFile ? 'file' : 'folder'} ${location}/${scopedTargetPath}`,
+        instruction: `Remove the requested ${targetIsFile ? 'file' : 'folder'} ${scopedTargetPath} from the local ${location}. Do not create or modify any other files.`,
         dependencies: [],
         assignedTool: 'fileManager',
         toolInput: {
             action,
-            path: targetPath,
+            path: scopedTargetPath,
+            ...(targetIsFile ? {kind: 'file'} : {}),
+            ...(destinationScope && targetIsFile ? {searchPath: destinationScope} : {}),
         },
     }];
 };
@@ -637,6 +654,45 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
 
         if (!dependsOnDesktopDirectory && !desktopGoal) {
             return task;
+        }
+
+        if (action === 'createfiles' || action === 'writefiles') {
+            const fileEntries = Array.isArray(task.toolInput.files)
+                ? task.toolInput.files
+                : task.toolInput.files && typeof task.toolInput.files === 'object'
+                    ? Object.entries(task.toolInput.files).map(([filePath, content]) => ({path: filePath, content}))
+                    : [];
+            const directoryPath = cleanRelativeDirectoryPath(inferredDirectoryPath);
+            const desktopFiles = fileEntries
+                .map((entry) => {
+                    const filePath = cleanRelativeFilePath(entry?.path || entry?.fileName);
+                    if (!filePath) return null;
+
+                    const desktopPath = directoryPath
+                        && filePath !== directoryPath
+                        && !filePath.startsWith(directoryPath + '/')
+                        ? directoryPath + '/' + filePath
+                        : filePath;
+
+                    return {
+                        ...entry,
+                        path: desktopPath,
+                    };
+                })
+                .filter(Boolean);
+
+            if (!desktopFiles.length) {
+                return task;
+            }
+
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    action: DESKTOP_FILES_ACTION,
+                    files: desktopFiles,
+                },
+            };
         }
 
         const filePath = cleanRelativeFilePath(task.toolInput.path);
@@ -2153,7 +2209,7 @@ const normalizeImageTasks = (tasks, goalPrompt) => {
     });
 };
 
-const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
+const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
     const plan = { ...rawPlan };
@@ -2205,7 +2261,7 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // A destructive request is a single-target operation. Replace any
         // model-added create, export, or setup tasks so removal never causes
         // unrelated files such as index.js to be created.
-        plan.tasks = normalizeRemovalPlan(plan.tasks, goalPrompt);
+        plan.tasks = normalizeRemovalPlan(plan.tasks, goalPrompt, localDestination);
 
         // The executor rejects shell chaining. Expand planner output such as
         // `php --version && composer --version` into ordered command tasks.
@@ -2432,7 +2488,10 @@ const planWorkflowRun = async ({
     if (planCache.has(cacheKey)) {
         console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
         const cached = planCache.get(cacheKey);
-        validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {goalPrompt: planningGoalPrompt});
+        validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
+            goalPrompt: planningGoalPrompt,
+            localDestination,
+        });
     }
 
     if (!validatedPlan) {
@@ -2505,7 +2564,10 @@ ${desktopInstruction}
                     io,
                 });
 
-                const parsed = validatePlan(rawResult.data, {goalPrompt: planningGoalPrompt});
+                const parsed = validatePlan(rawResult.data, {
+                    goalPrompt: planningGoalPrompt,
+                    localDestination,
+                });
 
                 if (!parsed.success) {
                     lastPlannerError = new Error(parsed.error.message);

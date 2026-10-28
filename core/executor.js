@@ -1034,7 +1034,7 @@ const maskHeaders = (headers = {}) => Object.fromEntries(
     ]),
 );
 
-const httpRequester = async (input) => {
+const httpRequester = async (input, workspacePath, task, options = {}) => {
     const url = typeof input.url === 'string' ? input.url.trim() : '';
 
     if (!url) {
@@ -1068,6 +1068,7 @@ const httpRequester = async (input) => {
         params: input.params,
         data: input.data,
         timeout,
+        signal: options.signal,
         maxContentLength: 5 * 1024 * 1024,
         maxBodyLength: 5 * 1024 * 1024,
         validateStatus: () => true,
@@ -1102,7 +1103,7 @@ const tokenizeCommand = (command) => {
     });
 };
 
-const executeCommand = async (input, workspacePath, task) => {
+const executeCommand = async (input, workspacePath, task, options = {}) => {
     const command = typeof input.command === 'string' ? input.command.trim() : '';
 
     if (!command) {
@@ -1223,6 +1224,7 @@ const executeCommand = async (input, workspacePath, task) => {
         const result = await execFileAsync(commandName, args, {
             cwd: effectiveCwd,
             timeout: COMMAND_TIMEOUT_MS,
+            signal: options.signal,
             maxBuffer: MAX_COMMAND_OUTPUT,
             shell: false,
             env: {
@@ -1314,7 +1316,7 @@ const executeTaskNode = async (task, options = {}) => {
     let result;
 
     try {
-        result = await tool(input, workspacePath, task);
+        result = await tool(input, workspacePath, task, options);
     } catch (error) {
         error.execution = error.execution || {
             stdout: error.stdout || '',

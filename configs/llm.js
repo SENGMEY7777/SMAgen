@@ -52,6 +52,11 @@ const isRetryableError = (error) => {
     return [408, 429, 500, 502, 503, 504].includes(code);
 };
 
+const isTransientProviderError = (error) => {
+    const code = getErrorCode(error);
+    return [429, 500, 502, 503].includes(code);
+};
+
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
     ? configuredTimeout
@@ -61,6 +66,12 @@ const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS)
 const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)
     && configuredMaxModelAttempts >= 1
     ? Math.min(configuredMaxModelAttempts, 5)
+    : 2;
+
+const configuredTransientRetries = Number(process.env.GEMINI_TRANSIENT_RETRIES);
+const GEMINI_TRANSIENT_RETRIES = Number.isInteger(configuredTransientRetries)
+    && configuredTransientRetries >= 0
+    ? Math.min(configuredTransientRetries, 3)
     : 2;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
@@ -142,32 +153,47 @@ const generateContentWithRetry = async ({
     let lastError;
 
     for (const currentModel of models) {
-        try {
-            return await withTimeout(
-                ai.models.generateContent({
-                    model: currentModel,
-                    contents,
-                    config,
-                }),
-                timeoutMs
-            );
-        } catch (error) {
-            lastError = error;
-            const code = getErrorCode(error);
-            const shouldTryNextModel = isRetryableError(error) || code === 404;
-            const hasNextModel = currentModel !== models[models.length - 1];
+        for (let transientAttempt = 0; transientAttempt <= GEMINI_TRANSIENT_RETRIES; transientAttempt += 1) {
+            try {
+                return await withTimeout(
+                    ai.models.generateContent({
+                        model: currentModel,
+                        contents,
+                        config,
+                    }),
+                    timeoutMs
+                );
+            } catch (error) {
+                lastError = error;
+                const code = getErrorCode(error);
+                const canRetrySameModel = isTransientProviderError(error)
+                    && transientAttempt < GEMINI_TRANSIENT_RETRIES;
 
-            console.warn(
-                `⚠️ Gemini model '${currentModel}' failed (${code || error.message}). `
-                + (shouldTryNextModel && hasNextModel ? 'Trying next candidate...' : 'Stopping model retries.'),
-            );
+                if (canRetrySameModel) {
+                    const delayMs = Math.min(1500, 250 * (2 ** transientAttempt));
+                    console.warn(
+                        `⚠️ Gemini model '${currentModel}' failed (${code || error.message}). `
+                        + `Retrying in ${delayMs}ms (${transientAttempt + 1}/${GEMINI_TRANSIENT_RETRIES})...`,
+                    );
+                    await wait(delayMs);
+                    continue;
+                }
 
-            if (shouldTryNextModel && hasNextModel) {
-                await wait(200);
-                continue;
+                const shouldTryNextModel = isRetryableError(error) || code === 404;
+                const hasNextModel = currentModel !== models[models.length - 1];
+
+                console.warn(
+                    `⚠️ Gemini model '${currentModel}' failed (${code || error.message}). `
+                    + (shouldTryNextModel && hasNextModel ? 'Trying next candidate...' : 'Stopping model retries.'),
+                );
+
+                if (shouldTryNextModel && hasNextModel) {
+                    await wait(200);
+                    break;
+                }
+
+                throw error;
             }
-
-            break;
         }
     }
 

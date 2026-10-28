@@ -81,7 +81,7 @@ const updateExecutionRunStatus = async (id, status, extra = {}) => {
 
     if (status === 'RUNNING') {
         updates.push('started_at = COALESCE(started_at, NOW())');
-    } else if (status === 'COMPLETED' || status === 'FAILED') {
+    } else if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(status)) {
         updates.push('completed_at = NOW()');
     }
 
@@ -101,6 +101,78 @@ const updateExecutionRunStatus = async (id, status, extra = {}) => {
     const [result] = await pool.query(sql, values);
 
     return result;
+}
+
+const cancelExecutionRun = async (id, userId, reason = 'Workflow cancelled by user') => {
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        const [runRows] = await connection.query(
+            `SELECT id, user_id, status
+             FROM execution_runs
+             WHERE id = ? AND user_id = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [id, userId],
+        );
+        const run = runRows[0];
+
+        if (!run) {
+            await connection.rollback();
+            return {run: null, updated: false};
+        }
+
+        if (['COMPLETED', 'FAILED', 'CANCELLED'].includes(run.status)) {
+            await connection.commit();
+            return {run, updated: false};
+        }
+
+        await connection.query(
+            `UPDATE execution_runs
+             SET status = 'CANCELLED', completed_at = NOW()
+             WHERE id = ? AND user_id = ?`,
+            [id, userId],
+        );
+
+        await connection.query(
+            `UPDATE task_nodes
+             SET status = 'SKIPPED', error_message = ?, completed_at = NOW()
+             WHERE run_id = ?
+               AND status NOT IN ('SUCCESS', 'FAILED', 'SKIPPED')`,
+            [reason, id],
+        );
+
+        // Prevent cancelled approval checkpoints from remaining in the global
+        // pending queue. Older installations may not have created this table
+        // yet, so keep cancellation successful when it is absent.
+        try {
+            await connection.query(
+                `UPDATE approval_requests ar
+                 JOIN task_nodes tn ON tn.id = ar.task_id
+                 SET ar.status = 'REJECTED',
+                     ar.rejection_reason = ?,
+                     ar.resolved_by_user_id = ?,
+                     ar.resolved_at = NOW()
+                 WHERE tn.run_id = ? AND ar.status = 'PENDING'`,
+                [reason, userId, id],
+            );
+        } catch (approvalError) {
+            if (approvalError.code !== 'ER_NO_SUCH_TABLE') throw approvalError;
+        }
+
+        await connection.commit();
+        return {
+            run: await getExecutionById(id, userId),
+            updated: true,
+        };
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
 }
 
 const incrementExecutionRunUsage = async (id, {totalTokens = 0, totalCostUsd = 0} = {}) => {
@@ -294,6 +366,7 @@ module.exports = {
     getWorkflowById,
     createExecutionRun,
     updateExecutionRunStatus,
+    cancelExecutionRun,
     incrementExecutionRunUsage,
     getExecutionById,
     listExecutionRunsByUser,

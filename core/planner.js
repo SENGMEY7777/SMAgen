@@ -173,6 +173,14 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
         return cleanRelativeDirectoryPath(quotedName[1]);
     }
 
+    const nameSuffix = taskText.match(
+        /\b(?:directory|folder|project)\s+name(?:['’]s)?\s*[:=-]?\s*([A-Za-z0-9_-]+)/i,
+    );
+
+    if (nameSuffix) {
+        return cleanRelativeDirectoryPath(nameSuffix[1]);
+    }
+
     const plainName = taskText.match(
         /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and|i\s+want)\b|[.,;!?]|$)/i,
     );
@@ -585,6 +593,7 @@ const appendDownloadsExportTask = (tasks, goalPrompt) => {
     if (
         !LOCAL_DESKTOP_OUTPUT_ENABLED
         || isDesktopOutputRequest(goalPrompt)
+        || isNodeProjectSetupRequest(goalPrompt)
         || hasLocalExportTask(tasks)
     ) {
         return tasks;
@@ -1015,6 +1024,7 @@ const extractDesktopFileNames = (goalPrompt) => {
     return [...candidates]
         .map((candidate) => cleanRelativeFilePath(candidate))
         .filter((candidate) => candidate && !candidate.includes('/'))
+        .filter((candidate) => !/^(?:node|express|vue|react|next)\.js$/i.test(candidate))
         .filter((candidate, index, all) => all.indexOf(candidate) === index);
 };
 
@@ -1255,127 +1265,163 @@ const isNodeProjectSetupRequest = (goalPrompt) => {
     const mentionsNode = /\bnode(?:\.js|\s*js)?\b/i.test(text);
     const mentionsProject = /\b(?:project|app|application|starter|template)\b/i.test(text);
     const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|start)\b/i.test(text);
+    const mentionsArchitecture = /\b(?:mvc|model[-\s]*view[-\s]*controller|service\s+pattern|service\s+layer|controller|model|route|routes)\b/i.test(text);
+    const mentionsDesktop = /\bdesk(?:top|spto|stop)\b/i.test(text);
 
-    return mentionsNode
+    return mentionsDesktop
         && mentionsProject
-        && requestsSetup
-        && /\bdesktop\b/i.test(text);
+        && (mentionsNode || mentionsArchitecture)
+        && (requestsSetup || mentionsArchitecture);
 };
 
-const wantsNodeMvcServicePattern = (goalPrompt) => {
-    const text = String(goalPrompt || '');
-    return /\b(?:mvc|model[-\s]*view[-\s]*controller|service\s+pattern|service\s+layer|controller|model|route|routes)\b/i.test(text);
-};
 
-const getNodeMvcSourceFiles = (projectName = 'Node.js API') => ({
-    'src/node.js': `const http = require('http');
-const app = require('./app');
+const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryPath) => {
+    const directoryPath = cleanRelativeDirectoryPath(requestedDirectoryPath);
+    if (!directoryPath) {
+        return tasks;
+    }
 
-const port = Number(process.env.PORT || 3000);
-const server = http.createServer(app);
-
-server.listen(port, () => {
-    console.log(\`Workflow API listening on port \${port}\`);
-});
-
-const shutdown = (signal) => {
-    console.log(\`Received \${signal}; shutting down gracefully.\`);
-    server.close((error) => {
-        if (error) {
-            console.error('Unable to close the HTTP server cleanly:', error);
-            process.exitCode = 1;
-            return;
+    const isDirectoryAction = (action) => DIRECTORY_ACTIONS.has(action)
+        || action === 'createdesktopdirectory'
+        || action === 'create_desktop_directory';
+    const isFileAction = (action) => FILE_WRITE_ACTIONS.has(action)
+        || action === 'createdesktopfile'
+        || action === 'create_desktop_file'
+        || action === 'createdesktopfiles'
+        || action === 'create_desktop_files';
+    const prefixFilePath = (filePath) => {
+        const cleanPath = cleanRelativeFilePath(filePath);
+        if (!cleanPath) {
+            return null;
         }
 
-        process.exit(0);
+        return cleanPath === directoryPath || cleanPath.startsWith(directoryPath + '/')
+            ? cleanPath
+            : directoryPath + '/' + cleanPath;
+    };
+
+    let nextTasks = tasks.map((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        const tool = String(task.assignedTool || '').trim().toLowerCase();
+
+        if (isDirectoryAction(action)) {
+            return {
+                ...task,
+                assignedTool: 'fileManager',
+                toolInput: {
+                    ...task.toolInput,
+                    action: 'createDesktopDirectory',
+                    path: directoryPath,
+                },
+            };
+        }
+
+        if ((tool === 'filemanager' || tool === 'file_manager') && isFileAction(action)) {
+            const files = Array.isArray(task.toolInput?.files)
+                ? task.toolInput.files
+                : task.toolInput?.files && typeof task.toolInput.files === 'object'
+                    ? Object.entries(task.toolInput.files).map(([filePath, content]) => ({path: filePath, content}))
+                    : null;
+
+            if (files) {
+                const normalizedFiles = files
+                    .map((file) => {
+                        const filePath = prefixFilePath(file?.path || file?.fileName);
+                        return filePath ? {...file, path: filePath} : null;
+                    })
+                    .filter(Boolean);
+
+                return {
+                    ...task,
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        ...task.toolInput,
+                        action: 'createDesktopFiles',
+                        files: normalizedFiles,
+                    },
+                };
+            }
+
+            const filePath = prefixFilePath(task.toolInput?.path);
+            if (filePath) {
+                return {
+                    ...task,
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        ...task.toolInput,
+                        action: 'createDesktopFile',
+                        path: filePath,
+                    },
+                };
+            }
+        }
+
+        if (tool === 'executecommand' || tool === 'execute_command') {
+            return {
+                ...task,
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    ...task.toolInput,
+                    cwd: task.toolInput?.cwd || directoryPath,
+                    desktop: true,
+                },
+            };
+        }
+
+        return task;
     });
-};
 
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-`,
-    'src/app.js': `const express = require('express');
-const routes = require('./routes');
-const {notFound, errorHandler} = require('./middleware/errorHandler');
+    let directoryTask = nextTasks.find((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        return isDirectoryAction(action);
+    });
 
-const app = express();
+    if (!directoryTask) {
+        const existingKeys = new Set(nextTasks.map((task) => task.nodeKey));
+        let nodeKey = 'create_node_desktop_directory';
+        let suffix = 2;
+        while (existingKeys.has(nodeKey)) {
+            nodeKey = 'create_node_desktop_directory_' + suffix;
+            suffix += 1;
+        }
 
-app.disable('x-powered-by');
-app.use(express.json({limit: '1mb'}));
-app.use('/api', routes);
-app.use(notFound);
-app.use(errorHandler);
-
-module.exports = app;
-`,
-    'src/routes/index.js': `const express = require('express');
-const healthController = require('../controllers/healthController');
-
-const router = express.Router();
-
-router.get('/health', healthController.getHealth);
-
-module.exports = router;
-`,
-    'src/controllers/healthController.js': `const healthService = require('../services/healthService');
-
-const getHealth = (req, res, next) => {
-    try {
-        return res.status(200).json(healthService.getHealth());
-    } catch (error) {
-        return next(error);
+        directoryTask = {
+            nodeKey,
+            title: 'Create Desktop directory ' + directoryPath,
+            instruction: 'Create the requested project directory ' + directoryPath + ' on the local Desktop.',
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: directoryPath,
+            },
+        };
+        nextTasks = [directoryTask, ...nextTasks];
     }
-};
 
-module.exports = {
-    getHealth,
-};
-`,
-    'src/services/healthService.js': `const healthModel = require('../models/healthModel');
+    nextTasks = nextTasks.map((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (task.nodeKey === directoryTask.nodeKey || !isFileAction(action)) {
+            return task;
+        }
 
-const getHealth = () => ({
-    status: 'ok',
-    service: ${JSON.stringify(projectName)},
-    runtime: healthModel.getRuntimeInfo(),
-});
-
-module.exports = {
-    getHealth,
-};
-`,
-    'src/models/healthModel.js': `const getRuntimeInfo = () => ({
-    nodeVersion: process.version,
-    uptimeSeconds: Math.round(process.uptime()),
-});
-
-module.exports = {
-    getRuntimeInfo,
-};
-`,
-    'src/middleware/errorHandler.js': `const notFound = (req, res) => {
-    res.status(404).json({
-        error: 'Route not found',
-        path: req.originalUrl,
+        return {
+            ...task,
+            dependencies: [...new Set([...(task.dependencies || []), directoryTask.nodeKey])],
+        };
     });
-};
 
-const errorHandler = (error, req, res, next) => {
-    if (res.headersSent) {
-        return next(error);
+    const explicitNodeRequest = /\bnode(?:\.js|\s*js)?\b/i.test(String(goalPrompt || ''));
+    const explicitPhpRequest = /\bphp\b/i.test(String(goalPrompt || ''));
+    if (explicitNodeRequest && !explicitPhpRequest) {
+        const phpTask = nextTasks.find((task) => /\.php\b/i.test(JSON.stringify(task)));
+        if (phpTask) {
+            throw new Error('The planner generated PHP files for a Node.js request. Regenerate the files using the runtime and filenames from the user prompt.');
+        }
     }
 
-    console.error(error);
-    return res.status(error.statusCode || 500).json({
-        error: 'Internal server error',
-    });
+    return nextTasks;
 };
-
-module.exports = {
-    notFound,
-    errorHandler,
-};
-`,
-});
 
 const ensureNodeDesktopProjectTasks = (tasks, goalPrompt) => {
     if (!isNodeProjectSetupRequest(goalPrompt)) {
@@ -1390,130 +1436,8 @@ const ensureNodeDesktopProjectTasks = (tasks, goalPrompt) => {
         return tasks;
     }
 
-    const useMvcServicePattern = wantsNodeMvcServicePattern(goalPrompt);
-    const directoryKey = 'create_node_desktop_directory';
-    const initKey = 'initialize_node_project';
-    const versionKey = 'verify_node_runtime';
-    const installKey = 'install_node_project_dependencies';
-    const scriptKey = 'configure_node_start_script';
-    const nextTasks = [
-        {
-            nodeKey: directoryKey,
-            title: `Create Desktop directory ${requestedDirectoryPath}`,
-            instruction: `Create the Node.js project directory ${requestedDirectoryPath} on the local Desktop.`,
-            dependencies: [],
-            assignedTool: 'fileManager',
-            toolInput: {
-                action: 'createDesktopDirectory',
-                path: requestedDirectoryPath,
-            },
-        },
-        {
-            nodeKey: initKey,
-            title: 'Initialize the Node.js project',
-            instruction: `Initialize package.json in Desktop/${requestedDirectoryPath} using the installed Node.js runtime.`,
-            dependencies: [directoryKey],
-            assignedTool: 'executeCommand',
-            toolInput: {
-                command: 'npm init -y',
-                cwd: requestedDirectoryPath,
-                desktop: true,
-            },
-        },
-        {
-            nodeKey: versionKey,
-            title: 'Verify the installed Node.js runtime',
-            instruction: `Verify the installed Node.js version used by Desktop/${requestedDirectoryPath}.`,
-            dependencies: [initKey],
-            assignedTool: 'executeCommand',
-            toolInput: {
-                command: 'node --version',
-                cwd: requestedDirectoryPath,
-                desktop: true,
-            },
-        },
-    ];
+    return normalizeDynamicNodeDesktopTasks(tasks, goalPrompt, requestedDirectoryPath);
 
-    if (!useMvcServicePattern) {
-        return nextTasks;
-    }
-
-    nextTasks.push(
-        {
-            nodeKey: installKey,
-            title: 'Install Express for the MVC and Service architecture',
-            instruction: `Install Express in Desktop/${requestedDirectoryPath} for the requested Node.js MVC and Service pattern.`,
-            dependencies: [initKey],
-            assignedTool: 'executeCommand',
-            toolInput: {
-                command: 'npm install express',
-                cwd: requestedDirectoryPath,
-                desktop: true,
-            },
-        },
-        {
-            nodeKey: scriptKey,
-            title: 'Configure the Node.js start script',
-            instruction: `Configure the npm start script to run src/node.js in Desktop/${requestedDirectoryPath}.`,
-            dependencies: [installKey],
-            assignedTool: 'executeCommand',
-            toolInput: {
-                command: 'npm pkg set scripts.start="node src/node.js"',
-                cwd: requestedDirectoryPath,
-                desktop: true,
-            },
-        },
-    );
-
-    const sourceFiles = getNodeMvcSourceFiles(path.basename(requestedDirectoryPath));
-    const sourceTaskKeys = [];
-
-    Object.entries(sourceFiles).forEach(([filePath, content], index) => {
-        const nodeKey = `create_node_source_${index + 1}`;
-        sourceTaskKeys.push(nodeKey);
-        nextTasks.push({
-            nodeKey,
-            title: `Create ${filePath}`,
-            instruction: `Create the ${filePath} source file for the Node.js MVC and Service project.`,
-            dependencies: [scriptKey],
-            assignedTool: 'fileManager',
-            toolInput: {
-                action: 'createDesktopFile',
-                mode: 'update',
-                path: `${requestedDirectoryPath}/${filePath}`,
-                content,
-            },
-        });
-    });
-
-    nextTasks.push(
-        {
-            nodeKey: 'verify_node_app_syntax',
-            title: 'Validate the Express application syntax',
-            instruction: `Validate src/app.js in Desktop/${requestedDirectoryPath}.`,
-            dependencies: sourceTaskKeys,
-            assignedTool: 'executeCommand',
-            toolInput: {
-                command: 'node --check src/app.js',
-                cwd: requestedDirectoryPath,
-                desktop: true,
-            },
-        },
-        {
-            nodeKey: 'verify_node_entrypoint_syntax',
-            title: 'Validate the Node.js entrypoint syntax',
-            instruction: `Validate src/node.js in Desktop/${requestedDirectoryPath}.`,
-            dependencies: sourceTaskKeys,
-            assignedTool: 'executeCommand',
-            toolInput: {
-                command: 'node --check src/node.js',
-                cwd: requestedDirectoryPath,
-                desktop: true,
-            },
-        },
-    );
-
-    return nextTasks;
 };
 
 const isVueScaffoldTask = (task) => {
@@ -2523,6 +2447,7 @@ Rules:
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
 - For every project setup request, derive the project name, framework, runtime, dependencies, files, commands, and source content from the exact user prompt. Do not add a fixed demo project, fixed file names, fixed starter copy, or generic fallback source. If the user did not request a file, do not invent one.
+- Never infer a feature-specific starter such as login, health, users, or authentication from an architecture keyword alone. Generate only the files and behavior required by the current user prompt; preserve the model-generated source content during normalization.
 - For project setup requests, derive verification from the exact user prompt and the generated project. If the prompt asks for validation, testing, compilation, or a package-manager check, add the appropriate final command task using the requested runtime and command. Do not invent a framework, package manager, test command, file, dependency, or verification step that the user did not request or that the generated project does not support.
 - Never replace model-generated source content with a generic fallback. If a requested source file has no generated content, preserve it as an empty file and keep the requested filename; do not fabricate unrelated code.
 - A request containing a filename ending in .html or .htm is always a source-code request. Create that exact filename with fileManager and complete HTML content. Never rename it to .png, never use imageGenerator for it, and implement requested dark/light mode behavior with HTML, CSS, and JavaScript.

@@ -195,6 +195,58 @@ const getResponseUsage = (response) => {
     return normalizeUsage(response?.usageMetadata || response?.usage_metadata || {});
 };
 
+const escapeJsonControlCharacters = (value) => {
+    let result = '';
+    let insideString = false;
+    let escaped = false;
+
+    for (const character of String(value || '')) {
+        const code = character.charCodeAt(0);
+
+        if (insideString) {
+            if (escaped) {
+                result += character;
+                escaped = false;
+                continue;
+            }
+
+            if (character === '\\') {
+                result += character;
+                escaped = true;
+                continue;
+            }
+
+            if (character === '"') {
+                result += character;
+                insideString = false;
+                continue;
+            }
+
+            if (code < 0x20) {
+                if (character === '\n') result += '\\n';
+                else if (character === '\r') result += '\\r';
+                else if (character === '\t') result += '\\t';
+                else result += '\\u' + code.toString(16).padStart(4, '0');
+                continue;
+            }
+        } else if (character === '"') {
+            insideString = true;
+        }
+
+        result += character;
+    }
+
+    return result;
+};
+
+const parseJsonCandidate = (value) => {
+    try {
+        return JSON.parse(value);
+    } catch (error) {
+        return JSON.parse(escapeJsonControlCharacters(value));
+    }
+};
+
 const parseJsonResponse = (rawText) => {
     const text = String(rawText || '')
         .trim()
@@ -203,13 +255,13 @@ const parseJsonResponse = (rawText) => {
         .trim();
 
     try {
-        return JSON.parse(text);
+        return parseJsonCandidate(text);
     } catch (error) {
         const start = text.indexOf('{');
         const end = text.lastIndexOf('}');
 
         if (start >= 0 && end > start) {
-            return JSON.parse(text.slice(start, end + 1));
+            return parseJsonCandidate(text.slice(start, end + 1));
         }
 
         throw error;

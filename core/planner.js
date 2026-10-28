@@ -165,7 +165,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const quotedName = taskText.match(
-        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s*["']([^"']+)["']/i,
+        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name(?:\s+is)?(?:['’]s)?)\s*["']([^"']+)["']/i,
     );
 
     if (quotedName) {
@@ -1190,6 +1190,276 @@ const isVueProjectSetupRequest = (goalPrompt) => {
         && /\bdesktop\b/i.test(text);
 };
 
+const isNodeProjectSetupRequest = (goalPrompt) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        return false;
+    }
+
+    const text = String(goalPrompt || '');
+    const mentionsNode = /\bnode(?:\.js|\s*js)?\b/i.test(text);
+    const mentionsProject = /\b(?:project|app|application|starter|template)\b/i.test(text);
+    const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|start)\b/i.test(text);
+
+    return mentionsNode
+        && mentionsProject
+        && requestsSetup
+        && /\bdesktop\b/i.test(text);
+};
+
+const wantsNodeMvcServicePattern = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    return /\b(?:mvc|model[-\s]*view[-\s]*controller|service\s+pattern|service\s+layer|controller|model|route|routes)\b/i.test(text);
+};
+
+const getNodeMvcSourceFiles = (projectName = 'Node.js API') => ({
+    'src/node.js': `const http = require('http');
+const app = require('./app');
+
+const port = Number(process.env.PORT || 3000);
+const server = http.createServer(app);
+
+server.listen(port, () => {
+    console.log(\`Workflow API listening on port \${port}\`);
+});
+
+const shutdown = (signal) => {
+    console.log(\`Received \${signal}; shutting down gracefully.\`);
+    server.close((error) => {
+        if (error) {
+            console.error('Unable to close the HTTP server cleanly:', error);
+            process.exitCode = 1;
+            return;
+        }
+
+        process.exit(0);
+    });
+};
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+`,
+    'src/app.js': `const express = require('express');
+const routes = require('./routes');
+const {notFound, errorHandler} = require('./middleware/errorHandler');
+
+const app = express();
+
+app.disable('x-powered-by');
+app.use(express.json({limit: '1mb'}));
+app.use('/api', routes);
+app.use(notFound);
+app.use(errorHandler);
+
+module.exports = app;
+`,
+    'src/routes/index.js': `const express = require('express');
+const healthController = require('../controllers/healthController');
+
+const router = express.Router();
+
+router.get('/health', healthController.getHealth);
+
+module.exports = router;
+`,
+    'src/controllers/healthController.js': `const healthService = require('../services/healthService');
+
+const getHealth = (req, res, next) => {
+    try {
+        return res.status(200).json(healthService.getHealth());
+    } catch (error) {
+        return next(error);
+    }
+};
+
+module.exports = {
+    getHealth,
+};
+`,
+    'src/services/healthService.js': `const healthModel = require('../models/healthModel');
+
+const getHealth = () => ({
+    status: 'ok',
+    service: ${JSON.stringify(projectName)},
+    runtime: healthModel.getRuntimeInfo(),
+});
+
+module.exports = {
+    getHealth,
+};
+`,
+    'src/models/healthModel.js': `const getRuntimeInfo = () => ({
+    nodeVersion: process.version,
+    uptimeSeconds: Math.round(process.uptime()),
+});
+
+module.exports = {
+    getRuntimeInfo,
+};
+`,
+    'src/middleware/errorHandler.js': `const notFound = (req, res) => {
+    res.status(404).json({
+        error: 'Route not found',
+        path: req.originalUrl,
+    });
+};
+
+const errorHandler = (error, req, res, next) => {
+    if (res.headersSent) {
+        return next(error);
+    }
+
+    console.error(error);
+    return res.status(error.statusCode || 500).json({
+        error: 'Internal server error',
+    });
+};
+
+module.exports = {
+    notFound,
+    errorHandler,
+};
+`,
+});
+
+const ensureNodeDesktopProjectTasks = (tasks, goalPrompt) => {
+    if (!isNodeProjectSetupRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const requestedDirectoryPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+
+    if (!requestedDirectoryPath) {
+        return tasks;
+    }
+
+    const useMvcServicePattern = wantsNodeMvcServicePattern(goalPrompt);
+    const directoryKey = 'create_node_desktop_directory';
+    const initKey = 'initialize_node_project';
+    const versionKey = 'verify_node_runtime';
+    const installKey = 'install_node_project_dependencies';
+    const scriptKey = 'configure_node_start_script';
+    const nextTasks = [
+        {
+            nodeKey: directoryKey,
+            title: `Create Desktop directory ${requestedDirectoryPath}`,
+            instruction: `Create the Node.js project directory ${requestedDirectoryPath} on the local Desktop.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: requestedDirectoryPath,
+            },
+        },
+        {
+            nodeKey: initKey,
+            title: 'Initialize the Node.js project',
+            instruction: `Initialize package.json in Desktop/${requestedDirectoryPath} using the installed Node.js runtime.`,
+            dependencies: [directoryKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm init -y',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: versionKey,
+            title: 'Verify the installed Node.js runtime',
+            instruction: `Verify the installed Node.js version used by Desktop/${requestedDirectoryPath}.`,
+            dependencies: [initKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'node --version',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        },
+    ];
+
+    if (!useMvcServicePattern) {
+        return nextTasks;
+    }
+
+    nextTasks.push(
+        {
+            nodeKey: installKey,
+            title: 'Install Express for the MVC and Service architecture',
+            instruction: `Install Express in Desktop/${requestedDirectoryPath} for the requested Node.js MVC and Service pattern.`,
+            dependencies: [initKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm install express',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: scriptKey,
+            title: 'Configure the Node.js start script',
+            instruction: `Configure the npm start script to run src/node.js in Desktop/${requestedDirectoryPath}.`,
+            dependencies: [installKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm pkg set scripts.start="node src/node.js"',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        },
+    );
+
+    const sourceFiles = getNodeMvcSourceFiles(path.basename(requestedDirectoryPath));
+    const sourceTaskKeys = [];
+
+    Object.entries(sourceFiles).forEach(([filePath, content], index) => {
+        const nodeKey = `create_node_source_${index + 1}`;
+        sourceTaskKeys.push(nodeKey);
+        nextTasks.push({
+            nodeKey,
+            title: `Create ${filePath}`,
+            instruction: `Create the ${filePath} source file for the Node.js MVC and Service project.`,
+            dependencies: [scriptKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: `${requestedDirectoryPath}/${filePath}`,
+                content,
+            },
+        });
+    });
+
+    nextTasks.push(
+        {
+            nodeKey: 'verify_node_app_syntax',
+            title: 'Validate the Express application syntax',
+            instruction: `Validate src/app.js in Desktop/${requestedDirectoryPath}.`,
+            dependencies: sourceTaskKeys,
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'node --check src/app.js',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: 'verify_node_entrypoint_syntax',
+            title: 'Validate the Node.js entrypoint syntax',
+            instruction: `Validate src/node.js in Desktop/${requestedDirectoryPath}.`,
+            dependencies: sourceTaskKeys,
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'node --check src/node.js',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        },
+    );
+
+    return nextTasks;
+};
+
 const isVueScaffoldTask = (task) => {
     const toolInput = task.toolInput || {};
     const text = `${task.title || ''} ${task.instruction || ''} ${toolInput.command || ''}`;
@@ -1960,6 +2230,10 @@ const normalizePlan = (rawPlan, {goalPrompt = ''} = {}) => {
         // Vue/Vite project setup requires commands to run inside the requested Desktop folder.
         // The LLM plan may otherwise downgrade the request to a folder-only or file-only task.
         plan.tasks = ensureVueDesktopProjectTasks(plan.tasks, goalPrompt);
+        // Node.js project setup needs the same deterministic treatment as Vue projects.
+        // This prevents an LLM plan from creating only an empty src/node.js file and
+        // guarantees an idempotent MVC + Service structure on the requested Desktop path.
+        plan.tasks = ensureNodeDesktopProjectTasks(plan.tasks, goalPrompt);
         // Pinia follow-up requests must execute inside the existing Desktop Vue project.
         // Normalize common misspellings such as "Pinai" to the real package and setup.
         plan.tasks = ensurePiniaDesktopProjectTasks(plan.tasks, goalPrompt);

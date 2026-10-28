@@ -2,6 +2,7 @@
 const workflowService = require('../../services/workflow/workflowService');
 const sendResponse = require('../../utils/responseHelper');
 const logger = require('../../utils/logger');
+const {emitWorkflowEvent} = require('../../core/telemetry');
 
 const create = async (req, res, next) => {
     try {
@@ -149,6 +150,39 @@ const getWorkflowRun = async (req, res, next) => {
     }
 };
 
+const cancelWorkflow = async (req, res, next) => {
+    try {
+        const result = await workflowService.cancelRun({
+            runId: req.params.runId,
+            userId: req.user.id,
+            reason: 'Workflow cancelled by user',
+        });
+        const io = req.app.get('io');
+
+        if (io && result.updated) {
+            emitWorkflowEvent({
+                io,
+                runId: result.runId,
+                event: 'run_finished',
+                source: 'SYSTEM',
+                payload: {
+                    runId: result.runId,
+                    status: 'CANCELLED',
+                    reason: 'Workflow cancelled by user',
+                    completedAt: result.run.completed_at,
+                },
+            });
+        }
+
+        return sendResponse(res, 200, true, result.updated
+            ? 'Workflow cancelled successfully'
+            : `Workflow is already ${String(result.status).toLowerCase()}`,
+        result);
+    } catch (error) {
+        return next(error);
+    }
+};
+
 module.exports = {
     create,
     list,
@@ -156,4 +190,5 @@ module.exports = {
     runWorkflowStream,
     listRuns,
     getWorkflowRun,
+    cancelWorkflow,
 };

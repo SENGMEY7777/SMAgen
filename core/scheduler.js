@@ -5,6 +5,7 @@ const {
     listTaskNodesByRunId,
     updateExecutionRunStatus,
     updateTaskNode,
+    getExecutionById,
 } = require('../models/workflow/workflowModel');
 const {createRiskGate} = require('./riskEvaluation');
 const {sendErrorTraceToSelfHealingEngine} = require('./selfHealing');
@@ -150,12 +151,29 @@ const finalizeTasksAfterSchedulerError = async (runId, error, io) => {
 };
 
 const activeSchedulers = new Map();
+const activeRunControllers = new Map();
+
+const isRunCancelled = async (runId, signal) => {
+    if (signal?.aborted) return true;
+    const run = await getExecutionById(runId);
+    return run?.status === 'CANCELLED';
+};
+
+const cancelActiveRun = (runId) => {
+    const controller = activeRunControllers.get(String(runId));
+    if (!controller) return false;
+    controller.abort();
+    return true;
+};
 
 const triggerScheduler = async (runId, options = {}) => {
     if (activeSchedulers.has(runId)) {
         console.log(`⏳ [Scheduler] Run ${runId} is already running an active scheduler. Reusing promise.`);
         return activeSchedulers.get(runId);
     }
+
+    const cancellationController = new AbortController();
+    activeRunControllers.set(String(runId), cancellationController);
 
     const schedulerPromise = (async () => {
     const {
@@ -177,9 +195,26 @@ const triggerScheduler = async (runId, options = {}) => {
     console.log(`\n⚡ [Scheduler 2.0] Evaluating DAG state for Run: ${runId}`);
 
     try {
+        const initialRun = await getExecutionById(runId);
+        if (!initialRun || initialRun.status === 'CANCELLED') {
+            return {
+                runId,
+                status: 'CANCELLED',
+                tasksProcessed,
+            };
+        }
+
         await updateExecutionRunStatus(runId, 'RUNNING');
 
         while (true) {
+            if (await isRunCancelled(runId, cancellationController.signal)) {
+                return {
+                    runId,
+                    status: 'CANCELLED',
+                    tasksProcessed,
+                };
+            }
+
             // The scheduler must evaluate the complete DAG. Reading only the
             // rows with the latest created_at can hide an earlier dependency
             // when task inserts receive different timestamps, causing valid
@@ -208,6 +243,14 @@ const triggerScheduler = async (runId, options = {}) => {
                     return {
                         runId,
                         status: 'WAITING',
+                        tasksProcessed,
+                    };
+                }
+
+                if (await isRunCancelled(runId, cancellationController.signal)) {
+                    return {
+                        runId,
+                        status: 'CANCELLED',
                         tasksProcessed,
                     };
                 }
@@ -276,9 +319,17 @@ const triggerScheduler = async (runId, options = {}) => {
             }
 
             const results = await Promise.all(readyTasks.map((task) => limit(async () => {
+                if (await isRunCancelled(runId, cancellationController.signal)) {
+                    return 'CANCELLED';
+                }
+
                 const gateResult = typeof riskGate === 'function'
                     ? await riskGate(task)
                     : {canExecute: true};
+
+                if (await isRunCancelled(runId, cancellationController.signal)) {
+                    return 'CANCELLED';
+                }
 
                 if (!gateResult?.canExecute) {
                     await updateTaskNode(task.id, {
@@ -332,7 +383,9 @@ const triggerScheduler = async (runId, options = {}) => {
                         ...task,
                         dependencyOutputs,
                     };
-                    const executionResult = await executor(taskWithDependencies);
+                    const executionResult = await executor(taskWithDependencies, {
+                        signal: cancellationController.signal,
+                    });
                     const output = executionResult && Object.prototype.hasOwnProperty.call(executionResult, 'outputData')
                         ? executionResult.outputData
                         : executionResult;
@@ -343,6 +396,23 @@ const triggerScheduler = async (runId, options = {}) => {
                         latencyMs: null,
                     };
                     const completedAt = new Date();
+
+                    if (await isRunCancelled(runId, cancellationController.signal)) {
+                        await updateTaskNode(task.id, {
+                            status: 'SKIPPED',
+                            errorMessage: 'Workflow cancelled by user',
+                            completedAt,
+                        });
+
+                        emitEvent(io, runId, 'node_skipped', {
+                            runId,
+                            taskId: task.id,
+                            nodeKey: task.node_key,
+                            reason: 'Workflow cancelled by user',
+                        });
+
+                        return 'CANCELLED';
+                    }
 
                     await updateTaskNode(task.id, {
                         status: 'SUCCESS',
@@ -380,6 +450,23 @@ const triggerScheduler = async (runId, options = {}) => {
                         exitCode: Number.isInteger(error.code) ? error.code : 1,
                         latencyMs: completedAt.getTime() - startedAt.getTime(),
                     };
+
+                    if (await isRunCancelled(runId, cancellationController.signal)) {
+                        await updateTaskNode(task.id, {
+                            status: 'SKIPPED',
+                            errorMessage: 'Workflow cancelled by user',
+                            completedAt,
+                        });
+
+                        emitEvent(io, runId, 'node_skipped', {
+                            runId,
+                            taskId: task.id,
+                            nodeKey: task.node_key,
+                            reason: 'Workflow cancelled by user',
+                        });
+
+                        return 'CANCELLED';
+                    }
 
                     let recovery = null;
 
@@ -434,6 +521,15 @@ const triggerScheduler = async (runId, options = {}) => {
 
             tasksProcessed += results.length;
 
+            if (results.includes('CANCELLED')
+                || await isRunCancelled(runId, cancellationController.signal)) {
+                return {
+                    runId,
+                    status: 'CANCELLED',
+                    tasksProcessed,
+                };
+            }
+
             if (results.includes('WAITING')) {
                 await updateExecutionRunStatus(runId, 'AWAITING_APPROVAL');
 
@@ -445,6 +541,14 @@ const triggerScheduler = async (runId, options = {}) => {
             }
         }
     } catch (error) {
+        if (cancellationController.signal.aborted || (await isRunCancelled(runId, cancellationController.signal))) {
+            return {
+                runId,
+                status: 'CANCELLED',
+                tasksProcessed,
+            };
+        }
+
         await finalizeTasksAfterSchedulerError(runId, error, io);
         await updateExecutionRunStatus(runId, 'FAILED');
         emitEvent(io, runId, 'run_finished', {
@@ -463,9 +567,11 @@ const triggerScheduler = async (runId, options = {}) => {
         return await schedulerPromise;
     } finally {
         activeSchedulers.delete(runId);
+        activeRunControllers.delete(String(runId));
     }
 };
 
 module.exports = {
     triggerScheduler,
+    cancelActiveRun,
 };

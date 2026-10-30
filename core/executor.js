@@ -75,6 +75,34 @@ const assertServerFileWriteAccess = (action) => {
     }
 };
 
+const isSkipExistingRequest = (input, mode = '') => {
+    const requestedPolicy = String(input?.ifExists || '').trim().toLowerCase();
+    const requestedMode = String(mode || '').trim().toLowerCase();
+    return requestedPolicy === 'skip'
+        || requestedPolicy === 'ensure'
+        || requestedMode === 'skip'
+        || requestedMode === 'ensure';
+};
+
+const readExistingPathStats = async (targetPath) => {
+    try {
+        return await fs.lstat(targetPath);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return null;
+        }
+
+        throw error;
+    }
+};
+
+const createFileTypeMismatchError = (requestedPath) => {
+    const error = new Error(`The requested path is not a file: ${requestedPath}`);
+    error.code = 'LOCAL_FILE_PATH_TYPE_MISMATCH';
+    error.status = 409;
+    return error;
+};
+
 const isPathInside = (rootPath, targetPath) => {
     const normalizedRoot = path.resolve(rootPath);
     const normalizedTarget = path.resolve(targetPath);
@@ -461,13 +489,23 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
     if (action === 'createDesktopDirectory') {
         const desktopPath = await resolveLocalDesktopPath(input.path);
+        const existingStats = await readExistingPathStats(desktopPath);
+
+        if (existingStats && !existingStats.isDirectory()) {
+            const error = new Error(`The requested Desktop path is not a directory: ${input.path}`);
+            error.code = 'LOCAL_DESKTOP_PATH_TYPE_MISMATCH';
+            error.status = 409;
+            throw error;
+        }
+
         await fs.mkdir(desktopPath, {recursive: input.recursive !== false});
 
         return {
             action,
             path: input.path,
             location: 'local Desktop',
-            created: true,
+            created: !existingStats,
+            existing: Boolean(existingStats),
         };
     }
 
@@ -704,21 +742,41 @@ const fileManager = async (input, workspacePath, task = {}) => {
             };
         }));
 
-        await Promise.all(preparedFiles.map(async ({targetPath, content, mode}) => {
+        const fileResults = await Promise.all(preparedFiles.map(async (preparedFile) => {
+            const {targetPath, content, mode, requestedFilePath} = preparedFile;
+            const existingStats = await readExistingPathStats(targetPath);
+
+            if (existingStats && isSkipExistingRequest(input, mode)) {
+                if (!existingStats.isFile()) {
+                    throw createFileTypeMismatchError(requestedFilePath);
+                }
+
+                return {
+                    path: requestedFilePath,
+                    bytesWritten: 0,
+                    existing: true,
+                    skipped: true,
+                };
+            }
+
             await fs.mkdir(path.dirname(targetPath), {recursive: true});
             await fs.writeFile(targetPath, content, {
                 encoding: 'utf8',
                 flag: input.overwrite === true || ['write', 'update'].includes(mode) ? 'w' : 'wx',
             });
+
+            return {
+                path: requestedFilePath,
+                bytesWritten: Buffer.byteLength(content, 'utf8'),
+                created: true,
+            };
         }));
 
         return {
             action,
             ...(action === 'createDesktopFiles' ? {location: 'local Desktop'} : {}),
-            files: preparedFiles.map(({requestedFilePath, content}) => ({
-                path: requestedFilePath,
-                bytesWritten: Buffer.byteLength(content, 'utf8'),
-            })),
+            files: fileResults,
+            skipped: fileResults.filter((file) => file.skipped).map((file) => file.path),
         };
     }
 
@@ -787,7 +845,23 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
     const content = resolveContent(input.content);
     validateContent(content);
+    const existingStats = await readExistingPathStats(filePath);
     await fs.mkdir(path.dirname(filePath), {recursive: true});
+
+    if (existingStats && writeAction === 'create' && isSkipExistingRequest(input, writeAction)) {
+        if (!existingStats.isFile()) {
+            throw createFileTypeMismatchError(input.path);
+        }
+
+        return {
+            action: desktopFileAction ? 'createDesktopFile' : action,
+            path: input.path,
+            ...(desktopFileAction ? {location: 'local Desktop'} : {}),
+            bytesWritten: 0,
+            existing: true,
+            skipped: true,
+        };
+    }
 
     if (writeAction === 'create') {
         await fs.writeFile(filePath, content, {
@@ -805,6 +879,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         path: input.path,
         ...(desktopFileAction ? {location: 'local Desktop'} : {}),
         bytesWritten: Buffer.byteLength(content, 'utf8'),
+        created: writeAction === 'create',
     };
 };
 
@@ -1272,8 +1347,13 @@ const getExitCode = (result) => {
 };
 
 const createExecutionError = (result, latencyMs) => {
+    const diagnostic = [result?.stderr, result?.stdout]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .join('\n')
+        .trim()
+        .slice(0, 8000);
     const error = new Error(
-        result?.stderr || `Task tool exited with code ${getExitCode(result)}`,
+        diagnostic || `Task tool exited with code ${getExitCode(result)}`,
     );
     error.code = 'TASK_TOOL_FAILED';
     error.execution = {

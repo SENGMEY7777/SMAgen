@@ -2,7 +2,7 @@ const router = require('express').Router();
 
 const workflowController = require('../../controllers/workflow/workflowController');
 const isLogin = require('../../middleware/authenticate');
-const {workflowRunLimiter} = require('../../middleware/rateLimiters');
+const {workflowReadLimiter, workflowRunLimiter} = require('../../middleware/rateLimiters');
 const validate = require('../../middleware/validate');
 const {validateParams} = require('../../middleware/validate');
 const {
@@ -48,6 +48,7 @@ router.post(
 router.get(
     '/runs/:runId',
     isLogin,
+    workflowReadLimiter,
     validateParams(workflowRunParamsSchema),
     workflowController.getWorkflowRun,
 );

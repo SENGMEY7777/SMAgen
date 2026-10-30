@@ -28,6 +28,13 @@ const TOOL_MAP = {
     http_requester: 'httpRequester',
     http: 'httpRequester',
     api: 'httpRequester',
+    sshrequester: 'sshRequester',
+    ssh_requester: 'sshRequester',
+    ssh: 'sshRequester',
+    remotecommand: 'sshRequester',
+    remote_command: 'sshRequester',
+    remoteshell: 'sshRequester',
+    remote_shell: 'sshRequester',
     imagegenerator: 'imageGenerator',
     image_generator: 'imageGenerator',
     image: 'imageGenerator',
@@ -502,6 +509,14 @@ const inferDesktopAssetPath = (task, goalPrompt) => {
 
 const isDesktopAssetTask = (task, goalPrompt) => {
     const toolInput = task.toolInput || {};
+    const action = String(toolInput.action || '').trim().toLowerCase();
+    if (action === 'exportworkspacetodesktop'
+        || action === 'export_workspace_to_desktop'
+        || action === 'exportworkspacetodownloads'
+        || action === 'export_workspace_to_downloads') {
+        return false;
+    }
+
     const taskText = `${task.title || ''} ${task.instruction || ''} ${JSON.stringify(toolInput)}`;
     const goalText = String(goalPrompt || '');
     const referencesDesktop = /\bdesktop\b/i.test(taskText)
@@ -636,7 +651,13 @@ const normalizeLocalExportTasks = (tasks, goalPrompt) => {
 };
 
 const appendDesktopExportTask = (tasks, goalPrompt) => {
-    if (isVueProjectSetupRequest(goalPrompt)) {
+    // Follow-up changes to an existing local Desktop project are written
+    // directly into that project. Exporting the temporary workflow workspace
+    // afterward can copy an incomplete tree over the real project and make a
+    // successful directory task appear empty in Finder.
+    if (isVueProjectSetupRequest(goalPrompt)
+        || isNodeProjectSetupRequest(goalPrompt)
+        || isExplicitExistingProjectUpdateRequest(goalPrompt)) {
         return tasks;
     }
 
@@ -1431,6 +1452,13 @@ const normalizeIdempotentDesktopSetupTasks = (tasks, goalPrompt) => {
 
 const isExplicitExistingProjectUpdateRequest = (goalPrompt) => {
     const text = String(goalPrompt || '');
+    const userGoal = getUserGoalText(text);
+    const hasFollowUpContext = /\[Follow-up execution context:\s*continue working in the existing local/i.test(text);
+    const hasFollowUpIntent = /\b(?:add|install|configure|fix|update|modify|edit|extend|refactor|build|create|generate|scaffold)\b/i.test(userGoal);
+    if (hasFollowUpContext && hasFollowUpIntent) {
+        return true;
+    }
+
     const hasUpdateIntent = /\b(?:update|modify|edit|rewrite|refactor|replace|overwrite)\b/i.test(text);
     const targetsExistingWork = /\b(?:existing|current|already[-\s]?created|present)\b[\s\S]{0,80}\b(?:project|app(?:lication)?|file|component|codebase|source)\b/i.test(text)
         || /\b(?:project|app(?:lication)?|file|component|codebase|source)\b[\s\S]{0,80}\b(?:existing|current|already[-\s]?created|present)\b/i.test(text);
@@ -1533,6 +1561,173 @@ const normalizeExistingProjectUpdateTasks = (tasks, goalPrompt) => {
         }
 
         return task;
+    });
+};
+
+const ensureRequestedArchitectureDirectories = (tasks, goalPrompt) => {
+    const userGoal = getUserGoalText(goalPrompt);
+    const mentionsMvc = /\b(?:mvc|model[-\s]*view[-\s]*controller)\b/i.test(userGoal);
+    const mentionsServiceLayer = /\bservice(?:s|\s+layer|\s+pattern)?\b/i.test(userGoal);
+    const requestsChange = /\b(?:add|create|build|generate|setup|set\s+up|initialize|scaffold|implement|configure)\b/i.test(userGoal);
+    const isDesktopProjectRequest = /\b(?:desktop|project|app(?:lication)?|folder|directory)\b/i.test(
+        `${userGoal} ${goalPrompt || ''}`,
+    );
+
+    if ((!mentionsMvc && !mentionsServiceLayer)
+        || !requestsChange
+        || !isDesktopProjectRequest) {
+        return tasks;
+    }
+
+    const directoryTasks = tasks.filter((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        return action === 'createdirectory'
+            || action === 'create_directory'
+            || action === 'createdesktopdirectory'
+            || action === 'create_desktop_directory';
+    });
+
+    const taskDirectoryPaths = directoryTasks
+        .map((task) => cleanRelativeDirectoryPath(task.toolInput?.path))
+        .filter(Boolean);
+    const inferredPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+    const firstTaskPath = taskDirectoryPaths[0] || '';
+    const projectPath = inferredPath
+        ? inferredPath.split('/')[0]
+        : firstTaskPath.split('/')[0];
+
+    if (!projectPath) {
+        return tasks;
+    }
+
+    const projectPrefix = `${projectPath}/`;
+    const knownPaths = new Set(taskDirectoryPaths);
+    const architectureBase = taskDirectoryPaths.find((directoryPath) => (
+        directoryPath === `${projectPath}/src`
+        || directoryPath === `${projectPath}/app`
+    )) || `${projectPath}/src`;
+
+    // MVC + Service means the four conventional application boundaries. Only
+    // add directories named by the requested architecture; feature files and
+    // unrelated folders still come from the planner's user-specific plan.
+    const requestedDirectories = [
+        ...(mentionsMvc ? ['controllers', 'models', 'views'] : []),
+        ...(mentionsServiceLayer ? ['services'] : []),
+    ];
+
+    const isExistingProjectUpdate = isExplicitExistingProjectUpdateRequest(goalPrompt);
+    const useDesktopPaths = isExistingProjectUpdate || isNodeProjectSetupRequest(goalPrompt);
+    let nextTasks = [...tasks];
+
+    let rootTask = directoryTasks.find((task) => (
+        cleanRelativeDirectoryPath(task.toolInput?.path) === projectPath
+    ));
+
+    if (!rootTask && useDesktopPaths) {
+        rootTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'ensure_desktop_project_directory'),
+            title: `Ensure Desktop directory ${projectPath}`,
+            instruction: `Ensure the existing project directory ${projectPath} is available on the local Desktop.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: projectPath,
+            },
+        };
+        nextTasks.unshift(rootTask);
+        knownPaths.add(projectPath);
+    }
+
+    const baseTask = directoryTasks.find((task) => (
+        cleanRelativeDirectoryPath(task.toolInput?.path) === architectureBase
+    ));
+    if (baseTask) {
+        knownPaths.add(architectureBase);
+    }
+
+    if (!knownPaths.has(architectureBase)) {
+        const baseNodeKey = getUniqueNodeKey(nextTasks, 'create_architecture_directory');
+        const createdBaseTask = {
+            nodeKey: baseNodeKey,
+            title: `Create architecture directory ${architectureBase}`,
+            instruction: `Create the architecture directory ${architectureBase}.`,
+            dependencies: rootTask ? [rootTask.nodeKey] : [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: useDesktopPaths ? 'createDesktopDirectory' : 'createDirectory',
+                path: architectureBase,
+            },
+        };
+        nextTasks.push(createdBaseTask);
+        knownPaths.add(architectureBase);
+    }
+
+    const parentTask = nextTasks.find((task) => (
+        cleanRelativeDirectoryPath(task.toolInput?.path) === architectureBase
+    ));
+
+    for (const directoryName of [...new Set(requestedDirectories)]) {
+        const directoryPath = `${architectureBase}/${directoryName}`;
+        if (knownPaths.has(directoryPath)) {
+            continue;
+        }
+
+        nextTasks.push({
+            nodeKey: getUniqueNodeKey(nextTasks, `create_${directoryName}_directory`),
+            title: `Create ${directoryName} directory`,
+            instruction: `Create the ${directoryName} directory inside ${architectureBase}.`,
+            dependencies: parentTask ? [parentTask.nodeKey] : (rootTask ? [rootTask.nodeKey] : []),
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: useDesktopPaths ? 'createDesktopDirectory' : 'createDirectory',
+                path: directoryPath,
+            },
+        });
+        knownPaths.add(directoryPath);
+    }
+
+    if (useDesktopPaths) {
+        const removedExportKeys = new Set(
+            nextTasks
+                .filter((task) => {
+                    const action = String(task.toolInput?.action || '').trim().toLowerCase();
+                    return action === 'exportworkspacetodesktop'
+                        || action === 'export_workspace_to_desktop';
+                })
+                .map((task) => task.nodeKey),
+        );
+
+        if (removedExportKeys.size) {
+            nextTasks = nextTasks
+                .filter((task) => !removedExportKeys.has(task.nodeKey))
+                .map((task) => ({
+                    ...task,
+                    dependencies: (task.dependencies || [])
+                        .filter((dependency) => !removedExportKeys.has(dependency)),
+                }));
+        }
+    }
+
+    // A path such as `Testing-Product/src` belongs under the project root,
+    // never beside it. Ensure the parent project task is also respected by
+    // the DAG so nested folders cannot run before the requested project root.
+    return nextTasks.map((task) => {
+        const pathValue = cleanRelativeDirectoryPath(task.toolInput?.path);
+        if (!rootTask
+            || !pathValue
+            || pathValue === projectPath
+            || !pathValue.startsWith(projectPrefix)
+            || task.nodeKey === rootTask.nodeKey) {
+            return task;
+        }
+
+        return {
+            ...task,
+            dependencies: [...new Set([...(task.dependencies || []), rootTask.nodeKey])],
+        };
     });
 };
 
@@ -2817,6 +3012,11 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // Explicit existing-project updates must not fail with EEXIST. Convert generated
         // file writes to update semantics while preserving existing files when content is empty.
         plan.tasks = normalizeExistingProjectUpdateTasks(plan.tasks, goalPrompt);
+        // Architecture follow-ups must materialize the requested MVC + Service
+        // boundaries instead of collapsing them into one empty `src` folder.
+        // Existing Desktop projects are updated in place, so no workspace
+        // export is needed for these directory tasks.
+        plan.tasks = ensureRequestedArchitectureDirectories(plan.tasks, goalPrompt);
         // Local development users should be able to open the generated project in Finder.
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
         // File-producing workflows without an explicit destination are downloaded locally by default.
@@ -3033,7 +3233,8 @@ Available Tools:
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
-6. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3', '3:4'), and optional toolInput.outputMode ('file', 'url', or 'both').
+6. 'sshRequester' - Run one approved command on a configured SSH target. Use toolInput.target as a configured alias, toolInput.command as one simple command, and optional toolInput.cwd as the remote working directory. Never put passwords, private keys, host overrides, or credentials in toolInput. SSH tasks always require HITL approval; do not use SSH for local workspace commands.
+7. 'imageGenerator' - Generate images, UI mockups, banners, or logos with toolInput.prompt, toolInput.fileName, toolInput.aspectRatio ('1:1', '16:9', '9:16', '4:3', '3:4'), and optional toolInput.outputMode ('file', 'url', or 'both').
 
 Rules:
 - Assign dependencies logically (for example, task_2 depends on ['task_1']).

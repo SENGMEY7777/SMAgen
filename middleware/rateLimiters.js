@@ -53,8 +53,25 @@ const chatLimiter = rateLimit({
     skip: (req) => !isProduction && String(process.env.ENABLE_RATE_LIMITING || '').toLowerCase() !== 'true',
 });
 
+// Workflow status and approval reads are polled while a run is active. Keep
+// them protected, but do not make normal status refreshes compete with chat,
+// workflow-start, and approval-mutation requests.
+const workflowReadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: Number(process.env.WORKFLOW_READ_LIMIT) || (isProduction ? 900 : 2000),
+    keyGenerator: requestKeyGenerator,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: rateLimitMessage(
+        'Too many workflow status requests. Please wait before refreshing again.',
+        'WORKFLOW_READ_RATE_LIMITED',
+    ),
+    skip: (req) => !isProduction && String(process.env.ENABLE_RATE_LIMITING || '').toLowerCase() !== 'true',
+});
+
 module.exports = {
     authAttemptLimiter,
     workflowRunLimiter,
     chatLimiter,
+    workflowReadLimiter,
 };

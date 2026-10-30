@@ -1334,6 +1334,10 @@ const isVueProjectSetupRequest = (goalPrompt) => {
         return false;
     }
 
+    if (isExplicitExistingProjectUpdateRequest(goalPrompt)) {
+        return false;
+    }
+
     const text = String(goalPrompt || '');
     const mentionsVue = /\bvue(?:\.js)?\b|\bvue\s*3\b|\bvue3\b/i.test(text);
     const mentionsProject = /\b(?:project|app|application|starter|template)\b/i.test(text);
@@ -1347,6 +1351,10 @@ const isVueProjectSetupRequest = (goalPrompt) => {
 
 const isNodeProjectSetupRequest = (goalPrompt) => {
     if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        return false;
+    }
+
+    if (isExplicitExistingProjectUpdateRequest(goalPrompt)) {
         return false;
     }
 
@@ -1373,11 +1381,12 @@ const isIdempotentDesktopSetupRequest = (goalPrompt) => {
     const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|build|install)\b/i.test(text);
     const mentionsProject = /\b(?:project|app|application|system|service|api|backend|frontend|website)\b/i.test(text);
     const explicitlyChangesExistingFiles = /\b(?:overwrite|replace|update|modify|edit|rewrite)\b/i.test(text);
+    const explicitlyPreservesExistingFiles = /\b(?:do\s+not|don't|dont|never|without)\b[\s\S]{0,32}\b(?:overwrite|replace|update|modify|edit|rewrite)\b/i.test(text);
 
     return mentionsDesktop
         && requestsSetup
         && mentionsProject
-        && !explicitlyChangesExistingFiles;
+        && (!explicitlyChangesExistingFiles || explicitlyPreservesExistingFiles);
 };
 
 const normalizeIdempotentDesktopSetupTasks = (tasks, goalPrompt) => {
@@ -1417,6 +1426,109 @@ const normalizeIdempotentDesktopSetupTasks = (tasks, goalPrompt) => {
                 ifExists: 'skip',
             },
         };
+    });
+};
+
+const isExplicitExistingProjectUpdateRequest = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    const hasUpdateIntent = /\b(?:update|modify|edit|rewrite|refactor|replace|overwrite)\b/i.test(text);
+    const targetsExistingWork = /\b(?:existing|current|already[-\s]?created|present)\b[\s\S]{0,80}\b(?:project|app(?:lication)?|file|component|codebase|source)\b/i.test(text)
+        || /\b(?:project|app(?:lication)?|file|component|codebase|source)\b[\s\S]{0,80}\b(?:existing|current|already[-\s]?created|present)\b/i.test(text);
+    const hasProjectTarget = /\b(?:project|app(?:lication)?|file|files|component|components|codebase|source)\b/i.test(text);
+    const negatesUpdate = /\b(?:do\s+not|don't|dont|never|without)\b[\s\S]{0,32}\b(?:overwrite|replace|update|modify|edit|rewrite)\b/i.test(text);
+
+    return hasUpdateIntent
+        && hasProjectTarget
+        && (targetsExistingWork || /\b(?:update|modify|edit|rewrite|refactor)\b[\s\S]{0,60}\b(?:project|app(?:lication)?|file|component|codebase|source)\b/i.test(text))
+        && !negatesUpdate;
+};
+
+const hasGeneratedFileContent = (value) => {
+    if (typeof value === 'string') {
+        return value.trim().length > 0;
+    }
+
+    return value !== undefined && value !== null;
+};
+
+const normalizeExistingProjectUpdateTasks = (tasks, goalPrompt) => {
+    if (!isExplicitExistingProjectUpdateRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    return tasks.map((task) => {
+        const tool = String(task.assignedTool || '').trim().toLowerCase();
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+
+        if (tool !== 'filemanager' && tool !== 'file_manager') {
+            return task;
+        }
+
+        if (action === 'createfiles' || action === 'create_files'
+            || action === 'createdesktopfiles' || action === 'create_desktop_files') {
+            const files = Array.isArray(task.toolInput?.files)
+                ? task.toolInput.files
+                : task.toolInput?.files && typeof task.toolInput.files === 'object'
+                    ? Object.entries(task.toolInput.files).map(([filePath, content]) => ({path: filePath, content}))
+                    : [];
+
+            if (!files.length) {
+                return task;
+            }
+
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    files: files.map((file) => ({
+                        ...file,
+                        mode: hasGeneratedFileContent(file?.content) ? 'update' : 'skip',
+                    })),
+                },
+            };
+        }
+
+        if (action === 'createdesktopfile' || action === 'create_desktop_file') {
+            if (!hasGeneratedFileContent(task.toolInput?.content)) {
+                return {
+                    ...task,
+                    toolInput: {
+                        ...task.toolInput,
+                        ifExists: 'skip',
+                    },
+                };
+            }
+
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    mode: 'update',
+                },
+            };
+        }
+
+        if (['create', 'createfile', 'create_file'].includes(action)) {
+            if (!hasGeneratedFileContent(task.toolInput?.content)) {
+                return {
+                    ...task,
+                    toolInput: {
+                        ...task.toolInput,
+                        ifExists: 'skip',
+                    },
+                };
+            }
+
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    action: 'update',
+                },
+            };
+        }
+
+        return task;
     });
 };
 
@@ -2500,6 +2612,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // Re-running a Desktop project setup must be safe and resumable. Existing files are
         // preserved and reported as skipped unless the user explicitly asks to update/overwrite.
         plan.tasks = normalizeIdempotentDesktopSetupTasks(plan.tasks, goalPrompt);
+        // Explicit existing-project updates must not fail with EEXIST. Convert generated
+        // file writes to update semantics while preserving existing files when content is empty.
+        plan.tasks = normalizeExistingProjectUpdateTasks(plan.tasks, goalPrompt);
         // Local development users should be able to open the generated project in Finder.
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
         // File-producing workflows without an explicit destination are downloaded locally by default.
@@ -2734,6 +2849,7 @@ Rules:
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
 - For every project setup request, derive the project name, framework, runtime, dependencies, files, commands, and source content from the exact user prompt. Do not add a fixed demo project, fixed file names, fixed starter copy, or generic fallback source. If the user did not request a file, do not invent one.
 - For a local Desktop project setup, make the workflow resumable: use fileManager toolInput.ifExists='skip' for createDesktopFile/createDesktopFiles (and equivalent create-file actions) unless the user explicitly asks to overwrite, replace, update, modify, or rewrite existing files. Existing project folders are reused; existing files are preserved and reported as skipped rather than failing the whole workflow.
+- When the user explicitly asks to update, modify, edit, rewrite, refactor, replace, or overwrite an existing project, use update semantics for generated non-empty files: use fileManager action 'update', createDesktopFile mode 'update', or per-file mode 'update' in createFiles/createDesktopFiles. If generated content is empty, use ifExists='skip' so an existing file is never cleared accidentally. Do not use create mode for an explicitly authorized existing-project update.
 - Never infer a feature-specific starter such as login, health, users, or authentication from an architecture keyword alone. Generate only the files and behavior required by the current user prompt; preserve the model-generated source content during normalization.
 - For project setup requests, derive verification from the exact user prompt and the generated project. If the prompt asks for validation, testing, compilation, or a package-manager check, add the appropriate final command task using the requested runtime and command. Do not invent a framework, package manager, test command, file, dependency, or verification step that the user did not request or that the generated project does not support.
 - If a Vue/Vite prompt explicitly asks for a build, ensure package.json contains a scripts.build value of "vite build" before running "npm run build". Add that repair as a dependent npm task; do not report a missing build script as an unrecoverable error.

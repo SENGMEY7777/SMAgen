@@ -145,9 +145,16 @@ const getWorkflowRun = async (runId, userId) => {
     // remain visible even when task rows have different created_at values.
     const tasks = await workflowModel.listTaskNodesByRunId(runId);
     const logs = await workflowModel.listExecutionLogsByRunId(runId);
+    const failedTask = tasks.find((task) => String(task.status || '').toUpperCase() === 'FAILED');
+    const error = executionRun.error
+        || executionRun.error_message
+        || executionRun.failure_reason
+        || failedTask?.error_message
+        || null;
 
     return {
         ...executionRun,
+        ...(error ? {error} : {}),
         tasks,
         logs,
     };

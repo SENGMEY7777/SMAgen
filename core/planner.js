@@ -2596,6 +2596,121 @@ const ensureVueEntryPointTask = (tasks, goalPrompt) => {
     return nextTasks;
 };
 
+const isVueBuildPlan = (tasks, goalPrompt) => {
+    const goalText = String(goalPrompt || '');
+    const planText = tasks.map((task) => {
+        const toolInput = task.toolInput || {};
+        const files = Array.isArray(toolInput.files)
+            ? toolInput.files.map((file) => file?.path || '').join(' ')
+            : '';
+        return `${task.title || ''} ${task.instruction || ''} ${toolInput.command || ''} ${toolInput.path || ''} ${files}`;
+    }).join(' ');
+
+    const mentionsVue = /\b(?:vue(?:\.js)?|vue\s*3|vue3|vite)\b/i.test(`${goalText} ${planText}`);
+    const hasVueSource = /(?:^|[\s/])[^\s/]+\.vue\b/i.test(planText);
+    const hasBuildTask = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\bvite\s+build\b/i.test(planText);
+
+    return LOCAL_DESKTOP_OUTPUT_ENABLED
+        && mentionsVue
+        && (isVueBuildRequest(goalPrompt) || (hasVueSource && hasBuildTask));
+};
+
+const isViteConfigTask = (task) => {
+    const toolInput = task.toolInput || {};
+    const directPath = String(toolInput.path || '').replace(/\\/g, '/');
+    const files = Array.isArray(toolInput.files)
+        ? toolInput.files.map((file) => file?.path || '').join(' ')
+        : '';
+    return /(?:^|\/)vite\.config\.(?:js|mjs|ts)$/i.test(`${directPath} ${files}`);
+};
+
+const ensureVueBuildToolingTasks = (tasks, goalPrompt) => {
+    if (!isVueBuildPlan(tasks, goalPrompt)) {
+        return tasks;
+    }
+
+    const requestedDirectoryPath = inferExistingDesktopProjectPath(tasks, goalPrompt);
+    if (!requestedDirectoryPath) {
+        return tasks;
+    }
+
+    const nextTasks = [...tasks];
+    const directoryTask = nextTasks.find((task) => (
+        isDesktopDirectoryTask(task)
+        && cleanRelativeDirectoryPath(task.toolInput?.path) === requestedDirectoryPath
+    ));
+    const directoryDependency = directoryTask?.nodeKey ? [directoryTask.nodeKey] : [];
+
+    let pluginInstallTask = nextTasks.find((task) => {
+        const command = String(task.toolInput?.command || '');
+        return /(?:npm|pnpm|yarn|bun)\s+install\b[\s\S]*@vitejs\/plugin-vue/i.test(command);
+    });
+
+    if (!pluginInstallTask) {
+        pluginInstallTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'install_vue_vite_plugin'),
+            title: 'Install the Vue Vite plugin',
+            instruction: `Install @vitejs/plugin-vue in the Vue project inside Desktop/${requestedDirectoryPath}.`,
+            dependencies: directoryDependency,
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm install --save-dev @vitejs/plugin-vue',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks.push(pluginInstallTask);
+    } else {
+        pluginInstallTask = {
+            ...pluginInstallTask,
+            dependencies: [...new Set([...(pluginInstallTask.dependencies || []), ...directoryDependency])],
+            toolInput: {
+                ...pluginInstallTask.toolInput,
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks[nextTasks.findIndex((task) => task.nodeKey === pluginInstallTask.nodeKey)] = pluginInstallTask;
+    }
+
+    let configTask = nextTasks.find(isViteConfigTask);
+    if (!configTask) {
+        configTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'ensure_vue_vite_config'),
+            title: 'Create Vue Vite configuration',
+            instruction: `Create vite.config.js in Desktop/${requestedDirectoryPath} with the Vue plugin enabled.`,
+            dependencies: [...new Set([...directoryDependency, pluginInstallTask.nodeKey])],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: DESKTOP_FILE_ACTION,
+                mode: 'create',
+                ifExists: 'skip',
+                path: `${requestedDirectoryPath}/vite.config.js`,
+                content: "import { defineConfig } from 'vite';\nimport vue from '@vitejs/plugin-vue';\n\nexport default defineConfig({\n  plugins: [vue()],\n});\n",
+            },
+        };
+        nextTasks.push(configTask);
+    } else {
+        configTask = {
+            ...configTask,
+            dependencies: [...new Set([...(configTask.dependencies || []), pluginInstallTask.nodeKey])],
+        };
+        nextTasks[nextTasks.findIndex((task) => task.nodeKey === configTask.nodeKey)] = configTask;
+    }
+
+    return nextTasks.map((task) => {
+        const command = String(task.toolInput?.command || '');
+        if (!/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\bvite\s+build\b/i.test(command)) {
+            return task;
+        }
+
+        return {
+            ...task,
+            dependencies: [...new Set([...(task.dependencies || []), pluginInstallTask.nodeKey, configTask.nodeKey])],
+        };
+    });
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -2693,6 +2808,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // A Vue/Vite build requires a root index.html entry point. Add a safe,
         // skip-if-present task before build verification when it is missing.
         plan.tasks = ensureVueEntryPointTask(plan.tasks, goalPrompt);
+        // Vue source files require the official Vite plugin. Add the dependency
+        // and a safe, skip-if-present vite.config.js task before build verification.
+        plan.tasks = ensureVueBuildToolingTasks(plan.tasks, goalPrompt);
         // Re-running a Desktop project setup must be safe and resumable. Existing files are
         // preserved and reported as skipped unless the user explicitly asks to update/overwrite.
         plan.tasks = normalizeIdempotentDesktopSetupTasks(plan.tasks, goalPrompt);

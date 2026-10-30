@@ -757,7 +757,11 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
         }
 
         const action = String(task.toolInput?.action || '').trim().toLowerCase();
-        if (!FILE_WRITE_ACTIONS.has(action)) {
+        const isDesktopFileWriteAction = action === 'createdesktopfile'
+            || action === 'create_desktop_file'
+            || action === 'createdesktopfiles'
+            || action === 'create_desktop_files';
+        if (!FILE_WRITE_ACTIONS.has(action) && !isDesktopFileWriteAction) {
             return task;
         }
 
@@ -1738,6 +1742,19 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
         return tasks;
     }
 
+    const normalizeDesktopCommandCwd = (value) => {
+        const requestedCwd = cleanRelativeDirectoryPath(value);
+        if (!requestedCwd || requestedCwd === '.' || requestedCwd === './') {
+            return directoryPath;
+        }
+
+        if (requestedCwd === directoryPath || requestedCwd.startsWith(`${directoryPath}/`)) {
+            return requestedCwd;
+        }
+
+        return `${directoryPath}/${requestedCwd}`;
+    };
+
     const isDirectoryAction = (action) => DIRECTORY_ACTIONS.has(action)
         || action === 'createdesktopdirectory'
         || action === 'create_desktop_directory';
@@ -1828,7 +1845,12 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
                 assignedTool: 'executeCommand',
                 toolInput: {
                     ...task.toolInput,
-                    cwd: task.toolInput?.cwd || directoryPath,
+                    // Never allow `cwd: "."` to resolve to the Desktop root.
+                    // Every project command must run inside the requested
+                    // project folder or one of its explicit subdirectories.
+                    cwd: normalizeDesktopCommandCwd(
+                        task.toolInput?.cwd || task.toolInput?.workingDirectory,
+                    ),
                     desktop: true,
                 },
             };

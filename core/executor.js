@@ -34,7 +34,8 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
 const execFileAsync = promisify(execFile);
 const SAFE_COMMANDS = new Set([
     'cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir',
-    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'php', 'composer', 'mvn', 'go'
+    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'python', 'python3',
+    'pip', 'pip3', 'pytest', 'php', 'composer', 'mvn', 'go',
 ]);
 const COMMAND_BLACKLIST_PATTERNS = [
     /\bsudo(?:\s|$)/i,
@@ -393,6 +394,27 @@ const validateContent = (content) => {
     }
 };
 
+const SOURCE_TEXT_EXTENSIONS = new Set([
+    '.css', '.html', '.htm', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs',
+    '.json', '.md', '.py', '.sql', '.txt', '.xml', '.yaml', '.yml',
+]);
+
+const normalizeGeneratedSourceContent = (content, requestedPath = '') => {
+    if (typeof content !== 'string' || !SOURCE_TEXT_EXTENSIONS.has(path.extname(String(requestedPath)).toLowerCase())) {
+        return content;
+    }
+
+    return content
+        // Remove BOMs, control characters, and replacement/box glyphs that can
+        // make otherwise valid generated source fail parsing or CSS tokenization.
+        .replace(/[\uFEFF\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
+        .replace(/[\s\u00A0]*[\u25A0\u25A1\u25AA\u25AB\uFFFD]+[\s\u00A0]*/g, ' ')
+        .replace(/[ \t][\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]+/g, ' ')
+        .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]+[ \t]/g, ' ')
+        .replace(/[\u00A0\u1680\u2000-\u200B\u202F\u205F\u3000]/g, ' ')
+        .replace(/[\u25A0\u25A1\u25AA\u25AB\uFFFD]/g, '');
+};
+
 const findImageUrl = (value) => {
     if (!value) {
         return '';
@@ -731,7 +753,10 @@ const fileManager = async (input, workspacePath, task = {}) => {
             const targetPath = action === 'createDesktopFiles'
                 ? await resolveLocalDesktopPath(requestedFilePath)
                 : await resolveWorkspaceFile(workspacePath, requestedFilePath);
-            const content = resolveContent(entry.content);
+            const content = normalizeGeneratedSourceContent(
+                resolveContent(entry.content),
+                requestedFilePath,
+            );
             validateContent(content);
 
             return {
@@ -843,7 +868,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         throw new Error(`Unsupported fileManager action: ${action}`);
     }
 
-    const content = resolveContent(input.content);
+    const content = normalizeGeneratedSourceContent(resolveContent(input.content), input.path);
     validateContent(content);
     const existingStats = await readExistingPathStats(filePath);
     await fs.mkdir(path.dirname(filePath), {recursive: true});

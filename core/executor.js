@@ -1518,6 +1518,17 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
     if (typeof requestedCwd === 'string' && requestedCwd.trim()) {
         const trimmed = requestedCwd.trim();
+        if (LOCAL_DESKTOP_OUTPUT_ENABLED
+            && input.desktop === true
+            && /^(?:\.\/?|desktop[\\/]?\.?$)/i.test(trimmed)) {
+            const error = new Error(
+                'Desktop project commands must specify the project folder as cwd; "." resolves to the Desktop root.',
+            );
+            error.code = 'DESKTOP_PROJECT_CWD_REQUIRED';
+            error.status = 400;
+            throw error;
+        }
+
         if (LOCAL_DESKTOP_OUTPUT_ENABLED && (trimmed.toLowerCase().includes('desktop') || input.desktop)) {
             effectiveCwd = await resolveLocalDesktopPath(trimmed);
         } else {

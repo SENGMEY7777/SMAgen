@@ -1337,7 +1337,7 @@ const isVueProjectSetupRequest = (goalPrompt) => {
     const text = String(goalPrompt || '');
     const mentionsVue = /\bvue(?:\.js)?\b|\bvue\s*3\b|\bvue3\b/i.test(text);
     const mentionsProject = /\b(?:project|app|application|starter|template)\b/i.test(text);
-    const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|start)\b/i.test(text);
+    const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|start|build)\b/i.test(text);
 
     return mentionsVue
         && mentionsProject
@@ -1612,6 +1612,12 @@ const isVueInstallTask = (task) => {
     return /\b(?:npm|pnpm|yarn|bun)\s+install\b/i.test(text)
         || (/(?:vue|vite)/i.test(text)
             && /\b(?:install|dependencies|packages)\b/i.test(text));
+};
+
+const isExplicitBuildRequest = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    return /\b(?:build|compile|production\s+build)\b/i.test(text)
+        && /\b(?:run|execute|verify|check|test|project|application|app|setup|set\s+up|create|generate)\b/i.test(text);
 };
 
 const getUniqueNodeKey = (tasks, baseKey) => {
@@ -1908,6 +1914,78 @@ const ensureVueDesktopProjectTasks = (tasks, goalPrompt) => {
             },
         };
         nextTasks.push(installTask);
+    }
+
+    if (!isExplicitBuildRequest(goalPrompt)) {
+        return nextTasks;
+    }
+
+    const buildScriptCommand = 'npm pkg set scripts.build="vite build"';
+    let buildScriptTask = nextTasks.find((task) => /npm\s+pkg\s+set\s+scripts\.build=/i.test(String(task.toolInput?.command || '')));
+
+    if (buildScriptTask) {
+        const buildScriptIndex = nextTasks.indexOf(buildScriptTask);
+        buildScriptTask = {
+            ...buildScriptTask,
+            title: 'Ensure the Vue build script exists',
+            instruction: `Ensure ${requestedDirectoryPath}/package.json contains the build script "build": "vite build".`,
+            dependencies: [...new Set([...(buildScriptTask.dependencies || []), installTask.nodeKey])]
+                .filter((dependency) => dependency !== buildScriptTask.nodeKey),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: buildScriptCommand,
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks[buildScriptIndex] = buildScriptTask;
+    } else {
+        buildScriptTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'ensure_vue_build_script'),
+            title: 'Ensure the Vue build script exists',
+            instruction: `Ensure ${requestedDirectoryPath}/package.json contains the build script "build": "vite build".`,
+            dependencies: [installTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: buildScriptCommand,
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks.push(buildScriptTask);
+    }
+
+    let buildTask = nextTasks.find((task) => /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/i.test(String(task.toolInput?.command || '')));
+
+    if (buildTask) {
+        const buildIndex = nextTasks.indexOf(buildTask);
+        buildTask = {
+            ...buildTask,
+            title: 'Verify the Vue production build',
+            instruction: `Run the Vue production build in ${requestedDirectoryPath}.`,
+            dependencies: [...new Set([...(buildTask.dependencies || []), buildScriptTask.nodeKey])]
+                .filter((dependency) => dependency !== buildTask.nodeKey),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm run build',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        };
+        nextTasks[buildIndex] = buildTask;
+    } else {
+        nextTasks.push({
+            nodeKey: getUniqueNodeKey(nextTasks, 'verify_vue_build'),
+            title: 'Verify the Vue production build',
+            instruction: `Run the Vue production build in ${requestedDirectoryPath}.`,
+            dependencies: [buildScriptTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm run build',
+                cwd: requestedDirectoryPath,
+                desktop: true,
+            },
+        });
     }
 
     return nextTasks;
@@ -2658,6 +2736,8 @@ Rules:
 - For a local Desktop project setup, make the workflow resumable: use fileManager toolInput.ifExists='skip' for createDesktopFile/createDesktopFiles (and equivalent create-file actions) unless the user explicitly asks to overwrite, replace, update, modify, or rewrite existing files. Existing project folders are reused; existing files are preserved and reported as skipped rather than failing the whole workflow.
 - Never infer a feature-specific starter such as login, health, users, or authentication from an architecture keyword alone. Generate only the files and behavior required by the current user prompt; preserve the model-generated source content during normalization.
 - For project setup requests, derive verification from the exact user prompt and the generated project. If the prompt asks for validation, testing, compilation, or a package-manager check, add the appropriate final command task using the requested runtime and command. Do not invent a framework, package manager, test command, file, dependency, or verification step that the user did not request or that the generated project does not support.
+- If a Vue/Vite prompt explicitly asks for a build, ensure package.json contains a scripts.build value of "vite build" before running "npm run build". Add that repair as a dependent npm task; do not report a missing build script as an unrecoverable error.
+- Return strict JSON. Escape every literal backslash inside a JSON string, especially backslashes in regexes, Windows paths, JavaScript, CSS, and Python source. Never emit invalid JSON escapes such as \\s, \\d, \\., or \\Users; represent them as \\\\s, \\\\d, \\\\., and \\\\Users in the JSON response.
 - Never invent an ESLint, Prettier, or lint command for a project setup. Add a lint task only when the exact user prompt asks for linting/ESLint/Prettier and the generated project includes the corresponding configuration/dependency.
 - Never replace model-generated source content with a generic fallback. If a requested source file has no generated content, preserve it as an empty file and keep the requested filename; do not fabricate unrelated code.
 - A request containing a filename ending in .html or .htm is always a source-code request. Create that exact filename with fileManager and complete HTML content. Never rename it to .png, never use imageGenerator for it, and implement requested dark/light mode behavior with HTML, CSS, and JavaScript.
@@ -2748,10 +2828,12 @@ ${desktopInstruction}
 
             const errorMessage = lastPlannerError?.message || 'Failed to generate a valid acyclic DAG plan after maximum attempts.';
             const error = new Error(errorMessage);
-            error.code = [408, 500, 502, 503, 504].includes(Number(lastPlannerError?.code))
-                || ['LLM_UNAVAILABLE', 'LLM_ERROR', 'LLM_TIMEOUT'].includes(lastPlannerError?.code)
-                ? 'LLM_UNAVAILABLE'
-                : 'PLANNER_ERROR';
+            error.code = lastPlannerError?.code === 'LLM_INVALID_JSON'
+                ? 'LLM_INVALID_JSON'
+                : [408, 500, 502, 503, 504].includes(Number(lastPlannerError?.code))
+                    || ['LLM_UNAVAILABLE', 'LLM_ERROR', 'LLM_TIMEOUT'].includes(lastPlannerError?.code)
+                    ? 'LLM_UNAVAILABLE'
+                    : 'PLANNER_ERROR';
             error.status = Number(lastPlannerError?.status) || undefined;
             error.cause = lastPlannerError;
             throw error;

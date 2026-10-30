@@ -124,13 +124,16 @@ const finalizeUnfinishedTasks = async (runId, tasks, reason, io) => {
 const finishRun = async (runId, tasks, io) => {
     const hasFailedTask = tasks.some((task) => ['FAILED', 'SKIPPED'].includes(task.status));
     const finalStatus = hasFailedTask ? 'FAILED' : 'COMPLETED';
+    const failedTask = tasks.find((task) => task.status === 'FAILED');
+    const failureMessage = failedTask?.error_message
+        || failedTask?.errorMessage
+        || (hasFailedTask ? 'The workflow stopped before all tasks completed.' : null);
 
     if (hasFailedTask) {
-        const failedTask = tasks.find((task) => task.status === 'FAILED');
         await finalizeUnfinishedTasks(
             runId,
             tasks,
-            failedTask?.error_message || failedTask?.errorMessage || 'A workflow task failed.',
+            failureMessage || 'A workflow task failed.',
             io,
         );
     }
@@ -140,6 +143,7 @@ const finishRun = async (runId, tasks, io) => {
     emitEvent(io, runId, 'run_finished', {
         runId,
         status: finalStatus,
+        ...(failureMessage ? {error: failureMessage, reason: failureMessage} : {}),
         completedAt: new Date(),
     });
 

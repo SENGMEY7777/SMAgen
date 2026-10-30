@@ -1303,6 +1303,63 @@ const isNodeProjectSetupRequest = (goalPrompt) => {
         && (requestsSetup || mentionsArchitecture);
 };
 
+const isIdempotentDesktopSetupRequest = (goalPrompt) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        return false;
+    }
+
+    const text = String(goalPrompt || '');
+    const mentionsDesktop = /\bdesk(?:top|spto|stop)\b/i.test(text);
+    const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|build|install)\b/i.test(text);
+    const mentionsProject = /\b(?:project|app|application|system|service|api|backend|frontend|website)\b/i.test(text);
+    const explicitlyChangesExistingFiles = /\b(?:overwrite|replace|update|modify|edit|rewrite)\b/i.test(text);
+
+    return mentionsDesktop
+        && requestsSetup
+        && mentionsProject
+        && !explicitlyChangesExistingFiles;
+};
+
+const normalizeIdempotentDesktopSetupTasks = (tasks, goalPrompt) => {
+    if (!isIdempotentDesktopSetupRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    return tasks.map((task) => {
+        const tool = String(task.assignedTool || '').trim().toLowerCase();
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        const isFileManager = tool === 'filemanager' || tool === 'file_manager';
+        const isCreateFileAction = new Set([
+            'create',
+            'createfile',
+            'create_file',
+            'createfiles',
+            'create_files',
+            'createdesktopfile',
+            'create_desktop_file',
+            'createdesktopfiles',
+            'create_desktop_files',
+        ]).has(action);
+
+        if (!isFileManager || !isCreateFileAction) {
+            return task;
+        }
+
+        const mode = String(task.toolInput?.mode || '').trim().toLowerCase();
+        if (task.toolInput?.overwrite === true || ['write', 'update', 'append'].includes(mode)) {
+            return task;
+        }
+
+        return {
+            ...task,
+            toolInput: {
+                ...task.toolInput,
+                ifExists: 'skip',
+            },
+        };
+    });
+};
+
 
 const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryPath) => {
     const directoryPath = cleanRelativeDirectoryPath(requestedDirectoryPath);
@@ -1633,6 +1690,43 @@ const normalizeChainedCommandTasks = (tasks) => {
                 : (replacements.get(dependency) || dependency))
             .filter((dependency) => dependency && dependency !== task.nodeKey))],
     }));
+};
+
+const isExplicitLintRequest = (goalPrompt) => /\b(?:lint|linting|eslint|prettier)\b/i.test(String(goalPrompt || ''));
+
+const isLintCommandTask = (task) => {
+    if (String(task.assignedTool || '').trim() !== 'executeCommand') {
+        return false;
+    }
+
+    const command = String(task.toolInput?.command || '').trim();
+    return /\bnpm\s+(?:run\s+)?lint\b/i.test(command)
+        || /\b(?:pnpm|yarn)\s+lint\b/i.test(command)
+        || /\bbun\s+(?:run\s+)?lint\b/i.test(command)
+        || /\b(?:npx\s+)?eslint(?:\s|$)/i.test(command);
+};
+
+const normalizePromptVerificationTasks = (tasks, goalPrompt) => {
+    // A project setup prompt must not acquire an invented lint command. Keep it
+    // only when the user explicitly requested linting/ESLint/Prettier.
+    if (isExplicitLintRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const removedKeys = new Set(
+        tasks.filter(isLintCommandTask).map((task) => task.nodeKey),
+    );
+
+    if (!removedKeys.size) {
+        return tasks;
+    }
+
+    return tasks
+        .filter((task) => !removedKeys.has(task.nodeKey))
+        .map((task) => ({
+            ...task,
+            dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
+        }));
 };
 
 const ensureVueDesktopProjectTasks = (tasks, goalPrompt) => {
@@ -2228,6 +2322,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // The executor rejects shell chaining. Expand planner output such as
         // `php --version && composer --version` into ordered command tasks.
         plan.tasks = normalizeChainedCommandTasks(plan.tasks);
+        // Verification must come from the user's prompt. Do not let the model
+        // invent an ESLint task that the generated project cannot support.
+        plan.tasks = normalizePromptVerificationTasks(plan.tasks, goalPrompt);
 
         // A Desktop directory task establishes the destination for dependent file writes.
         // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
@@ -2259,6 +2356,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
         plan.tasks = ensureRequestedHtmlTask(plan.tasks, goalPrompt);
+        // Re-running a Desktop project setup must be safe and resumable. Existing files are
+        // preserved and reported as skipped unless the user explicitly asks to update/overwrite.
+        plan.tasks = normalizeIdempotentDesktopSetupTasks(plan.tasks, goalPrompt);
         // Local development users should be able to open the generated project in Finder.
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
         // File-producing workflows without an explicit destination are downloaded locally by default.
@@ -2485,8 +2585,10 @@ Rules:
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
 - For every project setup request, derive the project name, framework, runtime, dependencies, files, commands, and source content from the exact user prompt. Do not add a fixed demo project, fixed file names, fixed starter copy, or generic fallback source. If the user did not request a file, do not invent one.
+- For a local Desktop project setup, make the workflow resumable: use fileManager toolInput.ifExists='skip' for createDesktopFile/createDesktopFiles (and equivalent create-file actions) unless the user explicitly asks to overwrite, replace, update, modify, or rewrite existing files. Existing project folders are reused; existing files are preserved and reported as skipped rather than failing the whole workflow.
 - Never infer a feature-specific starter such as login, health, users, or authentication from an architecture keyword alone. Generate only the files and behavior required by the current user prompt; preserve the model-generated source content during normalization.
 - For project setup requests, derive verification from the exact user prompt and the generated project. If the prompt asks for validation, testing, compilation, or a package-manager check, add the appropriate final command task using the requested runtime and command. Do not invent a framework, package manager, test command, file, dependency, or verification step that the user did not request or that the generated project does not support.
+- Never invent an ESLint, Prettier, or lint command for a project setup. Add a lint task only when the exact user prompt asks for linting/ESLint/Prettier and the generated project includes the corresponding configuration/dependency.
 - Never replace model-generated source content with a generic fallback. If a requested source file has no generated content, preserve it as an empty file and keep the requested filename; do not fabricate unrelated code.
 - A request containing a filename ending in .html or .htm is always a source-code request. Create that exact filename with fileManager and complete HTML content. Never rename it to .png, never use imageGenerator for it, and implement requested dark/light mode behavior with HTML, CSS, and JavaScript.
 - Use imageGenerator only when the user explicitly requests an image, photo, logo, banner, illustration, artwork, or image URL. Words such as homepage, ecommerce, product, dark mode, or light mode alone do not request an image.

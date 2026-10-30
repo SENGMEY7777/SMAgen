@@ -24,6 +24,7 @@ const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find
 const HIGH_RISK_TOOLS = new Set([
     'databaseConnector',
     'httpRequester',
+    'sshRequester',
 ]);
 
 const DANGEROUS_PATTERNS = [
@@ -68,6 +69,8 @@ const getTaskText = (task, input) => {
         input.script,
         input.query,
         input.url,
+        input.target,
+        input.cwd,
     ]
         .filter((value) => value !== undefined && value !== null)
         .join(' ');
@@ -98,7 +101,9 @@ const evaluateTaskRisk = (task = {}) => {
         }
     } else if (HIGH_RISK_TOOLS.has(assignedTool)) {
         riskLevel = 'HIGH';
-        reason = `${assignedTool} can access external systems or execute sensitive operations`;
+        reason = assignedTool === 'sshRequester'
+            ? 'SSH remote commands always require human approval'
+            : `${assignedTool} can access external systems or execute sensitive operations`;
     } else if (assignedTool === 'fileManager' && !READ_ONLY_ACTIONS.has(action)) {
         riskLevel = 'MEDIUM';
         reason = 'File changes require human approval';

@@ -37,6 +37,7 @@ const SAFE_COMMANDS = new Set([
     'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'python', 'python3',
     'pip', 'pip3', 'pytest', 'php', 'composer', 'mvn', 'go',
 ]);
+const VIRTUAL_ENV_COMMAND_PATTERN = /^(?:\.\/)?\.?(?:venv)\/(?:bin\/(?:python|python3|pip|pip3)|Scripts\/(?:python|python3|pip|pip3)(?:\.exe)?)$/i;
 const COMMAND_BLACKLIST_PATTERNS = [
     /\bsudo(?:\s|$)/i,
     /\bmkfs(?:\.[a-z0-9_-]+)?(?:\s|$)/i,
@@ -61,6 +62,7 @@ const WORKSPACE_WRITE_ACTIONS = new Set([
     'createDesktopFile',
     'createDesktopFiles',
     'deleteDesktopPath',
+    'renameDesktopPath',
     'exportWorkspaceToDesktop',
     'exportWorkspaceToDownloads',
 ]);
@@ -485,6 +487,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
             ? 'createDesktopFiles'
         : requestedAction === 'deletedesktoppath' || requestedAction === 'delete_desktop_path'
             ? 'deleteDesktopPath'
+        : requestedAction === 'renamedesktoppath' || requestedAction === 'rename_desktop_path'
+            ? 'renameDesktopPath'
         : requestedAction === 'createfile' || requestedAction === 'create_file'
             ? 'create'
         : requestedAction === 'writefile' || requestedAction === 'write_file'
@@ -593,6 +597,49 @@ const fileManager = async (input, workspacePath, task = {}) => {
             path: path.relative(desktopRoot, desktopPath),
             location: 'local Desktop',
             deleted: true,
+        };
+    }
+
+    if (action === 'renameDesktopPath') {
+        const sourcePath = await resolveLocalDesktopPath(input.path);
+        const destinationPath = await resolveLocalDesktopPath(input.destination || input.targetPath);
+        const desktopRoot = path.join(os.homedir(), 'Desktop');
+
+        if (sourcePath === path.resolve(desktopRoot) || destinationPath === path.resolve(desktopRoot)) {
+            throw new Error('The local Desktop root cannot be renamed');
+        }
+
+        const sourceStats = await readExistingPathStats(sourcePath);
+        if (!sourceStats) {
+            const error = new Error(`The requested Desktop path was not found: ${input.path}`);
+            error.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
+            error.status = 404;
+            throw error;
+        }
+
+        if (input.kind === 'directory' && !sourceStats.isDirectory()) {
+            const error = new Error(`The requested Desktop path is not a directory: ${input.path}`);
+            error.code = 'LOCAL_DESKTOP_PATH_TYPE_MISMATCH';
+            error.status = 409;
+            throw error;
+        }
+
+        const destinationStats = await readExistingPathStats(destinationPath);
+        if (destinationStats) {
+            const error = new Error(`The destination Desktop path already exists: ${input.destination || input.targetPath}`);
+            error.code = 'LOCAL_DESKTOP_DESTINATION_EXISTS';
+            error.status = 409;
+            throw error;
+        }
+
+        await fs.rename(sourcePath, destinationPath);
+
+        return {
+            action,
+            path: path.relative(desktopRoot, sourcePath),
+            destination: path.relative(desktopRoot, destinationPath),
+            location: 'local Desktop',
+            renamed: true,
         };
     }
 
@@ -1203,6 +1250,11 @@ const tokenizeCommand = (command) => {
     });
 };
 
+const isAllowedCommand = (commandName) => (
+    SAFE_COMMANDS.has(commandName)
+    || VIRTUAL_ENV_COMMAND_PATTERN.test(commandName)
+);
+
 const executeCommand = async (input, workspacePath, task, options = {}) => {
     const command = typeof input.command === 'string' ? input.command.trim() : '';
 
@@ -1220,7 +1272,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
     const [commandName, ...args] = tokenizeCommand(command);
 
-    if (!SAFE_COMMANDS.has(commandName)) {
+    if (!isAllowedCommand(commandName)) {
         throw new Error(`Command is not allowed: ${commandName}`);
     }
 

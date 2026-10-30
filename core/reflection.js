@@ -143,7 +143,7 @@ Rules:
 - Change only toolInput arguments.
 - Preserve the task's intended scope and workspace safety restrictions.
 - Do not invent credentials, secrets, private keys, or authorization headers.
-- Never invent shell commands such as 'check' or 'list'. For directory inspection use 'ls'; for file contents use 'cat' or fileManager action 'read'/'list', preserving exact path and filename case. For Python projects, use the allowlisted 'python'/'python3' commands and run package operations through 'python3 -m pip'.
+- Never invent shell commands such as 'check' or 'list'. For directory inspection use 'ls'; for file contents use 'cat' or fileManager action 'read'/'list', preserving exact path and filename case. For Python projects, keep package installation inside the project's virtual environment: use './venv/bin/python -m pip' (or './.venv/bin/python -m pip') when that environment exists. Only use 'python3 -m pip' when no project virtual environment is required. Never replace a virtual-environment command with system pip, '--user', or '--break-system-packages'.
 - Use exactly one executable command per executeCommand task. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines; if the failed input contains multiple sequential commands, repair only the current command and let the planner keep the remaining commands as separate dependent tasks.
 - For directory creation, use fileManager with action 'createDirectory' and a relative path inside the workspace. Never use an absolute path or '..'.
 - When local Desktop output is explicitly enabled and the task targets the host Desktop, use fileManager with action 'createDesktopDirectory' and a relative folder name.
@@ -342,10 +342,17 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
     }
 
     if (retryCount >= MAX_SELF_HEAL_RETRIES) {
+        const lastFailure = error?.message
+            || errorTrace?.error?.message
+            || errorTrace?.telemetry?.stderr
+            || '';
+        const retryExhaustedMessage = `Maximum self-healing retries exceeded (${MAX_SELF_HEAL_RETRIES})`
+            + (lastFailure ? `. Last task error: ${lastFailure}` : '');
+
         return markTaskFailedAndSkipDependents({
             runId,
             task,
-            errorMessage: `Maximum self-healing retries exceeded (${MAX_SELF_HEAL_RETRIES})`,
+            errorMessage: retryExhaustedMessage,
             errorTrace,
             executionTimeMs: telemetry?.latencyMs,
             io,

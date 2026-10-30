@@ -1464,6 +1464,10 @@ const normalizeExistingProjectUpdateTasks = (tasks, goalPrompt) => {
             return task;
         }
 
+        if (String(task.toolInput?.ifExists || '').trim().toLowerCase() === 'skip') {
+            return task;
+        }
+
         if (action === 'createfiles' || action === 'create_files'
             || action === 'createdesktopfiles' || action === 'create_desktop_files') {
             const files = Array.isArray(task.toolInput?.files)
@@ -2515,6 +2519,83 @@ const normalizeImageTasks = (tasks, goalPrompt) => {
     });
 };
 
+const isVueBuildRequest = (goalPrompt) => {
+    const text = String(goalPrompt || '');
+    return LOCAL_DESKTOP_OUTPUT_ENABLED
+        && /\b(?:vue(?:\.js)?|vue\s*3|vue3|vite)\b/i.test(text)
+        && isExplicitBuildRequest(goalPrompt);
+};
+
+const isIndexHtmlTask = (task) => {
+    const action = String(task.toolInput?.action || '').trim().toLowerCase();
+    const directPath = String(task.toolInput?.path || '').replace(/\\/g, '/');
+    const files = Array.isArray(task.toolInput?.files)
+        ? task.toolInput.files
+        : task.toolInput?.files && typeof task.toolInput.files === 'object'
+            ? Object.entries(task.toolInput.files).map(([filePath]) => ({path: filePath}))
+            : [];
+
+    return (action === 'createdesktopfile' || action === 'create_desktop_file'
+        || action === 'create' || action === 'createfile' || action === 'create_file'
+        || action === 'update' || action === 'updatefile' || action === 'update_file'
+        || action === 'createfiles' || action === 'create_files'
+        || action === 'createdesktopfiles' || action === 'create_desktop_files')
+        && (/\/(?:index\.html?)$/i.test(directPath) || /^(?:index\.html?)$/i.test(directPath)
+            || files.some((file) => /(?:^|\/)index\.html?$/i.test(String(file?.path || '').replace(/\\/g, '/'))));
+};
+
+const ensureVueEntryPointTask = (tasks, goalPrompt) => {
+    if (!isVueBuildRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const requestedDirectoryPath = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+
+    if (!requestedDirectoryPath || tasks.some(isIndexHtmlTask)) {
+        return tasks;
+    }
+
+    const directoryTask = tasks.find((task) => (
+        isDesktopDirectoryTask(task)
+        && cleanRelativeDirectoryPath(task.toolInput?.path) === requestedDirectoryPath
+    ));
+    const entryTask = {
+        nodeKey: getUniqueNodeKey(tasks, 'ensure_vue_entry_point'),
+        title: 'Ensure the Vue index.html entry point',
+        instruction: `Create the missing root index.html for the Vue project in Desktop/${requestedDirectoryPath} without replacing an existing file.`,
+        dependencies: directoryTask ? [directoryTask.nodeKey] : [],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'createDesktopFile',
+            mode: 'create',
+            ifExists: 'skip',
+            path: `${requestedDirectoryPath}/index.html`,
+            content: '<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n    <title>Vue Application</title>\n  </head>\n  <body>\n    <div id="app"></div>\n    <script type="module" src="/src/main.js"></script>\n  </body>\n</html>\n',
+        },
+    };
+
+    const buildIndex = tasks.findIndex((task) => (
+        task.assignedTool === 'executeCommand'
+        && /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/i.test(String(task.toolInput?.command || ''))
+    ));
+
+    if (buildIndex < 0) {
+        return [...tasks, entryTask];
+    }
+
+    const nextTasks = [...tasks];
+    nextTasks.splice(buildIndex, 0, entryTask);
+    const shiftedBuildTask = nextTasks[buildIndex + 1];
+    nextTasks[buildIndex + 1] = {
+        ...shiftedBuildTask,
+        dependencies: [...new Set([...(shiftedBuildTask.dependencies || []), entryTask.nodeKey])],
+    };
+
+    return nextTasks;
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -2609,6 +2690,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
         plan.tasks = ensureRequestedHtmlTask(plan.tasks, goalPrompt);
+        // A Vue/Vite build requires a root index.html entry point. Add a safe,
+        // skip-if-present task before build verification when it is missing.
+        plan.tasks = ensureVueEntryPointTask(plan.tasks, goalPrompt);
         // Re-running a Desktop project setup must be safe and resumable. Existing files are
         // preserved and reported as skipped unless the user explicitly asks to update/overwrite.
         plan.tasks = normalizeIdempotentDesktopSetupTasks(plan.tasks, goalPrompt);

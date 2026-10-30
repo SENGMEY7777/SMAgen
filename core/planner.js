@@ -208,9 +208,24 @@ const isExplicitDesktopWriteRequest = (value) => {
     return LOCAL_DESKTOP_OUTPUT_ENABLED && hasWriteVerb && hasDesktopTarget && hasFileOrDirectoryTarget;
 };
 
+const isRenameRequest = (value) => {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+
+    return /\b(?:rename|move|change)\b[\s\S]{0,100}\b(?:folder|directory|project)\b[\s\S]{0,80}\bfrom\b[\s\S]{1,80}\bto\b/i.test(text);
+};
+
 const isRemovalRequest = (value) => {
     const text = String(value || '');
-    return /\b(?:remove|delete|erase|destroy)\b/i.test(text)
+    if (isRenameRequest(text)) {
+        return false;
+    }
+
+    // A negated instruction such as "do not overwrite or delete anything"
+    // describes protection requirements, not a deletion request.
+    const hasNegatedDestructiveWord = /\b(?:do\s+not|don't|dont|never|not)\b[\s\S]{0,32}\b(?:remove|delete|erase|destroy|overwrite)\b/i.test(text);
+
+    return !hasNegatedDestructiveWord
+        && /\b(?:remove|delete|erase|destroy)\b/i.test(text)
         && /\b(?:file|folder|directory|project|path)\b/i.test(text);
 };
 
@@ -230,6 +245,51 @@ const extractRemovalTarget = (value) => {
     const candidate = quotedMatch?.[1] || plainMatch?.[1] || '';
 
     return cleanRelativeDirectoryPath(candidate);
+};
+
+const extractRenamePaths = (value) => {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    const match = text.match(
+        /\b(?:rename|move|change)\b[\s\S]{0,100}\b(?:folder|directory|project)\b[\s\S]{0,80}\bfrom\s+(["'`]?)([A-Za-z0-9][A-Za-z0-9 _./-]*?)\1\s+to\s+(["'`]?)([A-Za-z0-9][A-Za-z0-9 _./-]*?)\3(?=\s+(?:on|in|inside|while|and|preserve|with|then)\b|[.,;!?]|$)/i,
+    );
+
+    if (!match) {
+        return null;
+    }
+
+    const sourcePath = cleanRelativeDirectoryPath(match[2].trim());
+    const targetPath = cleanRelativeDirectoryPath(match[4].trim());
+    if (!sourcePath || !targetPath || sourcePath === targetPath) {
+        return null;
+    }
+
+    return {sourcePath, targetPath};
+};
+
+const normalizeRenamePlan = (tasks, goalPrompt) => {
+    const userGoal = getUserGoalText(goalPrompt);
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED || !isRenameRequest(userGoal)) {
+        return tasks;
+    }
+
+    const renamePaths = extractRenamePaths(userGoal);
+    if (!renamePaths) {
+        return tasks;
+    }
+
+    return [{
+        nodeKey: 'rename_requested_desktop_folder',
+        title: `Rename Desktop/${renamePaths.sourcePath} to Desktop/${renamePaths.targetPath}`,
+        instruction: `Rename the existing local Desktop folder ${renamePaths.sourcePath} to ${renamePaths.targetPath}. Preserve all files and contents. Do not delete or overwrite any unrelated path.`,
+        dependencies: [],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'renameDesktopPath',
+            path: renamePaths.sourcePath,
+            destination: renamePaths.targetPath,
+            kind: 'directory',
+        },
+    }];
 };
 
 const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
@@ -2314,6 +2374,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
             task.dependencies = [...new Set(task.dependencies)];
         });
 
+        // A rename request is a single-target operation that preserves the
+        // source directory contents and must not be interpreted as deletion.
+        plan.tasks = normalizeRenamePlan(plan.tasks, goalPrompt);
         // A destructive request is a single-target operation. Replace any
         // model-added create, export, or setup tasks so removal never causes
         // unrelated files such as index.js to be created.
@@ -2364,7 +2427,13 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
 
-        if (isRemovalRequest(goalPrompt) && plan.tasks.length === 1) {
+        if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
+            const renamePaths = extractRenamePaths(goalPrompt);
+            if (renamePaths) {
+                plan.workflowTitle = `Rename Desktop/${renamePaths.sourcePath} to Desktop/${renamePaths.targetPath}`;
+                plan.summary = `Rename the Desktop folder ${renamePaths.sourcePath} to ${renamePaths.targetPath} without deleting or overwriting its contents.`;
+            }
+        } else if (isRemovalRequest(goalPrompt) && plan.tasks.length === 1) {
             const targetPath = extractRemovalTarget(goalPrompt);
             if (targetPath) {
                 plan.workflowTitle = `Remove ${targetPath}`;
@@ -2558,14 +2627,14 @@ const planWorkflowRun = async ({
 
     if (!validatedPlan) {
         const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
-            ? `- Local file output is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"requested-folder"}. For a project setup inside that folder, first create the folder with fileManager, then use executeCommand with a relative cwd and desktop:true for the approved package-manager command. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"requested-folder"}. For a local Downloads request, use fileManager with {"action":"exportWorkspaceToDownloads","path":"requested-folder"}. If a file-producing workflow does not specify a destination, add exportWorkspaceToDownloads as the final task so the result is available under ~/Downloads/kairo-workflow. Never use executeCommand to create a Desktop directory or to access arbitrary absolute local paths.`
+            ? `- Local file output is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"requested-folder"}. For a request to rename a Desktop folder, use exactly one fileManager task with {"action":"renameDesktopPath","path":"source-folder","destination":"target-folder","kind":"directory"}; preserve contents and never convert it into a delete task. For a project setup inside that folder, first create the folder with fileManager, then use executeCommand with a relative cwd and desktop:true for the approved package-manager command. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"requested-folder"}. For a local Downloads request, use fileManager with {"action":"exportWorkspaceToDownloads","path":"requested-folder"}. If a file-producing workflow does not specify a destination, add exportWorkspaceToDownloads as the final task so the result is available under ~/Downloads/kairo-workflow. Never use executeCommand to create a Desktop directory or to access arbitrary absolute local paths.`
             : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
 Available Tools:
-1. 'executeCommand' - Run one allowlisted workspace command at a time, such as cat, head, tail, grep, ls, pwd, find, wc, python, python3, pip, pip3, pytest, php, composer, mvn, go, npm, npx, node, and git. Never invent commands such as 'check' or 'list'. For file inspection, prefer fileManager with action 'read' or 'list' so the exact path and filename case are preserved. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines. If multiple commands are needed, create separate dependent executeCommand tasks. Never use executeCommand or mkdir for directory creation; use fileManager instead.
-2. 'fileManager' - Create, edit, read, list, delete files, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"deleteDesktopPath","path":"requested-folder"} for an explicit local Desktop removal request, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
+1. 'executeCommand' - Run one allowlisted workspace command at a time, such as cat, head, tail, grep, ls, pwd, find, wc, python, python3, pip, pip3, pytest, php, composer, mvn, go, npm, npx, node, and git. For Python projects with a virtual environment, run package operations through the project-local interpreter, for example './venv/bin/python -m pip install -r requirements.txt'. Never replace that with system pip or '--break-system-packages'. Never invent commands such as 'check' or 'list'. For file inspection, prefer fileManager with action 'read' or 'list' so the exact path and filename case are preserved. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines. If multiple commands are needed, create separate dependent executeCommand tasks. Never use executeCommand or mkdir for directory creation; use fileManager instead.
+2. 'fileManager' - Create, edit, read, list, delete, or rename files and folders, create workspace directories, access a local Desktop directory, or export a completed workspace to the local Desktop or Downloads when explicitly enabled. Use {"action":"createDirectory","path":"relative/directory"} for workspace directories, {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true} to list local Desktop image assets, {"action":"deleteDesktopPath","path":"requested-folder"} for an explicit local Desktop removal request, {"action":"renameDesktopPath","path":"source-folder","destination":"target-folder","kind":"directory"} only for an explicit rename/move request, {"action":"exportWorkspaceToDesktop","path":"requested-folder"} for explicit Desktop output, and {"action":"exportWorkspaceToDownloads","path":"requested-folder"} for local Downloads output.
 3. 'webSearch' - Query DuckDuckGo; set toolInput.scrape=true when page HTML should be converted to Markdown.
 4. 'databaseConnector' - Execute parameterized SQL with toolInput.sql and toolInput.params.
 5. 'httpRequester' - Make HTTP/HTTPS API calls with toolInput.method, url, headers, params, and data.
@@ -2577,6 +2646,7 @@ Rules:
 - Every dependency must reference an existing nodeKey.
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
+- For an explicit Desktop folder rename or move, create exactly one fileManager task with action 'renameDesktopPath', a relative source path, and a relative destination path. Preserve the source contents; never add a delete task or interpret words such as 'do not delete' as a removal request.
 - Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.
 - For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.

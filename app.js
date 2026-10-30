@@ -63,6 +63,16 @@ const apiLimiter = rateLimit({
     limit: 300,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
+    // Active workflow polling is protected by workflowReadLimiter after
+    // authentication. It should not consume the shared mutation/chat budget.
+    skip: (req) => {
+        const pathName = String(req.originalUrl || '').split('?')[0];
+        return req.method === 'GET' && (
+            /^\/api\/v1\/workflows\/runs\/[^/]+$/.test(pathName)
+            || pathName === '/api/v1/admin/approvals/pending'
+            || /^\/api\/v1\/admin\/approvals\/[^/]+$/.test(pathName)
+        );
+    },
     message: {
         success: false,
         message: 'Too many requests. Please try again later.',

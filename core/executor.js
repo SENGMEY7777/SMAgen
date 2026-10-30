@@ -6,6 +6,7 @@ const {execFile} = require('child_process');
 const {promisify} = require('util');
 const databasePool = require('../configs/db');
 const {imageGenerator: rawImageGenerator} = require('../tools/imageGenerator');
+const {maskSensitiveData} = require('./telemetry');
 
 const DEFAULT_WORKSPACE_ROOT = path.resolve(
     process.env.WORKSPACE_ROOT
@@ -25,6 +26,13 @@ const COMMAND_TIMEOUT_MS = Math.max(
         MAX_COMMAND_TIMEOUT_MS,
     Number.parseInt(process.env.COMMAND_TIMEOUT_MS || String(MAX_COMMAND_TIMEOUT_MS), 10)
             || MAX_COMMAND_TIMEOUT_MS,
+    ),
+);
+const SSH_CONNECT_TIMEOUT_SECONDS = Math.max(
+    3,
+    Math.min(
+        30,
+        Number.parseInt(process.env.SSH_CONNECT_TIMEOUT_SECONDS || '10', 10) || 10,
     ),
 );
 const HTTP_REQUEST_TIMEOUT_MS = Math.max(
@@ -47,6 +55,15 @@ const COMMAND_BLACKLIST_PATTERNS = [
     /\b(?:bash|sh|zsh)\s+-i(?:\s|$)/i,
     /\bfind\b[^\n]*(?:-exec(?:dir)?|-delete|-ok(?:dir)?)/i,
 ];
+const SSH_COMMAND_BLACKLIST_PATTERNS = [
+    /\b(?:sudo|su|ssh|scp|sftp)\b/i,
+    /\b(?:rm|rmdir)\b/i,
+    /\b(?:shutdown|reboot|halt|poweroff|mkfs)\b/i,
+    /\b(?:curl|wget)\b[^\n]*\|\s*(?:sh|bash|zsh)\b/i,
+    /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?/i,
+];
+const SSH_TARGET_ALIAS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SSH_USER_PATTERN = /^[A-Za-z_][A-Za-z0-9._-]{0,63}$/;
 const SENSITIVE_HEADER_PATTERN = /authorization|cookie|set-cookie|token|secret|api[-_]?key|password/i;
 const SAFE_WORKSPACE_SEGMENT = /^[A-Za-z0-9_-]{1,128}$/;
 const WORKSPACE_WRITE_ACTIONS = new Set([
@@ -1238,6 +1255,178 @@ const httpRequester = async (input, workspacePath, task, options = {}) => {
     };
 };
 
+const parseSshTargets = () => {
+    const rawTargets = String(process.env.SSH_TARGETS_JSON || '').trim();
+
+    if (!rawTargets) {
+        return {};
+    }
+
+    let parsedTargets;
+
+    try {
+        parsedTargets = JSON.parse(rawTargets);
+    } catch (error) {
+        throw new Error('SSH_TARGETS_JSON must contain valid JSON');
+    }
+
+    if (!parsedTargets || typeof parsedTargets !== 'object' || Array.isArray(parsedTargets)) {
+        throw new Error('SSH_TARGETS_JSON must be a JSON object keyed by target alias');
+    }
+
+    return parsedTargets;
+};
+
+const getSshTarget = (input) => {
+    const targetAlias = String(input.target || input.hostAlias || '').trim();
+
+    if (!targetAlias || !SSH_TARGET_ALIAS_PATTERN.test(targetAlias)) {
+        throw new Error('SSH target must be a configured alias such as "staging" or "production"');
+    }
+
+    const targets = parseSshTargets();
+    const hasTarget = Object.prototype.hasOwnProperty.call(targets, targetAlias);
+    const configuredTarget = hasTarget ? targets[targetAlias] : null;
+
+    if (!configuredTarget || typeof configuredTarget !== 'object' || Array.isArray(configuredTarget)) {
+        const error = new Error(`SSH target is not configured: ${targetAlias}`);
+        error.code = 'SSH_TARGET_NOT_CONFIGURED';
+        throw error;
+    }
+
+    const host = String(configuredTarget.host || '').trim();
+    const user = String(configuredTarget.user || '').trim();
+    const port = Number(configuredTarget.port || 22);
+
+    if (!host || /[\s\0/@]/.test(host) || host.startsWith('-')) {
+        throw new Error(`SSH target ${targetAlias} has an invalid host configuration`);
+    }
+
+    if (!user || !SSH_USER_PATTERN.test(user)) {
+        throw new Error(`SSH target ${targetAlias} must define a valid user`);
+    }
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`SSH target ${targetAlias} has an invalid port`);
+    }
+
+    const identityFile = configuredTarget.identityFile
+        ? String(configuredTarget.identityFile).trim()
+        : '';
+    const knownHostsFile = configuredTarget.knownHostsFile
+        ? String(configuredTarget.knownHostsFile).trim()
+        : '';
+
+    for (const [name, value] of [['identityFile', identityFile], ['knownHostsFile', knownHostsFile]]) {
+        if (value && (!path.isAbsolute(value) || /[\0\n\r]/.test(value))) {
+            throw new Error(`SSH target ${targetAlias} has an invalid ${name}`);
+        }
+    }
+
+    return {
+        alias: targetAlias,
+        host,
+        user,
+        port,
+        identityFile,
+        knownHostsFile,
+    };
+};
+
+const quoteRemotePath = (value) => `'${String(value).replace(/'/g, "'\\''")}'`;
+
+const validateSshCommand = (value) => {
+    const command = typeof value === 'string' ? value.trim() : '';
+
+    if (!command) {
+        throw new Error('An SSH command is required');
+    }
+
+    if (command.length > 4000 || /[\0\n\r;&|`<>$]/.test(command)) {
+        throw new Error('SSH commands must be one simple command without shell operators or newlines');
+    }
+
+    if (SSH_COMMAND_BLACKLIST_PATTERNS.some((pattern) => pattern.test(command))) {
+        throw new Error('SSH command is blocked by the remote execution safety policy');
+    }
+
+    return command;
+};
+
+const sshRequester = async (input, workspacePath, task, options = {}) => {
+    const target = getSshTarget(input);
+    const command = validateSshCommand(input.command);
+    const remoteCwd = typeof input.cwd === 'string' ? input.cwd.trim() : '';
+
+    if (remoteCwd && (remoteCwd.length > 1000 || /[\0\n\r;&|`<>$]/.test(remoteCwd))) {
+        throw new Error('SSH cwd must be a simple remote path without shell operators or newlines');
+    }
+
+    const remoteCommand = remoteCwd
+        ? `cd -- ${quoteRemotePath(remoteCwd)} && ${command}`
+        : command;
+    const destination = `${target.user}@${target.host}`;
+    const sshArguments = [
+        '-o', 'BatchMode=yes',
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', `ConnectTimeout=${SSH_CONNECT_TIMEOUT_SECONDS}`,
+        '-o', 'ServerAliveInterval=15',
+        '-o', 'ServerAliveCountMax=2',
+    ];
+
+    if (target.knownHostsFile) {
+        sshArguments.push('-o', `UserKnownHostsFile=${target.knownHostsFile}`);
+    }
+
+    if (target.identityFile) {
+        sshArguments.push('-o', 'IdentitiesOnly=yes');
+        sshArguments.push('-i', target.identityFile);
+    }
+
+    sshArguments.push('-p', String(target.port), '--', destination, remoteCommand);
+
+    try {
+        const result = await execFileAsync('ssh', sshArguments, {
+            cwd: workspacePath,
+            timeout: COMMAND_TIMEOUT_MS,
+            signal: options.signal,
+            maxBuffer: MAX_COMMAND_OUTPUT,
+            shell: false,
+            env: {
+                ...process.env,
+                SSH_ASKPASS: '/usr/bin/false',
+                SSH_ASKPASS_REQUIRE: 'force',
+                DISPLAY: '',
+            },
+        });
+
+        return {
+            target: target.alias,
+            host: target.host,
+            user: target.user,
+            port: target.port,
+            cwd: remoteCwd || null,
+            command,
+            stdout: maskSensitiveData(result.stdout || ''),
+            stderr: maskSensitiveData(result.stderr || ''),
+            exitCode: 0,
+        };
+    } catch (error) {
+        return {
+            target: target.alias,
+            host: target.host,
+            user: target.user,
+            port: target.port,
+            cwd: remoteCwd || null,
+            command,
+            stdout: maskSensitiveData(error.stdout || ''),
+            stderr: maskSensitiveData(error.stderr || error.message || 'SSH request failed'),
+            exitCode: typeof error.code === 'number' ? error.code : 1,
+            timedOut: error.code === 'ETIMEDOUT' || error.killed === true,
+        };
+    }
+};
+
 const tokenizeCommand = (command) => {
     const tokens = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g) || [];
 
@@ -1254,6 +1443,53 @@ const isAllowedCommand = (commandName) => (
     SAFE_COMMANDS.has(commandName)
     || VIRTUAL_ENV_COMMAND_PATTERN.test(commandName)
 );
+
+const getNodeRuntimePath = async () => {
+    const homeDirectory = os.homedir();
+    const runtimeDirectories = [
+        path.join(homeDirectory, '.asdf', 'shims'),
+        path.join(homeDirectory, '.fnm', 'current', 'bin'),
+        path.join(homeDirectory, '.local', 'share', 'fnm', 'current', 'bin'),
+        path.join(homeDirectory, '.volta', 'bin'),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin',
+    ];
+
+    const versionRoots = [
+        path.join(homeDirectory, '.nvm', 'versions', 'node'),
+        path.join(homeDirectory, '.local', 'share', 'fnm', 'node-versions'),
+    ];
+
+    for (const versionRoot of versionRoots) {
+        try {
+            const entries = await fs.readdir(versionRoot, {withFileTypes: true});
+            const versionDirectories = entries
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => entry.name)
+                .sort()
+                .reverse();
+
+            for (const versionDirectory of versionDirectories) {
+                runtimeDirectories.unshift(
+                    path.join(
+                        versionRoot,
+                        versionDirectory,
+                        versionRoot.endsWith(path.join('fnm', 'node-versions')) ? 'installation' : 'bin',
+                    ),
+                );
+            }
+        } catch (_) {
+            // A runtime manager is optional. Continue with other known paths.
+        }
+    }
+
+    return [...new Set([
+        ...runtimeDirectories,
+        ...(process.env.PATH || '').split(path.delimiter),
+    ].filter(Boolean))].join(path.delimiter);
+};
 
 const executeCommand = async (input, workspacePath, task, options = {}) => {
     const command = typeof input.command === 'string' ? input.command.trim() : '';
@@ -1373,6 +1609,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
     }
 
     try {
+        const commandPath = await getNodeRuntimePath();
         const result = await execFileAsync(commandName, args, {
             cwd: effectiveCwd,
             timeout: COMMAND_TIMEOUT_MS,
@@ -1381,6 +1618,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             shell: false,
             env: {
                 ...process.env,
+                PATH: commandPath,
                 npm_config_yes: 'true',
                 CI: 'true',
             },
@@ -1415,6 +1653,7 @@ const createToolRegistry = (tools = {}) => ({
     executeCommand,
     databaseConnector,
     httpRequester,
+    sshRequester,
     imageGenerator,
     ...tools,
 });
@@ -1510,5 +1749,6 @@ module.exports = {
     executeCommand,
     databaseConnector,
     httpRequester,
+    sshRequester,
     resolveDynamicContent,
 };

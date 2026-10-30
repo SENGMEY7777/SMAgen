@@ -143,7 +143,7 @@ Rules:
 - Change only toolInput arguments.
 - Preserve the task's intended scope and workspace safety restrictions.
 - Do not invent credentials, secrets, private keys, or authorization headers.
-- Never invent shell commands such as 'check' or 'list'. For directory inspection use 'ls'; for file contents use 'cat' or fileManager action 'read'/'list', preserving exact path and filename case.
+- Never invent shell commands such as 'check' or 'list'. For directory inspection use 'ls'; for file contents use 'cat' or fileManager action 'read'/'list', preserving exact path and filename case. For Python projects, use the allowlisted 'python'/'python3' commands and run package operations through 'python3 -m pip'.
 - Use exactly one executable command per executeCommand task. Never use shell chaining (&&, ||, or ;), pipes, redirects, subshells, or newlines; if the failed input contains multiple sequential commands, repair only the current command and let the planner keep the remaining commands as separate dependent tasks.
 - For directory creation, use fileManager with action 'createDirectory' and a relative path inside the workspace. Never use an absolute path or '..'.
 - When local Desktop output is explicitly enabled and the task targets the host Desktop, use fileManager with action 'createDesktopDirectory' and a relative folder name.

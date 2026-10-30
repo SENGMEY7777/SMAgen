@@ -103,6 +103,13 @@ const getNonRepairableFailureReason = ({task, error, errorTrace}) => {
         return 'The export contains a dependency symlink that cannot be copied safely.';
     }
 
+    if (
+        assignedTool === 'sshRequester'
+        && /ssh target is not configured|host key verification failed|permission denied|batchmode|could not resolve hostname|connection timed out/.test(text)
+    ) {
+        return 'SSH configuration or authentication must be corrected manually; automatic repair must not change remote credentials or host trust settings.';
+    }
+
     if (/file already exists|eexist|overwrite.*not permitted|already exists.*overwrite/.test(text)) {
         return 'The requested file or folder already exists, and safe automatic overwrite is not allowed.';
     }
@@ -151,6 +158,7 @@ Rules:
 - When the task requests image links or image URLs, keep imageGenerator outputMode as 'url' so generated HTML can reference the remote image directly.
 - For multiple Vue components, use fileManager action 'createFiles' with a files array; for one file use action 'create' or 'write'.
 - When exporting a completed local-development workspace for Finder, keep fileManager action 'exportWorkspaceToDesktop' with a safe relative Desktop folder such as 'kairo-ecommerce'. For a local Downloads export or an unspecified destination, keep fileManager action 'exportWorkspaceToDownloads' with a safe relative folder such as 'kairo-workflow'.
+- For sshRequester, preserve the configured target alias and never add or change passwords, private keys, host keys, user credentials, or SSH configuration. Keep the command to one simple command without shell operators, newlines, or nested SSH/scp/sftp calls. SSH authentication, host-key, and permission failures require manual configuration rather than automatic repair.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

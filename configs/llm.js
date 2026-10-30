@@ -265,11 +265,81 @@ const escapeJsonControlCharacters = (value) => {
     return result;
 };
 
+const repairInvalidJsonEscapes = (value) => {
+    const text = String(value || '');
+    let result = '';
+    let insideString = false;
+
+    for (let index = 0; index < text.length; index += 1) {
+        const character = text[index];
+
+        if (!insideString) {
+            result += character;
+            if (character === '"') {
+                insideString = true;
+            }
+            continue;
+        }
+
+        if (character === '"') {
+            result += character;
+            insideString = false;
+            continue;
+        }
+
+        if (character !== '\\') {
+            result += character;
+            continue;
+        }
+
+        const nextCharacter = text[index + 1];
+        if (!nextCharacter) {
+            result += '\\\\';
+            continue;
+        }
+
+        // These are the only one-character escapes permitted by JSON.
+        if ('"\\/bfnrt'.includes(nextCharacter)) {
+            result += `\\${nextCharacter}`;
+            index += 1;
+            continue;
+        }
+
+        if (nextCharacter === 'u') {
+            const unicodeDigits = text.slice(index + 2, index + 6);
+            if (/^[0-9a-f]{4}$/i.test(unicodeDigits)) {
+                result += `\\u${unicodeDigits}`;
+                index += 5;
+                continue;
+            }
+        }
+
+        // Generated source often contains regexes (\\s, \\d, \\.) or
+        // Windows paths (C:\\Users). Preserve the literal backslash by
+        // escaping it for JSON instead of allowing JSON.parse to fail.
+        result += `\\\\${nextCharacter}`;
+        index += 1;
+    }
+
+    return result;
+};
+
 const parseJsonCandidate = (value) => {
     try {
         return JSON.parse(value);
     } catch (error) {
-        return JSON.parse(escapeJsonControlCharacters(value));
+        try {
+            return JSON.parse(escapeJsonControlCharacters(value));
+        } catch (controlCharacterError) {
+            try {
+                return JSON.parse(repairInvalidJsonEscapes(escapeJsonControlCharacters(value)));
+            } catch (repairedError) {
+                repairedError.code = 'LLM_INVALID_JSON';
+                repairedError.message = `Gemini returned malformed JSON: ${repairedError.message}`;
+                repairedError.cause = error;
+                throw repairedError;
+            }
+        }
     }
 };
 

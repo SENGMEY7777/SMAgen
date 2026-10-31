@@ -295,16 +295,21 @@ const getLocalDesktopRoot = async () => {
     return desktopRoot;
 };
 
-const isMatchingFileName = (candidateName, requestedName) => {
-    const candidateLower = String(candidateName || '').toLowerCase();
-    const requestedLower = String(requestedName || '').toLowerCase();
+const isMatchingEntryName = (candidateName, requestedName) => {
+    const candidateLower = String(candidateName || '').toLowerCase().trim();
+    const requestedLower = String(requestedName || '').toLowerCase().trim();
     if (candidateLower === requestedLower) return true;
     if (requestedLower === 'gitkeep' && candidateLower === '.gitkeep') return true;
     if (requestedLower === '.gitkeep' && candidateLower === 'gitkeep') return true;
+    // Singular / Plural variations (e.g. view <-> views, model <-> models, route <-> routes, test <-> tests)
+    if (requestedLower + 's' === candidateLower) return true;
+    if (requestedLower === candidateLower + 's') return true;
+    if (requestedLower + 'es' === candidateLower) return true;
+    if (requestedLower === candidateLower + 'es') return true;
     return false;
 };
 
-const findLocalDesktopFiles = async (fileName, searchPath = '') => {
+const findLocalDesktopEntries = async (targetName, searchPath = '', { kind = 'all' } = {}) => {
     const desktopRoot = await getLocalDesktopRoot();
     const searchRoot = searchPath
         ? await resolveLocalDesktopPath(searchPath)
@@ -313,8 +318,7 @@ const findLocalDesktopFiles = async (fileName, searchPath = '') => {
     const ignoredDirectories = new Set(['.git', 'node_modules']);
 
     const visit = async (currentPath, depth = 0) => {
-        if (depth > 12) return;
-        if (matches.length > 50) return;
+        if (depth > 12 || matches.length > 50) return;
 
         let entries;
         try {
@@ -328,52 +332,35 @@ const findLocalDesktopFiles = async (fileName, searchPath = '') => {
             if (entry.isSymbolicLink()) continue;
 
             const entryPath = path.join(currentPath, entry.name);
-            if (entry.isDirectory()) {
-                if (!ignoredDirectories.has(entry.name)) {
-                    await visit(entryPath, depth + 1);
-                }
-            } else if (entry.isFile() && isMatchingFileName(entry.name, fileName)) {
-                matches.push(entryPath);
+            const isDir = entry.isDirectory();
+            const isFile = entry.isFile();
+
+            const kindMatches = kind === 'all'
+                || (kind === 'directory' && isDir)
+                || (kind === 'file' && isFile);
+
+            if (kindMatches && isMatchingEntryName(entry.name, targetName)) {
+                matches.push({
+                    path: entryPath,
+                    name: entry.name,
+                    isDirectory: isDir,
+                    isFile: isFile,
+                });
+            }
+
+            if (isDir && !ignoredDirectories.has(entry.name)) {
+                await visit(entryPath, depth + 1);
             }
         }
     };
 
     await visit(searchRoot);
+    return matches;
+};
 
-    if (matches.length > 0) return matches;
-
-    const normalizedName = String(fileName || '').toLowerCase();
-    if (!normalizedName) return matches;
-
-    const caseInsensitiveMatches = [];
-    const visitCaseInsensitive = async (currentPath, depth = 0) => {
-        if (depth > 12) return;
-        if (caseInsensitiveMatches.length > 50) return;
-
-        let entries;
-        try {
-            entries = await fs.readdir(currentPath, {withFileTypes: true});
-        } catch (error) {
-            if (error.code === 'ENOENT') return;
-            throw error;
-        }
-
-        for (const entry of entries) {
-            if (entry.isSymbolicLink()) continue;
-
-            const entryPath = path.join(currentPath, entry.name);
-            if (entry.isDirectory()) {
-                if (!ignoredDirectories.has(entry.name)) {
-                    await visitCaseInsensitive(entryPath, depth + 1);
-                }
-            } else if (entry.isFile() && isMatchingFileName(entry.name, normalizedName)) {
-                caseInsensitiveMatches.push(entryPath);
-            }
-        }
-    };
-
-    await visitCaseInsensitive(searchRoot);
-    return caseInsensitiveMatches;
+const findLocalDesktopFiles = async (fileName, searchPath = '') => {
+    const entries = await findLocalDesktopEntries(fileName, searchPath, { kind: 'file' });
+    return entries.map((e) => e.path);
 };
 
 const resolveLocalDownloadsPath = async (requestedPath) => {
@@ -566,6 +553,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         const requestedFileName = path.basename(requestedPath);
         const isGitkeep = requestedFileName === '.gitkeep' || requestedFileName === 'gitkeep';
         const isFileTarget = input.kind === 'file' || input.file === true || isGitkeep;
+        const isDirectoryTarget = input.kind === 'directory' || input.directory === true;
         const deleteAllMatches = input.all === true || isGitkeep || /\ball\b/i.test(input.mode || '');
         let desktopPath = await resolveLocalDesktopPath(requestedPath);
         const desktopRoot = path.join(os.homedir(), 'Desktop');
@@ -584,10 +572,18 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 typeError.status = 409;
                 throw typeError;
             }
+            if (isDirectoryTarget && !stats.isDirectory()) {
+                const typeError = new Error(
+                    'The requested Desktop path is not a directory: ' + requestedPath,
+                );
+                typeError.code = 'LOCAL_DESKTOP_PATH_TYPE_MISMATCH';
+                typeError.status = 409;
+                throw typeError;
+            }
 
             // Direct match found on disk
             if (!deleteAllMatches) {
-                await fs.rm(desktopPath, {recursive: !isFileTarget, force: true});
+                await fs.rm(desktopPath, {recursive: stats.isDirectory(), force: true});
 
                 return {
                     action,
@@ -597,20 +593,17 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 };
             }
         } catch (error) {
-            if (error.code !== 'ENOENT' || (!isFileTarget && !isGitkeep)) {
-                if (error.code === 'ENOENT') {
-                    error.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
-                    error.status = 404;
-                    error.message = 'The requested Desktop path was not found: ' + requestedPath;
-                }
+            if (error.code !== 'ENOENT') {
                 throw error;
             }
+            // ENOENT on direct path -> fall through to search for matching entry in searchScope
         }
 
-        // Search for matches in project folder or searchPath
+        // Search for matches in project folder, searchPath, or entire Desktop
         const searchScope = input.searchPath
             || (requestedPath.includes('/') ? requestedPath.split('/')[0] : '');
-        const matches = await findLocalDesktopFiles(requestedFileName, searchScope);
+        const targetKind = isFileTarget ? 'file' : (isDirectoryTarget ? 'directory' : 'all');
+        const matches = await findLocalDesktopEntries(requestedFileName, searchScope, { kind: targetKind });
 
         if (matches.length === 0) {
             if (isGitkeep || input.ignoreMissing === true) {
@@ -620,20 +613,20 @@ const fileManager = async (input, workspacePath, task = {}) => {
                     location: 'local Desktop',
                     deleted: true,
                     count: 0,
-                    message: 'No matching files found to remove.',
+                    message: 'No matching entries found to remove.',
                 };
             }
             const notFoundError = new Error(
-                'The requested Desktop file was not found: ' + requestedFileName,
+                'The requested Desktop path \'' + requestedPath + '\' was not found',
             );
-            notFoundError.code = 'LOCAL_DESKTOP_FILE_NOT_FOUND';
+            notFoundError.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
             notFoundError.status = 404;
             throw notFoundError;
         }
 
         if (matches.length > 1 && !deleteAllMatches) {
             const ambiguousError = new Error(
-                'More than one Desktop file matches "' + requestedFileName
+                'More than one Desktop entry matches "' + requestedFileName
                 + '". Specify its project-relative path.',
             );
             ambiguousError.code = 'LOCAL_DESKTOP_FILE_AMBIGUOUS';
@@ -643,16 +636,16 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
         const targetsToDelete = deleteAllMatches ? matches : [matches[0]];
         for (const target of targetsToDelete) {
-            await fs.rm(target, {recursive: false, force: true});
+            await fs.rm(target.path, {recursive: target.isDirectory, force: true});
         }
 
         return {
             action,
-            path: path.relative(desktopRoot, targetsToDelete[0]),
+            path: path.relative(desktopRoot, targetsToDelete[0].path),
             location: 'local Desktop',
             deleted: true,
             count: targetsToDelete.length,
-            files: targetsToDelete.map((t) => path.relative(desktopRoot, t)),
+            files: targetsToDelete.map((t) => path.relative(desktopRoot, t.path)),
         };
     }
 

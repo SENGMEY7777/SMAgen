@@ -82,16 +82,16 @@ const CASUAL_CONVERSATION_INSTRUCTION = `
 
 const ADAPTIVE_RESPONSE_INSTRUCTION = `
 
-### Adaptive Response Policy — Follow the User's Actual Goal:
-This policy takes precedence over any generic response template. For every turn, treat the latest user message as the active goal. Use earlier messages only as context when the latest message explicitly refers to them with words such as "this", "that", "same", "continue", or "update". Never silently carry forward an old project path, filename, technology, task, or instruction into a new request. Infer the user's intent from the complete prompt, attachments, conversation context, requested audience, and requested format. Do not force every answer into a technical masterclass.
+### Adaptive Response Policy — Follow the User's Actual Goal & Maintain Project Memory:
+This policy takes precedence over any generic response template. For every turn, treat the latest user message as the active goal. Maintain full project folder memory and continuity for the active project: seamlessly carry forward the active project context, architecture, stack, and file paths for follow-up turns unless the user explicitly asks to create or switch to a new project. Infer the user's intent from the complete prompt, attachments, conversation context, requested audience, and requested format. Do not force every answer into a technical masterclass.
 
 1. **Choose the response mode dynamically:**
    - **Casual or greeting:** Be warm and concise; do not add technical content unless requested.
    - **Simple factual question:** Give the direct answer first, normally in 1–4 sentences.
    - **Explanation or learning request:** Explain from simple to advanced, using examples only when they improve understanding.
-   - **Coding or implementation request:** Give the concrete implementation, preserve the requested stack and constraints, state important assumptions, and include only the relevant complete files or code needed to use it.
+   - **Coding or implementation request:** Give the concrete implementation, preserve the requested stack and constraints, state important assumptions, and include only the relevant complete files or code needed to use it. Anchor changes to the active project folder.
    - **Debugging request:** Separate symptom, root cause, fix, and verification. Never claim success without evidence.
-   - **Workflow request:** Convert the user's goal into clear, user-readable steps. Keep paths, filenames, tools, dependencies, and task order aligned with the prompt. Do not invent completed work or silently reuse an old project destination.
+   - **Workflow request:** Convert the user's goal into clear, user-readable steps. Keep paths, filenames, tools, dependencies, and task order aligned with the prompt and the active local project folder.
    - **Review, rating, or improvement request:** Evaluate the supplied material against the user's goal, identify the highest-impact changes, and provide the improved final version when requested.
    - **Writing, CV, email, or translation request:** Preserve the facts, audience, tone, and format. Return the finished text first and do not invent experience, metrics, employers, or credentials.
 
@@ -150,7 +150,7 @@ Apply these preferences by default across conversations unless the current user 
 - Match the requested level of detail. Do not turn a simple question into an unnecessary masterclass.
 - For code and workflow changes, explain what changed and what was actually verified.
 - Do not create Git commits, push code, delete files, or make other external changes unless the user explicitly requests that action.
-- Do not silently reuse an old project, folder, filename, or destination for a new request.
+- Remember and maintain the active local project folder context, file structure, and history for all follow-up requests within that project, keeping file paths and architecture consistent until a new project is explicitly requested.
 - Prefer one focused change at a time when the user asks for manual, file-by-file, or commit-by-commit work.`;
 
 const buildTurnGoalDirective = (message) => {
@@ -249,7 +249,43 @@ const createStreamingSanitizer = (onChunk) => {
     };
 };
 
-const buildConversationRequest = ({message, history = []}) => {
+const buildProjectContextMemoryInstruction = ({projectContext, localDestination, history = []}) => {
+    let projectName = projectContext?.name || '';
+    let projectPath = projectContext?.workspacePath || localDestination || '';
+
+    // If not directly supplied, extract from history messages
+    if (!projectName && !projectPath) {
+        for (let i = history.length - 1; i >= 0; i--) {
+            const text = String(history[i]?.content || '');
+            const destMatch = text.match(/\b(?:Desktop|folder|project)[\s/\\:"]+([A-Za-z0-9_-]+)/i);
+            if (destMatch && !['api', 'v1', 'the', 'my', 'a', 'this', 'run'].includes(destMatch[1].toLowerCase())) {
+                projectName = destMatch[1];
+                projectPath = `Desktop/${projectName}`;
+                break;
+            }
+        }
+    }
+
+    if (!projectName && !projectPath) {
+        return '';
+    }
+
+    const resolvedPath = projectPath.startsWith('~') || projectPath.startsWith('/')
+        ? projectPath
+        : `~/Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
+
+    return `\n\n### 📁 Active Project Memory & Local Folder Continuity:
+- **Active Local Project:** "${projectName || 'Current Project'}"
+- **Project Folder Path:** \`${resolvedPath}\`
+- **CONTINUITY & MEMORY RULES:**
+  1. The user is actively developing inside this local project folder (\`${resolvedPath}\`).
+  2. ALWAYS remember the project's technical stack, dependencies (package.json, database config), architecture (MVC, models, controllers, services, middlewares, routes), and all past file additions or deletions made in this project.
+  3. All code modifications, new endpoints, refactoring, script execution, file removals, or explanations should be firmly anchored in this project's existing structure and conventions.
+  4. Never tell the user that you don't know the project folder or ask them to repeat the path—you already know they are inside \`${resolvedPath}\`.
+  5. If the user asks where their files are, state clearly that they are located in \`${resolvedPath}\` on their macOS Desktop and provide the terminal navigation: \`cd ${resolvedPath}\` or \`open ${resolvedPath}\`.`;
+};
+
+const buildConversationRequest = ({message, history = [], projectContext = null, localDestination = ''}) => {
     const cleanMessage = sanitizeChatResponse(message);
     const contents = history
         .slice(-MAX_HISTORY_MESSAGES)
@@ -274,10 +310,12 @@ const buildConversationRequest = ({message, history = []}) => {
         ? "\n\n### ⚡ CRITICAL LANGUAGE DIRECTIVE FOR THIS TURN:\n- The user's prompt is written in Khmer (ភាសាខ្មែរ).\n- You MUST respond ENTIRELY in pure, authentic, grammatically correct, and professional Khmer (ភាសាខ្មែរ).\n- STRICT PROHIBITION: NEVER use any Thai language or Thai characters (Unicode range \\u0E00-\\u0E7F). Use 100% authentic Khmer vocabulary and Khmer script only (e.g. use 'ចម្បង' or 'គោល').\n- Keep all programming code, syntax, terminal commands, function/variable names, and standard technical keywords in English."
         : "\n\n### ⚡ CRITICAL LANGUAGE DIRECTIVE FOR THIS TURN:\n- The user's prompt is in English. You MUST respond in English.";
 
+    const projectMemoryInstruction = buildProjectContextMemoryInstruction({projectContext, localDestination, history});
+
     return {
         contents,
         config: {
-            systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}${FOUNDER_RELATIONSHIP_INSTRUCTION}${LOCAL_ENVIRONMENT_INSTRUCTION}${RESPONSE_QUALITY_INSTRUCTION}${ADAPTIVE_RESPONSE_INSTRUCTION}${TURN_GOAL_CONTRACT_INSTRUCTION}${REMEMBERED_USER_PREFERENCES_INSTRUCTION}${buildTurnGoalDirective(cleanMessage)}${CASUAL_CONVERSATION_INSTRUCTION}${dynamicLanguageDirective}`,
+            systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}${FOUNDER_RELATIONSHIP_INSTRUCTION}${LOCAL_ENVIRONMENT_INSTRUCTION}${RESPONSE_QUALITY_INSTRUCTION}${ADAPTIVE_RESPONSE_INSTRUCTION}${TURN_GOAL_CONTRACT_INSTRUCTION}${REMEMBERED_USER_PREFERENCES_INSTRUCTION}${projectMemoryInstruction}${buildTurnGoalDirective(cleanMessage)}${CASUAL_CONVERSATION_INSTRUCTION}${dynamicLanguageDirective}`,
             temperature: 0.2,
             maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
         },
@@ -362,7 +400,7 @@ const chat = async (req, res, next) => {
     }
 
     try {
-        const {message, history = []} = req.body || {};
+        const {message, history = [], projectContext, localDestination} = req.body || {};
         if (typeof message !== 'string' || !message.trim()) {
             return sendResponse(res, 400, false, 'A chat message is required', null, {
                 code: 'VALIDATION_ERROR',
@@ -384,7 +422,7 @@ const chat = async (req, res, next) => {
             });
         }
 
-        const {contents, config} = buildConversationRequest({message, history});
+        const {contents, config} = buildConversationRequest({message, history, projectContext, localDestination});
         const answer = await skGemini(contents, {config});
 
         return sendResponse(res, 200, true, 'Chat response generated', {
@@ -401,7 +439,7 @@ const chat = async (req, res, next) => {
  * Sends token chunks immediately as they arrive from Google Gemini.
  */
 const chatStream = async (req, res) => {
-    const {message, history = []} = req.body || {};
+    const {message, history = [], projectContext, localDestination} = req.body || {};
 
     if (typeof message !== 'string' || !message.trim()) {
         return sendResponse(res, 400, false, 'A chat message is required', null, {
@@ -436,7 +474,7 @@ const chatStream = async (req, res) => {
             return res.end();
         }
 
-        const {contents, config} = buildConversationRequest({message, history});
+        const {contents, config} = buildConversationRequest({message, history, projectContext, localDestination});
 
         const sanitizer = createStreamingSanitizer((chunkText) => {
             res.write(`data: ${JSON.stringify({ event: 'chunk', text: chunkText, done: false })}\n\n`);

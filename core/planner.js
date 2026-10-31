@@ -348,7 +348,7 @@ const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
     }
 
     const hasNestedTarget = targetPath.includes('/') || targetPath.includes('\\');
-    const scopedTargetPath = targetIsFile && destinationScope && !hasNestedTarget
+    const scopedTargetPath = destinationScope && !hasNestedTarget
         ? `${destinationScope}/${targetPath}`
         : targetPath;
 
@@ -361,7 +361,7 @@ const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
         toolInput: {
             action,
             path: scopedTargetPath,
-            ...(targetIsFile ? {kind: 'file'} : {}),
+            ...(targetIsFile ? {kind: 'file'} : {kind: 'directory'}),
             ...(destinationScope ? {searchPath: destinationScope} : {}),
             ...(isGitkeep || /\ball\b/i.test(userGoal) ? {all: true} : {}),
         },

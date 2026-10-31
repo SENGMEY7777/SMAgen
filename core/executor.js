@@ -295,6 +295,15 @@ const getLocalDesktopRoot = async () => {
     return desktopRoot;
 };
 
+const isMatchingFileName = (candidateName, requestedName) => {
+    const candidateLower = String(candidateName || '').toLowerCase();
+    const requestedLower = String(requestedName || '').toLowerCase();
+    if (candidateLower === requestedLower) return true;
+    if (requestedLower === 'gitkeep' && candidateLower === '.gitkeep') return true;
+    if (requestedLower === '.gitkeep' && candidateLower === 'gitkeep') return true;
+    return false;
+};
+
 const findLocalDesktopFiles = async (fileName, searchPath = '') => {
     const desktopRoot = await getLocalDesktopRoot();
     const searchRoot = searchPath
@@ -323,7 +332,7 @@ const findLocalDesktopFiles = async (fileName, searchPath = '') => {
                 if (!ignoredDirectories.has(entry.name)) {
                     await visit(entryPath, depth + 1);
                 }
-            } else if (entry.isFile() && entry.name === fileName) {
+            } else if (entry.isFile() && isMatchingFileName(entry.name, fileName)) {
                 matches.push(entryPath);
             }
         }
@@ -357,7 +366,7 @@ const findLocalDesktopFiles = async (fileName, searchPath = '') => {
                 if (!ignoredDirectories.has(entry.name)) {
                     await visitCaseInsensitive(entryPath, depth + 1);
                 }
-            } else if (entry.isFile() && entry.name.toLowerCase() === normalizedName) {
+            } else if (entry.isFile() && isMatchingFileName(entry.name, normalizedName)) {
                 caseInsensitiveMatches.push(entryPath);
             }
         }
@@ -554,7 +563,10 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
     if (action === 'deleteDesktopPath') {
         const requestedPath = String(input.path || '').trim();
-        const isFileTarget = input.kind === 'file' || input.file === true;
+        const requestedFileName = path.basename(requestedPath);
+        const isGitkeep = requestedFileName === '.gitkeep' || requestedFileName === 'gitkeep';
+        const isFileTarget = input.kind === 'file' || input.file === true || isGitkeep;
+        const deleteAllMatches = input.all === true || isGitkeep || /\ball\b/i.test(input.mode || '');
         let desktopPath = await resolveLocalDesktopPath(requestedPath);
         const desktopRoot = path.join(os.homedir(), 'Desktop');
 
@@ -564,7 +576,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
         try {
             const stats = await fs.lstat(desktopPath);
-            if (isFileTarget && !stats.isFile()) {
+            if (isFileTarget && !stats.isFile() && !isGitkeep) {
                 const typeError = new Error(
                     'The requested Desktop path is not a file: ' + requestedPath,
                 );
@@ -572,8 +584,20 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 typeError.status = 409;
                 throw typeError;
             }
+
+            // Direct match found on disk
+            if (!deleteAllMatches) {
+                await fs.rm(desktopPath, {recursive: !isFileTarget, force: true});
+
+                return {
+                    action,
+                    path: path.relative(desktopRoot, desktopPath),
+                    location: 'local Desktop',
+                    deleted: true,
+                };
+            }
         } catch (error) {
-            if (error.code !== 'ENOENT' || !isFileTarget) {
+            if (error.code !== 'ENOENT' || (!isFileTarget && !isGitkeep)) {
                 if (error.code === 'ENOENT') {
                     error.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
                     error.status = 404;
@@ -581,39 +605,54 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 }
                 throw error;
             }
-
-            const requestedFileName = path.basename(requestedPath);
-            const matches = await findLocalDesktopFiles(requestedFileName, input.searchPath);
-
-            if (matches.length === 0) {
-                const notFoundError = new Error(
-                    'The requested Desktop file was not found: ' + requestedFileName,
-                );
-                notFoundError.code = 'LOCAL_DESKTOP_FILE_NOT_FOUND';
-                notFoundError.status = 404;
-                throw notFoundError;
-            }
-
-            if (matches.length > 1) {
-                const ambiguousError = new Error(
-                    'More than one Desktop file matches "' + requestedFileName
-                    + '". Specify its project-relative path.',
-                );
-                ambiguousError.code = 'LOCAL_DESKTOP_FILE_AMBIGUOUS';
-                ambiguousError.status = 409;
-                throw ambiguousError;
-            }
-
-            desktopPath = matches[0];
         }
 
-        await fs.rm(desktopPath, {recursive: !isFileTarget, force: false});
+        // Search for matches in project folder or searchPath
+        const searchScope = input.searchPath
+            || (requestedPath.includes('/') ? requestedPath.split('/')[0] : '');
+        const matches = await findLocalDesktopFiles(requestedFileName, searchScope);
+
+        if (matches.length === 0) {
+            if (isGitkeep || input.ignoreMissing === true) {
+                return {
+                    action,
+                    path: requestedPath,
+                    location: 'local Desktop',
+                    deleted: true,
+                    count: 0,
+                    message: 'No matching files found to remove.',
+                };
+            }
+            const notFoundError = new Error(
+                'The requested Desktop file was not found: ' + requestedFileName,
+            );
+            notFoundError.code = 'LOCAL_DESKTOP_FILE_NOT_FOUND';
+            notFoundError.status = 404;
+            throw notFoundError;
+        }
+
+        if (matches.length > 1 && !deleteAllMatches) {
+            const ambiguousError = new Error(
+                'More than one Desktop file matches "' + requestedFileName
+                + '". Specify its project-relative path.',
+            );
+            ambiguousError.code = 'LOCAL_DESKTOP_FILE_AMBIGUOUS';
+            ambiguousError.status = 409;
+            throw ambiguousError;
+        }
+
+        const targetsToDelete = deleteAllMatches ? matches : [matches[0]];
+        for (const target of targetsToDelete) {
+            await fs.rm(target, {recursive: false, force: true});
+        }
 
         return {
             action,
-            path: path.relative(desktopRoot, desktopPath),
+            path: path.relative(desktopRoot, targetsToDelete[0]),
             location: 'local Desktop',
             deleted: true,
+            count: targetsToDelete.length,
+            files: targetsToDelete.map((t) => path.relative(desktopRoot, t)),
         };
     }
 
@@ -908,7 +947,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
             throw new Error('The task workspace itself cannot be deleted');
         }
 
-        await fs.rm(filePath, {recursive: true, force: false});
+        await fs.rm(filePath, {recursive: true, force: true});
 
         return {
             action: 'delete',

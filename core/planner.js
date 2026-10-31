@@ -245,8 +245,7 @@ const isRemovalRequest = (value) => {
     const hasNegatedDestructiveWord = /\b(?:do\s+not|don't|dont|never|not)\b[\s\S]{0,32}\b(?:remove|delete|erase|destroy|overwrite)\b/i.test(text);
 
     return !hasNegatedDestructiveWord
-        && /\b(?:remove|delete|erase|destroy)\b/i.test(text)
-        && /\b(?:file|folder|directory|project|path)\b/i.test(text);
+        && /\b(?:remove|delete|erase|destroy|clean\s*up|clear|strip)\b/i.test(text);
 };
 
 const getUserGoalText = (value) => String(value || '')
@@ -260,11 +259,19 @@ const extractRemovalTarget = (value) => {
         /\b(?:file|folder|directory|project|path)\b[\s\S]{0,40}["'`]([^"'`]+)["'`]/i,
     );
     const plainMatch = text.match(
-        /\b(?:file|folder|directory|project|path)\b\s+(?:(?:named|called|name(?:\s+is)?)\s+)?([A-Za-z0-9][A-Za-z0-9._-]*(?:[\\/][A-Za-z0-9._-]+)*)/i,
+        /\b(?:file|folder|directory|project|path)\b\s+(?:(?:named|called|name(?:\s+is)?)\s+)?([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*)/i,
     );
-    const candidate = quotedMatch?.[1] || plainMatch?.[1] || '';
+    const directActionMatch = text.match(
+        /\b(?:remove|delete|erase|destroy|clean\s*up|clear|strip)\s+(?:all\s+)?(?:the\s+)?(?:of\s+the\s+)?(?:files?\s+)?["'`]?([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*)["'`]?/i,
+    );
+    const candidate = quotedMatch?.[1] || plainMatch?.[1] || directActionMatch?.[1] || '';
 
-    return cleanRelativeDirectoryPath(candidate);
+    const cleaned = cleanRelativeDirectoryPath(candidate);
+    if (!cleaned) return null;
+    if (cleaned === 'gitkeep' || cleaned.endsWith('/gitkeep')) {
+        return cleaned.replace(/(^|[\\/])gitkeep$/, '$1.gitkeep');
+    }
+    return cleaned;
 };
 
 const extractRenamePaths = (value) => {
@@ -324,13 +331,22 @@ const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
         return tasks;
     }
 
-    const explicitlyFolder = /\b(?:folder|directory|project)\b/i.test(userGoal);
-    const targetLooksLikeFile = /(?:^|[\\/])[^\\/]+\.[A-Za-z0-9]{1,16}$/.test(targetPath);
+    const isGitkeep = targetPath === '.gitkeep' || targetPath.endsWith('/.gitkeep');
+    const explicitlyFolder = !isGitkeep && /\b(?:folder|directory|project)\b/i.test(userGoal);
+    const targetLooksLikeFile = isGitkeep || /(?:^|[\\/])\.?[^\\/]+\.[A-Za-z0-9]{1,16}$/.test(targetPath);
     const targetIsFile = !explicitlyFolder && (/\bfile\b/i.test(userGoal) || targetLooksLikeFile);
     const action = LOCAL_DESKTOP_OUTPUT_ENABLED ? 'deleteDesktopPath' : 'delete';
     const location = LOCAL_DESKTOP_OUTPUT_ENABLED ? 'Desktop' : 'workflow workspace';
     const destination = LOCAL_DESKTOP_OUTPUT_ENABLED ? normalizeLocalDestination(localDestination) : null;
-    const destinationScope = destination?.location === 'Desktop' ? destination.relativePath : '';
+    let destinationScope = destination?.location === 'Desktop' ? destination.relativePath : '';
+
+    if (!destinationScope && LOCAL_DESKTOP_OUTPUT_ENABLED) {
+        const folderMatch = userGoal.match(/\b(?:in|inside|from|within)\s+(?:folder|project|directory\s+)?["'`]?([A-Za-z0-9_-]+(?:[\\/][A-Za-z0-9_-]+)*)["'`]?/i);
+        if (folderMatch) {
+            destinationScope = folderMatch[1];
+        }
+    }
+
     const hasNestedTarget = targetPath.includes('/') || targetPath.includes('\\');
     const scopedTargetPath = targetIsFile && destinationScope && !hasNestedTarget
         ? `${destinationScope}/${targetPath}`
@@ -338,15 +354,16 @@ const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
 
     return [{
         nodeKey: 'remove_requested_target',
-        title: `Remove ${targetIsFile ? 'file' : 'folder'} ${location}/${scopedTargetPath}`,
-        instruction: `Remove the requested ${targetIsFile ? 'file' : 'folder'} ${scopedTargetPath} from the local ${location}. Do not create or modify any other files.`,
+        title: `Remove ${isGitkeep ? 'all .gitkeep files' : (targetIsFile ? 'file' : 'folder')} ${location}/${scopedTargetPath}`,
+        instruction: `Remove the requested ${isGitkeep ? '.gitkeep files' : (targetIsFile ? 'file' : 'folder')} ${scopedTargetPath} from the local ${location}. Do not create or modify any other files.`,
         dependencies: [],
         assignedTool: 'fileManager',
         toolInput: {
             action,
             path: scopedTargetPath,
             ...(targetIsFile ? {kind: 'file'} : {}),
-            ...(destinationScope && targetIsFile ? {searchPath: destinationScope} : {}),
+            ...(destinationScope ? {searchPath: destinationScope} : {}),
+            ...(isGitkeep || /\ball\b/i.test(userGoal) ? {all: true} : {}),
         },
     }];
 };

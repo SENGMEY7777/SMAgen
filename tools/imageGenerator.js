@@ -9,6 +9,7 @@ const IMAGE_MODEL = process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-image';
 const ALLOW_WATERMARKED_FALLBACK = String(process.env.ALLOW_WATERMARKED_IMAGE_FALLBACK || '')
     .trim()
     .toLowerCase() === 'true';
+    
 
 const getImageDimensions = (aspectRatio) => ({
     width: aspectRatio === '16:9' ? 1280 : aspectRatio === '9:16' ? 720 : 1024,

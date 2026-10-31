@@ -172,6 +172,11 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
         return cleanRelativeDirectoryPath(localDestinationMatch[1].replace(/[.,;!?]+$/, ''));
     }
 
+    const desktopPathMatch = taskText.match(DESKTOP_PATH_PATTERN);
+    if (desktopPathMatch) {
+        return cleanRelativeDirectoryPath(desktopPathMatch[1].replace(/[.,;!?]+$/, ''));
+    }
+
     const quotedName = taskText.match(
         /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name(?:\s+is)?(?:['’]s)?)\s*["']([^"']+)["']/i,
     );
@@ -186,6 +191,14 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
 
     if (nameSuffix) {
         return cleanRelativeDirectoryPath(nameSuffix[1]);
+    }
+
+    const desktopFolderName = taskText.match(
+        /\b(?:desktop|downloads?)\b[\s\S]{0,40}\b(?:folder|directory|project)\b(?:\s+name(?:['’]s)?|\s+named|\s+called)?\s*[:=-]?\s*([A-Za-z0-9][A-Za-z0-9_-]*)/i,
+    );
+
+    if (desktopFolderName) {
+        return cleanRelativeDirectoryPath(desktopFolderName[1]);
     }
 
     const plainName = taskText.match(
@@ -442,6 +455,208 @@ const cleanRelativeFilePath = (value) => {
     }
 
     return cleaned.replace(/\\/g, '/');
+};
+
+// Desktop project paths must be rooted at the folder explicitly named by the
+// user. LLM output can contain an accidental prefix such as
+// `src/views/Rent-Room`, or repeat the project root more than once. Keeping
+// this normalization in one place prevents later passes from turning that
+// mistake into `Rent-Room/src/views/Rent-Room/...`.
+const canonicalizeProjectPath = (value, projectRootPath) => {
+    const cleanPath = cleanRelativeFilePath(value);
+    const cleanRoot = cleanRelativeDirectoryPath(projectRootPath);
+    if (!cleanPath || !cleanRoot) {
+        return null;
+    }
+
+    const pathSegments = cleanPath.split('/').filter(Boolean);
+    const rootSegments = cleanRoot.split('/').filter(Boolean);
+    if (!pathSegments.length || !rootSegments.length) {
+        return null;
+    }
+
+    const normalizedPathSegments = pathSegments.map((segment) => segment.toLowerCase());
+    const normalizedRootSegments = rootSegments.map((segment) => segment.toLowerCase());
+    let rootIndex = -1;
+
+    for (let index = 0; index <= pathSegments.length - rootSegments.length; index += 1) {
+        const matches = normalizedRootSegments.every((segment, offset) => (
+            normalizedPathSegments[index + offset] === segment
+        ));
+        if (matches) {
+            rootIndex = index;
+        }
+    }
+
+    if (rootIndex >= 0) {
+        return [
+            ...rootSegments,
+            ...pathSegments.slice(rootIndex + rootSegments.length),
+        ].join('/');
+    }
+
+    return [cleanRoot, cleanPath].join('/');
+};
+
+const inferNodeProjectSourceDirectory = (task, filePath) => {
+    const rawFileName = path.basename(String(filePath || ''));
+    const text = `${task?.title || ''} ${task?.instruction || ''} ${filePath || ''}`.toLowerCase();
+
+    // Derive the layer from the file name instead of maintaining a fixed
+    // feature list. This handles names such as AuthController.js,
+    // room_service.js, and payment-routes.js without assuming which modules
+    // the user wants to build.
+    const fileStem = rawFileName.replace(/\.[^.]+$/, '');
+    const camelCaseSuffixMatch = fileStem.match(/(?:^|[a-z0-9])([A-Z][A-Za-z0-9]+)$/);
+    const separatorSuffixMatch = fileStem.match(/[_-]([a-z][a-z0-9]+)$/i);
+    const taskLayerMatch = text.match(/\b([a-z][a-z0-9_-]*)\s+(?:layer|directory|folder)\b/i);
+    const candidate = camelCaseSuffixMatch?.[1] || separatorSuffixMatch?.[1] || taskLayerMatch?.[1] || '';
+    const normalizedCandidate = candidate.replace(/[-_]+/g, ' ').trim();
+
+    if (normalizedCandidate && /[a-z]/i.test(normalizedCandidate)) {
+        const singular = normalizedCandidate.replace(/\s+/g, '').toLowerCase();
+        const directoryName = singular.endsWith('s')
+            ? singular
+            : singular.endsWith('y')
+                ? `${singular.slice(0, -1)}ies`
+                : `${singular}s`;
+        return `src/${directoryName}`;
+    }
+
+    return null;
+};
+
+const normalizeNodeProjectFilePath = (filePath, task, projectRootPath) => {
+    const canonicalPath = canonicalizeProjectPath(filePath, projectRootPath);
+    if (!canonicalPath) {
+        return null;
+    }
+
+    const rootPrefix = `${cleanRelativeDirectoryPath(projectRootPath)}/`;
+    const relativePath = canonicalPath.startsWith(rootPrefix)
+        ? canonicalPath.slice(rootPrefix.length)
+        : '';
+    if (!relativePath) {
+        return canonicalPath;
+    }
+
+    const relativeSegments = relativePath.split('/');
+    const inferredSourceDirectory = inferNodeProjectSourceDirectory(task, relativePath);
+    const relativeDirectory = inferredSourceDirectory?.split('/').pop();
+
+    // A planner may return `controllers/UserController.js` instead of the
+    // conventional `src/controllers/UserController.js`. Move it under src
+    // only when the path and the generated file name independently describe
+    // the same layer; arbitrary user folders remain unchanged.
+    if (relativeDirectory && relativeSegments[0].toLowerCase() === relativeDirectory.toLowerCase()) {
+        return `${cleanRelativeDirectoryPath(projectRootPath)}/src/${relativePath}`;
+    }
+
+    if (relativeSegments.length === 1) {
+        const sourceDirectory = inferNodeProjectSourceDirectory(task, relativePath);
+        if (sourceDirectory) {
+            return `${cleanRelativeDirectoryPath(projectRootPath)}/${sourceDirectory}/${relativePath}`;
+        }
+    }
+
+    return canonicalPath;
+};
+
+const inferProjectSourceDirectories = (tasks, projectRootPath) => {
+    const sourceDirectories = new Set();
+    const rootPrefix = `${cleanRelativeDirectoryPath(projectRootPath)}/`;
+
+    for (const task of tasks) {
+        const toolInput = task.toolInput || {};
+        const fileEntries = Array.isArray(toolInput.files)
+            ? toolInput.files
+            : toolInput.files && typeof toolInput.files === 'object'
+                ? Object.entries(toolInput.files).map(([filePath]) => ({path: filePath}))
+                : [{path: toolInput.path}];
+
+        for (const entry of fileEntries) {
+            const canonicalPath = canonicalizeProjectPath(entry?.path, projectRootPath);
+            if (!canonicalPath || !canonicalPath.startsWith(rootPrefix)) {
+                continue;
+            }
+
+            const relativePath = canonicalPath.slice(rootPrefix.length);
+            const inferredSourceDirectory = inferNodeProjectSourceDirectory(task, relativePath);
+            const directoryName = inferredSourceDirectory?.split('/').pop();
+            if (directoryName) {
+                sourceDirectories.add(directoryName.toLowerCase());
+            }
+        }
+    }
+
+    return sourceDirectories;
+};
+
+const normalizeNodeProjectDirectoryPath = (directoryPath, projectRootPath, sourceDirectories = new Set()) => {
+    const canonicalPath = canonicalizeProjectPath(directoryPath, projectRootPath);
+    if (!canonicalPath) {
+        return null;
+    }
+
+    const rootPrefix = `${cleanRelativeDirectoryPath(projectRootPath)}/`;
+    const relativePath = canonicalPath.startsWith(rootPrefix)
+        ? canonicalPath.slice(rootPrefix.length)
+        : '';
+    if (sourceDirectories.has(relativePath.split('/')[0].toLowerCase())) {
+        return `${cleanRelativeDirectoryPath(projectRootPath)}/src/${relativePath}`;
+    }
+
+    return canonicalPath;
+};
+
+const deduplicateProjectDirectoryTasks = (tasks, isDirectoryAction) => {
+    const canonicalDirectoryTasks = new Map();
+    const redirectedDependencies = new Map();
+    const keptTasks = [];
+
+    for (const task of tasks) {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (!isDirectoryAction(action)) {
+            keptTasks.push(task);
+            continue;
+        }
+
+        const directoryPath = cleanRelativeDirectoryPath(task.toolInput?.path);
+        if (!directoryPath) {
+            keptTasks.push(task);
+            continue;
+        }
+
+        const existingTask = canonicalDirectoryTasks.get(directoryPath);
+        if (existingTask) {
+            redirectedDependencies.set(task.nodeKey, existingTask.nodeKey);
+            continue;
+        }
+
+        canonicalDirectoryTasks.set(directoryPath, task);
+        keptTasks.push(task);
+    }
+
+    if (!redirectedDependencies.size) {
+        return keptTasks;
+    }
+
+    const resolveDependency = (dependency) => {
+        let resolved = dependency;
+        const visited = new Set();
+        while (redirectedDependencies.has(resolved) && !visited.has(resolved)) {
+            visited.add(resolved);
+            resolved = redirectedDependencies.get(resolved);
+        }
+        return resolved;
+    };
+
+    return keptTasks.map((task) => ({
+        ...task,
+        dependencies: [...new Set((task.dependencies || [])
+            .map(resolveDependency)
+            .filter((dependency) => dependency !== task.nodeKey))],
+    }));
 };
 
 const cleanDesktopRelativePath = (value) => {
@@ -748,8 +963,11 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
         return tasks;
     }
 
-    const inferredDirectoryPath = desktopDirectoryTasks[0]?.toolInput?.path
-        || inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt);
+    // Prefer the directory explicitly named in the user prompt over a path
+    // supplied by the model. The model path may be malformed or may point to
+    // a nested view folder instead of the requested project root.
+    const inferredDirectoryPath = inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt)
+        || desktopDirectoryTasks[0]?.toolInput?.path;
 
     return tasks.map((task) => {
         if (task.assignedTool !== 'fileManager') {
@@ -780,18 +998,13 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
                     ? Object.entries(task.toolInput.files).map(([filePath, content]) => ({path: filePath, content}))
                     : [];
             const directoryPath = cleanRelativeDirectoryPath(inferredDirectoryPath);
-            const projectRootPath = directoryPath?.split('/')[0];
             const desktopFiles = fileEntries
                 .map((entry) => {
                     const filePath = cleanRelativeFilePath(entry?.path || entry?.fileName);
                     if (!filePath) return null;
 
                     const desktopPath = directoryPath
-                        && filePath !== directoryPath
-                        && !filePath.startsWith(directoryPath + '/')
-                        && filePath !== projectRootPath
-                        && !filePath.startsWith(`${projectRootPath}/`)
-                        ? directoryPath + '/' + filePath
+                        ? canonicalizeProjectPath(filePath, directoryPath)
                         : filePath;
 
                     return {
@@ -821,13 +1034,8 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
         }
 
         const directoryPath = cleanRelativeDirectoryPath(inferredDirectoryPath);
-        const projectRootPath = directoryPath?.split('/')[0];
         const desktopPath = directoryPath
-            && filePath !== directoryPath
-            && !filePath.startsWith(`${directoryPath}/`)
-            && filePath !== projectRootPath
-            && !filePath.startsWith(`${projectRootPath}/`)
-            ? `${directoryPath}/${filePath}`
+            ? canonicalizeProjectPath(filePath, directoryPath)
             : filePath;
 
         return {
@@ -1763,38 +1971,31 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
         || action === 'create_desktop_file'
         || action === 'createdesktopfiles'
         || action === 'create_desktop_files';
-    // A generated file may already include the project root, for example
-    // `Testing-Project/app/services/AuthService.js`. The requested directory
-    // can be a nested MVC folder such as `Testing-Project/app/controllers`.
-    // Only prefix paths that are truly relative; otherwise controllers could
-    // be incorrectly inserted before services/models.
-    const projectRootPath = directoryPath.split('/')[0];
-    const prefixFilePath = (filePath) => {
-        const cleanPath = cleanRelativeFilePath(filePath);
-        if (!cleanPath) {
-            return null;
-        }
-
-        return cleanPath === directoryPath
-            || cleanPath.startsWith(directoryPath + '/')
-            || cleanPath === projectRootPath
-            || cleanPath.startsWith(projectRootPath + '/')
-            ? cleanPath
-            : directoryPath + '/' + cleanPath;
-    };
+    const sourceDirectories = inferProjectSourceDirectories(tasks, directoryPath);
+    const prefixFilePath = (filePath, task) => normalizeNodeProjectFilePath(
+        filePath,
+        task,
+        directoryPath,
+    );
 
     let nextTasks = tasks.map((task) => {
         const action = String(task.toolInput?.action || '').trim().toLowerCase();
         const tool = String(task.assignedTool || '').trim().toLowerCase();
 
         if (isDirectoryAction(action)) {
+            const normalizedDirectoryPath = normalizeNodeProjectDirectoryPath(
+                task.toolInput?.path,
+                directoryPath,
+                sourceDirectories,
+            ) || directoryPath;
+
             return {
                 ...task,
                 assignedTool: 'fileManager',
                 toolInput: {
                     ...task.toolInput,
                     action: 'createDesktopDirectory',
-                    path: directoryPath,
+                    path: normalizedDirectoryPath,
                 },
             };
         }
@@ -1809,10 +2010,16 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
             if (files) {
                 const normalizedFiles = files
                     .map((file) => {
-                        const filePath = prefixFilePath(file?.path || file?.fileName);
+                        const filePath = prefixFilePath(file?.path || file?.fileName, task);
                         return filePath ? {...file, path: filePath} : null;
                     })
                     .filter(Boolean);
+
+                if (!normalizedFiles.length) {
+                    throw new Error(
+                        `The planner generated a Desktop file task without valid file paths inside ${directoryPath}. Regenerate the plan with one path per file.`,
+                    );
+                }
 
                 return {
                     ...task,
@@ -1825,8 +2032,14 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
                 };
             }
 
-            const filePath = prefixFilePath(task.toolInput?.path);
+            const filePath = prefixFilePath(task.toolInput?.path, task);
             if (filePath) {
+                if (filePath === directoryPath) {
+                    throw new Error(
+                        `The planner targeted the project directory ${directoryPath} as a file. Regenerate the plan with an actual filename.`,
+                    );
+                }
+
                 return {
                     ...task,
                     assignedTool: 'fileManager',
@@ -1858,6 +2071,11 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
 
         return task;
     });
+
+    // A malformed plan often contains both `Rent-Room/src` and the same
+    // directory under an accidental nested path. Keep one canonical task and
+    // redirect dependants instead of creating duplicate empty folders.
+    nextTasks = deduplicateProjectDirectoryTasks(nextTasks, isDirectoryAction);
 
     let directoryTask = nextTasks.find((task) => {
         const action = String(task.toolInput?.action || '').trim().toLowerCase();
@@ -2093,6 +2311,17 @@ const normalizeChainedCommandTasks = (tasks) => {
 
 const isExplicitLintRequest = (goalPrompt) => /\b(?:lint|linting|eslint|prettier)\b/i.test(String(goalPrompt || ''));
 
+const isProjectPreparationRequest = (goalPrompt) => {
+    const userGoal = getUserGoalText(goalPrompt);
+    const mentionsPreparation = /\b(?:clean|cleanup|clean-up|tidy|organize|prepare)\b/i.test(userGoal);
+    const mentionsProject = /\b(?:project|codebase|repository|repo|workspace|application|app)\b/i.test(userGoal);
+    const explicitlyRequestsVerification = /\b(?:build|compile|test|tests|lint|eslint|prettier|verify|check|run|start|serve|deploy|install)\b/i.test(userGoal);
+
+    return mentionsPreparation
+        && mentionsProject
+        && !explicitlyRequestsVerification;
+};
+
 const isLintCommandTask = (task) => {
     if (String(task.assignedTool || '').trim() !== 'executeCommand') {
         return false;
@@ -2126,6 +2355,68 @@ const normalizePromptVerificationTasks = (tasks, goalPrompt) => {
             ...task,
             dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
         }));
+};
+
+const isUnrequestedVerificationTask = (task) => {
+    const tool = String(task.assignedTool || '').trim().toLowerCase();
+    const toolInput = task.toolInput || {};
+    const command = String(toolInput.command || '').trim();
+    const taskText = `${task.title || ''} ${task.instruction || ''} ${command}`;
+
+    if (tool === 'executecommand' || tool === 'execute_command') {
+        return /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:build|test|lint|typecheck)\b/i.test(command)
+            || /\b(?:vite\s+build|eslint|prettier|tsc(?:\s|$))\b/i.test(command);
+    }
+
+    return /\b(?:production\s+build|build\s+verification|run\s+(?:the\s+)?tests?|lint(?:ing)?|type\s*check|code[-\s]quality\s+check|project\s+verification)\b/i.test(taskText);
+};
+
+const normalizeProjectPreparationTasks = (tasks, goalPrompt) => {
+    if (!isProjectPreparationRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const removedKeys = new Set(
+        tasks.filter(isUnrequestedVerificationTask).map((task) => task.nodeKey),
+    );
+
+    const preparedTasks = tasks
+        .filter((task) => !removedKeys.has(task.nodeKey))
+        .map((task) => ({
+            ...task,
+            dependencies: (task.dependencies || []).filter((dependency) => !removedKeys.has(dependency)),
+        }));
+
+    if (preparedTasks.length > 0 || !removedKeys.size) {
+        return preparedTasks;
+    }
+
+    const projectPath = inferExistingDesktopProjectPath(tasks, goalPrompt);
+    if (!projectPath) {
+        return [{
+            nodeKey: getUniqueNodeKey([], 'inspect_project_before_cleanup'),
+            title: 'Inspect the project before cleanup',
+            instruction: 'Inspect the current project structure before cleanup. Do not create, overwrite, move, or delete files automatically.',
+            dependencies: [],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'pwd',
+            },
+        }];
+    }
+
+    return [{
+        nodeKey: getUniqueNodeKey([], 'inspect_project_before_cleanup'),
+        title: `Inspect Desktop project ${projectPath} before cleanup`,
+        instruction: `Inspect the existing Desktop project ${projectPath} before cleanup. Do not create, overwrite, move, or delete files automatically.`,
+        dependencies: [],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'listDesktopDirectory',
+            path: projectPath,
+            allowMissing: false,
+        },
+    }];
 };
 
 const ensureVueDesktopProjectTasks = (tasks, goalPrompt) => {
@@ -2827,8 +3118,13 @@ const isVueBuildPlan = (tasks, goalPrompt) => {
     const hasVueSource = /(?:^|[\s/])[^\s/]+\.vue\b/i.test(planText);
     const hasBuildTask = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\bvite\s+build\b/i.test(planText);
 
+    // A generated task must not upgrade a generic cleanup/preparation request
+    // into a production build. Verification is allowed only when the user
+    // explicitly requested it, while the source/build checks still protect
+    // explicit Vue build requests whose wording omits the framework name.
     return LOCAL_DESKTOP_OUTPUT_ENABLED
         && mentionsVue
+        && isExplicitBuildRequest(goalPrompt)
         && (isVueBuildRequest(goalPrompt) || (hasVueSource && hasBuildTask));
 };
 
@@ -2991,6 +3287,11 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // Verification must come from the user's prompt. Do not let the model
         // invent an ESLint task that the generated project cannot support.
         plan.tasks = normalizePromptVerificationTasks(plan.tasks, goalPrompt);
+        // Preparation/cleanup requests must not inherit build, test, or lint
+        // tasks merely because the existing project happens to contain Vue or
+        // another framework. Inspect first and wait for an explicit command
+        // request before running project verification.
+        plan.tasks = normalizeProjectPreparationTasks(plan.tasks, goalPrompt);
 
         // A Desktop directory task establishes the destination for dependent file writes.
         // Without this pass, the directory goes to ~/Desktop while its files stay in workspaces/<runId>.
@@ -3018,6 +3319,11 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // Pinia follow-up requests must execute inside the existing Desktop Vue project.
         // Normalize common misspellings such as "Pinai" to the real package and setup.
         plan.tasks = ensurePiniaDesktopProjectTasks(plan.tasks, goalPrompt);
+        // Vue/Node normalization can convert workspace file tasks into direct Desktop
+        // writes after the first export pass. Re-check here so a stale
+        // exportWorkspaceToDesktop task cannot copy into an already-existing project
+        // directory and fail with EEXIST after the direct files were written.
+        plan.tasks = normalizeLocalExportTasks(plan.tasks, goalPrompt);
         // Desktop asset discovery must use the constrained fileManager path, never a shell command.
         plan.tasks = normalizeDesktopAssetTasks(plan.tasks, goalPrompt);
         plan.tasks = normalizeImageTasks(plan.tasks, goalPrompt);
@@ -3277,6 +3583,7 @@ Rules:
 - When the user explicitly asks to update, modify, edit, rewrite, refactor, replace, or overwrite an existing project, use update semantics for generated non-empty files: use fileManager action 'update', createDesktopFile mode 'update', or per-file mode 'update' in createFiles/createDesktopFiles. If generated content is empty, use ifExists='skip' so an existing file is never cleared accidentally. Do not use create mode for an explicitly authorized existing-project update.
 - Never infer a feature-specific starter such as login, health, users, or authentication from an architecture keyword alone. Generate only the files and behavior required by the current user prompt; preserve the model-generated source content during normalization.
 - For project setup requests, derive verification from the exact user prompt and the generated project. If the prompt asks for validation, testing, compilation, or a package-manager check, add the appropriate final command task using the requested runtime and command. Do not invent a framework, package manager, test command, file, dependency, or verification step that the user did not request or that the generated project does not support.
+- For generic project preparation, cleanup, tidying, or organization requests, inspect the existing project first. Do not infer npm run build, tests, linting, dependency installation, file deletion, or file overwrites unless the user explicitly requests that operation. If the cleanup target is ambiguous, report the inspection result and wait for a specific change request.
 - If a Vue/Vite prompt explicitly asks for a build, ensure package.json contains a scripts.build value of "vite build" before running "npm run build". Add that repair as a dependent npm task; do not report a missing build script as an unrecoverable error.
 - Return strict JSON. Escape every literal backslash inside a JSON string, especially backslashes in regexes, Windows paths, JavaScript, CSS, and Python source. Never emit invalid JSON escapes such as \\s, \\d, \\., or \\Users; represent them as \\\\s, \\\\d, \\\\., and \\\\Users in the JSON response.
 - Never invent an ESLint, Prettier, or lint command for a project setup. Add a lint task only when the exact user prompt asks for linting/ESLint/Prettier and the generated project includes the corresponding configuration/dependency.

@@ -32,7 +32,7 @@ const list = async (userId) => {
     return workflowModel.listWorkflowsByUser(userId);
 }
 
-const runWorkflow = async ({runId, workflowId, goalPrompt, localDestination = '', userId, io = null}) => {
+const runWorkflow = async ({runId, workflowId, goalPrompt, projectContext, localDestination, userId, io = null}) => {
     let executionRun;
 
     if (runId) {
@@ -44,7 +44,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, localDestination = ''
             throw error;
         }
 
-        if (!['PENDING', 'AWAITING_APPROVAL', 'RUNNING'].includes(executionRun.status)) {
+        if (!['PENDING', 'AWAITING_APPROVAL'].includes(executionRun.status)) {
             const error = new Error(`Workflow run cannot be started from ${executionRun.status} status`);
             error.code = 'INVALID_RUN_STATUS';
             throw error;
@@ -92,7 +92,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, localDestination = ''
                 id: workflowId,
                 title: goalPrompt.trim().slice(0, 255),
                 description: 'Automatically created for this workflow run',
-                systemPrompt: 'You are KAIRO. Execute the user goal as a safe, structured workflow.',
+                systemPrompt: 'You are SMAgen. Execute the user goal as a safe, structured workflow.',
                 userId,
             });
         }
@@ -105,10 +105,15 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, localDestination = ''
         });
     }
 
+    const resolvedLocalDestination = localDestination
+        || (projectContext?.workspacePath)
+        || (projectContext?.name ? `Desktop/${projectContext.name}` : '')
+        || (typeof projectContext === 'string' ? `Desktop/${projectContext}` : '');
+
     const plan = await planWorkflowRun({
         runId: executionRun.id,
         goalPrompt: executionRun.goal_prompt,
-        localDestination,
+        localDestination: resolvedLocalDestination,
         userId,
         io,
     });
@@ -141,20 +146,11 @@ const getWorkflowRun = async (runId, userId) => {
         throw error;
     }
 
-    // Return every task in the run so dependency state and completed steps
-    // remain visible even when task rows have different created_at values.
-    const tasks = await workflowModel.listTaskNodesByRunId(runId);
+    const tasks = await workflowModel.listLatestTaskNodesByRunId(runId);
     const logs = await workflowModel.listExecutionLogsByRunId(runId);
-    const failedTask = tasks.find((task) => String(task.status || '').toUpperCase() === 'FAILED');
-    const error = executionRun.error
-        || executionRun.error_message
-        || executionRun.failure_reason
-        || failedTask?.error_message
-        || null;
 
     return {
         ...executionRun,
-        ...(error ? {error} : {}),
         tasks,
         logs,
     };
@@ -179,7 +175,7 @@ const cancelRun = async ({runId, userId, reason = 'Workflow cancelled by user'})
         updated: result.updated,
         run: result.run,
     };
-}
+};
 
 module.exports = {
     create,
@@ -188,4 +184,4 @@ module.exports = {
     listRuns,
     getWorkflowRun,
     cancelRun,
-}
+};

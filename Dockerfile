@@ -46,13 +46,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-client \
   && rm -rf /var/lib/apt/lists/*
 
-# Enforce Principle of Least Privilege: Create dedicated unprivileged user
+# Enforce Principle of Least Privilege: Create dedicated unprivileged user with home directory
 RUN groupadd --gid 10001 appgroup && \
-    useradd --uid 10001 --gid appgroup --shell /bin/false --no-create-home appuser
+    useradd --uid 10001 --gid appgroup --shell /bin/false --create-home appuser
 
 # Pre-create required writable directories with non-root ownership
-RUN mkdir -p /app/workspaces /app/certs && \
-    chown -R appuser:appgroup /app
+RUN mkdir -p /app/workspaces /app/certs /home/appuser && \
+    chown -R appuser:appgroup /app /home/appuser
 
 # Copy production artifacts with explicit non-root ownership
 COPY --chown=appuser:appgroup --from=builder /app/package.json ./package.json

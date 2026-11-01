@@ -13,6 +13,7 @@ An Express.js AI workflow platform that plans user goals as DAG workflows, execu
 - Role-based access control for `ADMIN`, `OPERATOR`, and `DEVELOPER` users.
 - Sensitive-data masking for telemetry logs and WebSocket events.
 - Command blacklist, path-traversal protection, timeouts, and rate limiting.
+- Approval-gated SSH access to explicitly configured remote targets.
 
 ## Requirements
 
@@ -147,6 +148,29 @@ socket.on('telemetry', (data) => {
 ```
 
 Telemetry masks API keys, JWTs, bearer tokens, passwords, and database connection strings before database persistence or WebSocket emission.
+
+## SSH remote execution
+
+SSH is disabled until `SSH_TARGETS_JSON` contains at least one configured target. KAIRO accepts a target alias, not an arbitrary host, and every SSH task requires `HITL` approval. Configure SSH using an existing key and a least-privileged remote user:
+
+```env
+SSH_CONNECT_TIMEOUT_SECONDS=10
+SSH_TARGETS_JSON={"staging":{"host":"server.example.com","user":"deploy","port":22,"identityFile":"/Users/user/.ssh/id_ed25519","knownHostsFile":"/Users/user/.ssh/known_hosts"}}
+```
+
+The private key is never sent to the planner or stored in `toolInput`. The executor uses `BatchMode=yes`, `StrictHostKeyChecking=yes`, connection and command timeouts, output masking, and `shell: false`. Remote commands must be a single command without shell chaining, newlines, nested SSH, or destructive primitives such as `sudo`, `rm`, `shutdown`, and `reboot`.
+
+Example workflow task input:
+
+```json
+{
+  "target": "staging",
+  "command": "git status",
+  "cwd": "/var/www/app"
+}
+```
+
+Start with read-only checks such as `whoami`, `pwd`, `ls -la`, and `git status`. Use approval-gated write commands such as `npm install`, `npm run build`, `git pull`, or `pm2 restart app` only after reviewing the target and command.
 
 ## Security controls
 

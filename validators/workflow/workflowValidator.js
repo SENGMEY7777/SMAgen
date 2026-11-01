@@ -2,6 +2,7 @@ const Joi = require('joi');
 const {
     NODE_KEY_REGEX,
     TOOL_NAME_REGEX,
+    secureObject,
     secureText,
     uuid,
 } = require('../commonValidator');
@@ -15,12 +16,11 @@ const workflowCreateSchema = Joi.object({
 
 const runWorkflowSchema = Joi.object({
     workflowId: uuid().allow(null),
-    goalPrompt: Joi.string().trim().min(3).max(20000).required(),
-    // The dashboard uses this for follow-up requests so a new run keeps the
-    // local Desktop/Downloads destination selected by the earlier request.
-    // The planner validates and normalizes the path before it reaches the host.
-    localDestination: Joi.string().trim().max(255).allow(null, ''),
-}).unknown(false);
+    goalPrompt: secureText({min: 3, max: 20000}).required(),
+    projectContext: Joi.object().unknown(true).allow(null),
+    localDestination: Joi.string().allow('', null),
+    projectName: Joi.string().allow('', null),
+}).unknown(true);
 
 const resumeWorkflowSchema = Joi.object({}).unknown(false);
 
@@ -30,22 +30,22 @@ const workflowRunParamsSchema = Joi.object({
 
 const taskNodeSchema = Joi.object({
     nodeKey: Joi.string().trim().pattern(NODE_KEY_REGEX).required(),
-    title: Joi.string().trim().min(1).max(255).required(),
-    instruction: Joi.string().trim().min(1).max(10000).required(),
+    title: secureText({min: 1, max: 255}).required(),
+    instruction: secureText({min: 1, max: 10000}).required(),
     dependencies: Joi.array()
         .items(Joi.string().trim().pattern(NODE_KEY_REGEX))
         .max(100)
         .unique()
         .default([]),
     assignedTool: Joi.string().trim().pattern(TOOL_NAME_REGEX).required(),
-    toolInput: Joi.object().max(50).default({}),
-}).unknown(true);
+    toolInput: secureObject({max: 50}).default({}),
+}).unknown(false);
 
 const dagPlanSchema = Joi.object({
-    workflowTitle: Joi.string().trim().min(1).max(255).required(),
-    summary: Joi.string().trim().min(1).max(5000).required(),
+    workflowTitle: secureText({min: 1, max: 255}).required(),
+    summary: secureText({min: 1, max: 5000}).required(),
     tasks: Joi.array().items(taskNodeSchema).min(1).max(100).required(),
-}).unknown(true);
+}).unknown(false);
 
 module.exports = {
     workflowCreateSchema,

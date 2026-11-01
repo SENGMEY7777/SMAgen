@@ -39,7 +39,11 @@ const runWorkflow = async (req, res, next) => {
             runId: req.params.runId,
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
-            localDestination: body.localDestination,
+            projectContext: body.projectContext,
+            localDestination: body.localDestination
+                || body.projectContext?.workspacePath
+                || (body.projectContext?.name ? `Desktop/${body.projectContext.name}` : '')
+                || (body.projectName ? `Desktop/${body.projectName}` : ''),
             userId: req.user.id,
             io: req.app.get('io'),
         });
@@ -99,7 +103,11 @@ const runWorkflowStream = async (req, res) => {
             runId: req.params.runId,
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
-            localDestination: body.localDestination,
+            projectContext: body.projectContext,
+            localDestination: body.localDestination
+                || body.projectContext?.workspacePath
+                || (body.projectContext?.name ? `Desktop/${body.projectContext.name}` : '')
+                || (body.projectName ? `Desktop/${body.projectName}` : ''),
             userId: req.user.id,
             io: streamIo,
         });

@@ -3243,6 +3243,50 @@ const ensureVueBuildToolingTasks = (tasks, goalPrompt) => {
     });
 };
 
+const normalizeGitBranchTasks = (tasks) => {
+    if (!Array.isArray(tasks)) return tasks;
+
+    const commitIdx = tasks.findIndex((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return cmd.includes('git commit');
+    });
+
+    const pushIdx = tasks.findIndex((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return cmd.includes('git push');
+    });
+
+    const hasBranchMain = tasks.some((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return cmd.includes('git branch -m') || cmd.includes('git checkout -b main');
+    });
+
+    if (pushIdx !== -1 && !hasBranchMain) {
+        const pushTask = tasks[pushIdx];
+        const branchTask = {
+            nodeKey: 'git_branch_main',
+            title: 'Set default branch to main',
+            instruction: 'Rename current branch to main for GitHub compatibility',
+            dependencies: commitIdx !== -1 ? [tasks[commitIdx].nodeKey] : (pushTask.dependencies || []),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git branch -M main',
+                cwd: pushTask.toolInput?.cwd,
+                desktop: pushTask.toolInput?.desktop,
+            },
+        };
+
+        pushTask.dependencies = Array.from(new Set([...(pushTask.dependencies || []), 'git_branch_main']));
+
+        const insertAt = commitIdx !== -1 ? commitIdx + 1 : pushIdx;
+        const updated = [...tasks];
+        updated.splice(insertAt, 0, branchTask);
+        return updated;
+    }
+
+    return tasks;
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -3368,6 +3412,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt, localDestination);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
+        // Ensure Git pushes always rename default branch to main
+        plan.tasks = normalizeGitBranchTasks(plan.tasks);
 
         if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
             const renamePaths = extractRenamePaths(goalPrompt);

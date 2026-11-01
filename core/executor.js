@@ -1563,7 +1563,7 @@ const getNodeRuntimePath = async () => {
 };
 
 const executeCommand = async (input, workspacePath, task, options = {}) => {
-    const command = typeof input.command === 'string' ? input.command.trim() : '';
+    let command = typeof input.command === 'string' ? input.command.trim() : '';
 
     if (!command) {
         throw new Error('A command is required');
@@ -1572,6 +1572,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
     if (COMMAND_BLACKLIST_PATTERNS.some((pattern) => pattern.test(command))) {
         throw new Error('Command is permanently blocked by the security policy');
     }
+
+    // Safely sanitize trailing ignore-error idioms and redirects produced by LLMs
+    command = command
+        .replace(/\s*\|\|\s*(?:true|:|exit\s+0)\s*$/i, '')
+        .replace(/\s*2>\s*\/dev\/null\s*$/i, '')
+        .trim();
 
     if (/[;&|`]|\$\(|>|<|\n/.test(command)) {
         throw new Error('Shell operators and command chaining are not allowed; run each command as a separate workflow task');

@@ -882,7 +882,7 @@ const normalizeLocalExportTasks = (tasks, goalPrompt) => {
     });
 };
 
-const appendDesktopExportTask = (tasks, goalPrompt) => {
+const appendDesktopExportTask = (tasks, goalPrompt, localDestination = '') => {
     // Follow-up changes to an existing local Desktop project are written
     // directly into that project. Exporting the temporary workflow workspace
     // afterward can copy an incomplete tree over the real project and make a
@@ -905,9 +905,11 @@ const appendDesktopExportTask = (tasks, goalPrompt) => {
         suffix += 1;
     }
 
-    const exportPath = cleanRelativeDirectoryPath(
-        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
-    ) || process.env.LOCAL_DESKTOP_OUTPUT_DIR || 'generated-workflow';
+    const dest = normalizeLocalDestination(localDestination);
+    const exportPath = dest?.relativePath
+        || cleanRelativeDirectoryPath(
+            inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+        ) || process.env.LOCAL_DESKTOP_OUTPUT_DIR || 'generated-workflow';
 
     return [
         ...tasks,
@@ -3363,7 +3365,7 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // export is needed for these directory tasks.
         plan.tasks = ensureRequestedArchitectureDirectories(plan.tasks, goalPrompt);
         // Local development users should be able to open the generated project in Finder.
-        plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt);
+        plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt, localDestination);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
 
@@ -3512,15 +3514,32 @@ const getCacheKey = (goalPrompt) => {
 };
 
 const normalizeLocalDestination = (value) => {
-    const raw = String(value || '').trim().replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '');
+    if (!value) return null;
+    let raw = typeof value === 'object'
+        ? String(value.workspacePath || value.name || value.path || '').trim()
+        : String(value || '').trim();
+    raw = raw.replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '');
+
+    // Strip leading home/tilde or absolute desktop/downloads path
+    raw = raw.replace(/^.*?\/(Desktop|Downloads)\//i, '$1/');
+    raw = raw.replace(/^~[\\/]+/i, '');
+
     const match = raw.match(/^(desktop|downloads?)\/(.+)$/i);
-    if (!match) return null;
+    if (match) {
+        const location = /^downloads?$/i.test(match[1]) ? 'Downloads' : 'Desktop';
+        const relativePath = cleanRelativeDirectoryPath(match[2].replace(/[.,;!?]+$/, ''));
+        if (relativePath) {
+            return {location, relativePath};
+        }
+    }
 
-    const location = /^downloads?$/i.test(match[1]) ? 'Downloads' : 'Desktop';
-    const relativePath = cleanRelativeDirectoryPath(match[2].replace(/[.,;!?]+$/, ''));
-    if (!relativePath) return null;
+    // Bare project name or relative path like "smart-parking-system"
+    const cleaned = cleanRelativeDirectoryPath(raw.replace(/^[\\/]+/, '').replace(/[.,;!?]+$/, ''));
+    if (cleaned && !['api', 'v1', 'the', 'my', 'a', 'this', 'run'].includes(cleaned.toLowerCase())) {
+        return {location: 'Desktop', relativePath: cleaned};
+    }
 
-    return {location, relativePath};
+    return null;
 };
 
 const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
@@ -3587,10 +3606,15 @@ Rules:
 - Every dependency must reference an existing nodeKey.
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
+- When the user requests to create or add a folder or directory (e.g. "add folder validator", "create directory utils", "add folder components"), create that directory task using fileManager with action 'createDirectory' (or 'createDesktopDirectory' for local Desktop projects). Do NOT convert a folder creation request into a JavaScript/code file (such as folderValidator.js) unless the user explicitly requested code or a file.
+- In projects structured with a 'src' directory (standard Node.js, Express, TypeScript, Vue, React), all source code modules, directories, utilities, and helper folders MUST be rooted under 'src/' (e.g. <project>/src/validator/Helper or <project>/src/helpers). Never create application folders at the project root alongside package.json or .env.
+- When creating a folder, do not arbitrarily concatenate folder names from previous conversation turns. If the prompt says "I'll add folder name Helper", create that folder under the appropriate source location (e.g. src/helpers or src/<parent>/Helper if a parent was specified); never guess a root-level chain like validator/Helper.
+- When an active local project context is provided or implied, anchor all generated files, directories, and exports inside that active project folder. Never export or divert files to an arbitrary top-level folder like Desktop/view or Desktop/src.
 - For an explicit Desktop folder rename or move, create exactly one fileManager task with action 'renameDesktopPath', a relative source path, and a relative destination path. Preserve the source contents; never add a delete task or interpret words such as 'do not delete' as a removal request.
 - Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.
 - For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
+- For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. The workflow should initialize Git if needed (git init), stage files (git add .), and commit changes (git commit -m "feat: initial commit"). When pushing to GitHub, check or configure the remote origin URL on main branch (git push -u origin main).
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.

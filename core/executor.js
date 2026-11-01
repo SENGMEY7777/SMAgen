@@ -42,7 +42,7 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
 const execFileAsync = promisify(execFile);
 const SAFE_COMMANDS = new Set([
     'cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir',
-    'node', 'npm', 'npx', 'git', 'pnpm', 'yarn', 'bun', 'python', 'python3',
+    'node', 'npm', 'npx', 'git', 'gh', 'pnpm', 'yarn', 'bun', 'python', 'python3',
     'pip', 'pip3', 'pytest', 'php', 'composer', 'mvn', 'go',
 ]);
 const VIRTUAL_ENV_COMMAND_PATTERN = /^(?:\.\/)?\.?(?:venv)\/(?:bin\/(?:python|python3|pip|pip3)|Scripts\/(?:python|python3|pip|pip3)(?:\.exe)?)$/i;
@@ -239,13 +239,52 @@ const resolveLocalDesktopPath = async (requestedPath) => {
         throw new Error('Desktop paths must be relative and cannot contain ..');
     }
 
-    const desktopRelativePath = requestedPath.replace(/^desktop[\\/]+/i, '');
+    let desktopRelativePath = requestedPath.replace(/^desktop[\\/]+/i, '').replace(/^[\\/]+/, '');
 
     if (!desktopRelativePath.trim()) {
         throw new Error('A Desktop folder name is required');
     }
 
     const desktopRoot = path.join(os.homedir(), 'Desktop');
+
+    // Smart project src routing:
+    // If the path targets a project on Desktop (e.g. "smart-parking-system/validator/Helper")
+    // and the project has a src/ directory:
+    const segments = desktopRelativePath.split(/[\\/]/).filter(Boolean);
+    if (segments.length >= 2) {
+        const projectName = segments[0];
+        const subSegments = segments.slice(1);
+        const projectDir = path.resolve(desktopRoot, projectName);
+
+        try {
+            const projectStats = await fs.lstat(projectDir);
+            if (projectStats.isDirectory()) {
+                const srcDir = path.resolve(projectDir, 'src');
+                const srcStats = await readExistingPathStats(srcDir);
+                if (srcStats && srcStats.isDirectory() && subSegments[0] !== 'src') {
+                    const firstSub = subSegments[0];
+                    const targetInSrc = path.resolve(srcDir, ...subSegments);
+                    const firstInSrc = path.resolve(srcDir, firstSub);
+                    const firstInRoot = path.resolve(projectDir, firstSub);
+
+                    const firstInSrcStats = await readExistingPathStats(firstInSrc);
+                    const firstInRootStats = await readExistingPathStats(firstInRoot);
+
+                    const commonSourceFolders = new Set([
+                        'controllers', 'models', 'routes', 'services', 'middlewares',
+                        'utils', 'validators', 'validator', 'helpers', 'helper',
+                        'views', 'components', 'config', 'configs'
+                    ]);
+
+                    if ((firstInSrcStats && firstInSrcStats.isDirectory())
+                        || (!firstInRootStats && commonSourceFolders.has(firstSub.toLowerCase()))) {
+                        desktopRelativePath = path.relative(desktopRoot, targetInSrc);
+                    }
+                }
+            }
+        } catch (_) {}
+    }
+
     const resolvedPath = path.resolve(desktopRoot, desktopRelativePath);
 
     if (!isPathInside(desktopRoot, resolvedPath)) {
@@ -1562,7 +1601,29 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         }
 
         if (LOCAL_DESKTOP_OUTPUT_ENABLED && (trimmed.toLowerCase().includes('desktop') || input.desktop)) {
-            effectiveCwd = await resolveLocalDesktopPath(trimmed);
+            const candidate = await resolveLocalDesktopPath(trimmed);
+            const stats = await readExistingPathStats(candidate);
+            if (stats && stats.isDirectory()) {
+                effectiveCwd = candidate;
+            } else {
+                // If candidate subfolder doesn't exist on disk, fallback to project root folder
+                const projectRootMatch = trimmed.replace(/^desktop[\\/]+/i, '').split(/[\\/]/)[0];
+                if (projectRootMatch) {
+                    try {
+                        const projectRootCandidate = await resolveLocalDesktopPath(projectRootMatch);
+                        const projectStats = await readExistingPathStats(projectRootCandidate);
+                        if (projectStats && projectStats.isDirectory()) {
+                            effectiveCwd = projectRootCandidate;
+                        } else {
+                            effectiveCwd = candidate;
+                        }
+                    } catch (_) {
+                        effectiveCwd = candidate;
+                    }
+                } else {
+                    effectiveCwd = candidate;
+                }
+            }
         } else {
             if (LOCAL_DESKTOP_OUTPUT_ENABLED) {
                 try {

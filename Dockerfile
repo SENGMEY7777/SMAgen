@@ -38,9 +38,12 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=5000
 
-# Install dumb-init to act as PID 1 (zombie process reaping & signal forwarding)
+# Install dumb-init, git, ca-certificates, and openssh for git workflows
 RUN apt-get update && apt-get install -y --no-install-recommends \
     dumb-init \
+    git \
+    ca-certificates \
+    openssh-client \
   && rm -rf /var/lib/apt/lists/*
 
 # Enforce Principle of Least Privilege: Create dedicated unprivileged user

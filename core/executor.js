@@ -1723,6 +1723,10 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             env: {
                 ...process.env,
                 PATH: commandPath,
+                GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'SENGMEY7777',
+                GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'vannsengmey748@gmail.com',
+                GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'SENGMEY7777',
+                GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || 'vannsengmey748@gmail.com',
                 npm_config_yes: 'true',
                 CI: 'true',
             },

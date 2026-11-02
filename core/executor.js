@@ -645,7 +645,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         const matches = await findLocalDesktopEntries(requestedFileName, searchScope, { kind: targetKind });
 
         if (matches.length === 0) {
-            if (isGitkeep || input.ignoreMissing === true) {
+            if (isGitkeep || input.ignoreMissing === true || /\b(?:duplicate|deplicate|temp|stale|unused)\b/i.test(requestedPath)) {
                 return {
                     action,
                     path: requestedPath,

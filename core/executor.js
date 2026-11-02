@@ -657,7 +657,26 @@ const fileManager = async (input, workspacePath, task = {}) => {
             if (error.code !== 'ENOENT') {
                 throw error;
             }
-            // ENOENT on direct path -> fall through to search for matching entry in searchScope
+            // ENOENT on direct path
+            if (input.ignoreMissing === true || /\b(?:duplicate|deplicate|temp|stale|unused)\b/i.test(requestedPath)) {
+                return {
+                    action,
+                    path: requestedPath,
+                    location: 'local Desktop',
+                    deleted: true,
+                    count: 0,
+                    message: 'Path does not exist on disk.',
+                };
+            }
+            // If requestedPath is a structured path containing slashes, never search across other subfolders!
+            if (requestedPath.includes('/') || requestedPath.includes('\\')) {
+                const notFoundError = new Error(
+                    'The requested Desktop path \'' + requestedPath + '\' was not found',
+                );
+                notFoundError.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
+                notFoundError.status = 404;
+                throw notFoundError;
+            }
         }
 
         // Search for matches in project folder, searchPath, or entire Desktop
@@ -1976,7 +1995,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
     } catch (error) {
         if (commandName === 'git' && args[0] === 'commit') {
             const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
-            if (/nothing to commit|working tree clean/i.test(combined)) {
+            if (/nothing to commit|working tree clean|no changes added to commit/i.test(combined)) {
                 return {
                     command,
                     cwd: effectiveCwd,

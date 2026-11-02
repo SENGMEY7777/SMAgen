@@ -3287,6 +3287,88 @@ const normalizeGitBranchTasks = (tasks) => {
     return tasks;
 };
 
+const ensureGitPushTasksForBugFixes = (tasks, goalPrompt, localDestination) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
+
+    const isFixGoal = /\b(?:fix|repair|bug|crash|error|500|issue|vercel\.app|netlify\.app)\b/i.test(goalPrompt);
+    if (!isFixGoal) return tasks;
+
+    const hasPush = tasks.some((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return cmd.includes('git push');
+    });
+    if (hasPush) return tasks;
+
+    let projectCwd = null;
+    let lastTaskKey = null;
+
+    for (const t of tasks) {
+        if (t.toolInput?.desktop && t.toolInput?.cwd) {
+            projectCwd = t.toolInput.cwd;
+        } else if (t.toolInput?.path && typeof t.toolInput.path === 'string') {
+            const parts = t.toolInput.path.split(/[\\/]/).filter(Boolean);
+            if (parts.length > 0 && !['.', 'src', 'validator', 'dist'].includes(parts[0])) {
+                projectCwd = `Desktop/${parts[0]}`;
+            }
+        }
+        lastTaskKey = t.nodeKey;
+    }
+
+    if (!projectCwd && localDestination) {
+        const dest = String(localDestination).trim().replace(/^Desktop\//, '');
+        if (dest) {
+            projectCwd = `Desktop/${dest}`;
+        }
+    }
+
+    if (!projectCwd) return tasks;
+
+    const addKey = `task_git_add_${Date.now()}`;
+    const commitKey = `task_git_commit_${Date.now()}`;
+    const pushKey = `task_git_push_${Date.now()}`;
+
+    const gitAdd = {
+        nodeKey: addKey,
+        title: 'Stage fixed files for GitHub',
+        instruction: 'Stage all modified files for git commit',
+        dependencies: lastTaskKey ? [lastTaskKey] : [],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git add .',
+            cwd: projectCwd,
+            desktop: true,
+        },
+    };
+
+    const gitCommit = {
+        nodeKey: commitKey,
+        title: 'Commit bug fixes',
+        instruction: 'Commit changes with fix message',
+        dependencies: [addKey],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git commit -m "fix: resolve bug and update project configuration"',
+            cwd: projectCwd,
+            desktop: true,
+        },
+    };
+
+    const gitPush = {
+        nodeKey: pushKey,
+        title: 'Push bug fixes to GitHub directly',
+        instruction: 'Push changes to GitHub to trigger automatic redeployment',
+        dependencies: [commitKey],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git push origin main',
+            cwd: projectCwd,
+            desktop: true,
+        },
+    };
+
+    return [...tasks, gitAdd, gitCommit, gitPush];
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -3412,6 +3494,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt, localDestination);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
+        // Automatically ensure bug fixes and project repairs push directly to GitHub
+        plan.tasks = ensureGitPushTasksForBugFixes(plan.tasks, goalPrompt, localDestination);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
 
@@ -3661,7 +3745,11 @@ Rules:
 - For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. The workflow should initialize Git if needed (git init), stage files (git add .), and commit changes (git commit -m "feat: initial commit"). When pushing to GitHub, check or configure the remote origin URL on main branch (git push -u origin main).
-- When the user provides a deployment URL (e.g. vercel.app, netlify.app) or asks to fix a server crash, 500 error, or FUNCTION_INVOCATION_FAILED: Do NOT search for the URL domain string in the codebase. Instead, diagnose the server code: inspect main entry files ('app.js' or the 'main' file from package.json, do not assume server.js unless it exists), check syntax with 'node -c <file>', verify required dependencies and exports, and ensure serverless deployment configs (e.g. vercel.json rewrite for Express on Vercel).
+- When the user provides a deployment URL (e.g. vercel.app, netlify.app) or asks to fix a server crash, 500 error, or FUNCTION_INVOCATION_FAILED: The goal is to make the deployed site live and working, not just inspect it. Do NOT stop after read-only checks. The workflow MUST plan an end-to-end fix:
+  1. For Express apps deployed on Vercel, ensure 'vercel.json' is created with { "version": 2, "rewrites": [{ "source": "/(.*)", "destination": "/app.js" }] } if missing.
+  2. Test and fix the entrypoint file ('app.js' or main file from package.json): resolve syntax/runtime issues (e.g. broken template strings or typos like h\`elmet()\` -> helmet()), wrap server.listen in process.env.VERCEL check, and ensure module.exports = app.
+  3. Deploy the fix: automatically stage and push the corrected files to GitHub (git add ., git commit -m "fix: resolve deployment 500 error", git push origin main) so Vercel triggers a fresh deployment and repairs the live site.
+- For any bug fixing, troubleshooting, or code repair requests (e.g. "fix bug", "find the bug and fix", "fix url to correctly", "repair crash", "fix this error"): Locate the bug, update the affected files using fileManager, and ALWAYS finish the workflow by staging, committing, and pushing the fix directly to GitHub (git add ., git commit -m "fix: resolve bug and update project configuration", git push origin main with cwd Desktop/<project> and desktop: true) so changes are deployed to remote environments immediately.
 - Never add '|| true', '|| exit 0', redirects, or chained operators to executeCommand commands; keep every command as a single clean executable command.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.

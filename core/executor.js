@@ -1801,6 +1801,19 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             exitCode: 0,
         };
     } catch (error) {
+        if (commandName === 'git' && args[0] === 'commit') {
+            const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
+            if (/nothing to commit|working tree clean/i.test(combined)) {
+                return {
+                    command,
+                    cwd: effectiveCwd,
+                    stdout: error.stdout || 'nothing to commit, working tree clean',
+                    stderr: '',
+                    exitCode: 0,
+                };
+            }
+        }
+
         return {
             command,
             cwd: effectiveCwd,

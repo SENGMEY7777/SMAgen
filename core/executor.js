@@ -879,7 +879,10 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
-    if (action === 'createFiles' || action === 'createDesktopFiles') {
+    const hasMultipleFiles = Array.isArray(input.files)
+        || (input.files && typeof input.files === 'object' && !Array.isArray(input.files));
+
+    if (action === 'createFiles' || action === 'createDesktopFiles' || hasMultipleFiles) {
         const fileEntries = Array.isArray(input.files)
             ? input.files
             : input.files && typeof input.files === 'object' && !Array.isArray(input.files)
@@ -890,13 +893,18 @@ const fileManager = async (input, workspacePath, task = {}) => {
             throw new Error('createFiles requires a non-empty files array or object');
         }
 
+        const isDesktopBatch = action === 'createDesktopFiles'
+            || action === 'createDesktopFile'
+            || input.desktop === true
+            || input.location === 'local Desktop';
+
         const preparedFiles = await Promise.all(fileEntries.map(async (entry) => {
             if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
                 throw new Error('Each createFiles entry must be an object');
             }
 
             const requestedFilePath = entry.path || entry.fileName;
-            const targetPath = action === 'createDesktopFiles'
+            const targetPath = isDesktopBatch
                 ? await resolveLocalDesktopPath(requestedFilePath)
                 : await resolveWorkspaceFile(workspacePath, requestedFilePath);
             const content = normalizeGeneratedSourceContent(
@@ -944,8 +952,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
         }));
 
         return {
-            action,
-            ...(action === 'createDesktopFiles' ? {location: 'local Desktop'} : {}),
+            action: isDesktopBatch ? 'createDesktopFiles' : 'createFiles',
+            ...(isDesktopBatch ? {location: 'local Desktop'} : {}),
             files: fileResults,
             skipped: fileResults.filter((file) => file.skipped).map((file) => file.path),
         };

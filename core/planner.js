@@ -3869,6 +3869,18 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
 
             const rawTool = String(task.assignedTool || 'executeCommand').trim();
             const normalizedTool = TOOL_MAP[rawTool.toLowerCase()] || rawTool.replace(/[^A-Za-z0-9_-]/g, '_') || 'executeCommand';
+            const taskInput = (task.toolInput && typeof task.toolInput === 'object' && !Array.isArray(task.toolInput)) ? task.toolInput : {};
+
+            if (normalizedTool === 'fileManager' && taskInput.action) {
+                const act = String(taskInput.action).toLowerCase();
+                if (act === 'updatedesktopfile' || act === 'update_desktop_file' || act === 'writedesktopfile' || act === 'editdesktopfile') {
+                    taskInput.action = 'createDesktopFile';
+                    if (!taskInput.mode) taskInput.mode = 'update';
+                    taskInput.overwrite = true;
+                } else if (act === 'updatedesktopfiles' || act === 'update_desktop_files' || act === 'writedesktopfiles') {
+                    taskInput.action = 'createDesktopFiles';
+                }
+            }
 
             return normalizeDirectoryTask({
                 nodeKey: cleanKey,
@@ -3876,7 +3888,7 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
                 instruction: String(task.instruction || task.description || task.title || '').trim(),
                 dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
                 assignedTool: normalizedTool,
-                toolInput: (task.toolInput && typeof task.toolInput === 'object' && !Array.isArray(task.toolInput)) ? task.toolInput : {},
+                toolInput: taskInput,
             }, goalPrompt);
         });
 

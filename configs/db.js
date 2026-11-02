@@ -56,6 +56,7 @@ const pool = mysql.createPool({
     connectTimeout: config.database.connectTimeout,
     multipleStatements: false,
     ssl: getSslOptions(),
+    timezone: process.env.DB_TIMEZONE || '+07:00',
 });
 
 // mysql2 applies query timeouts per command, not as a pool option. Repositories

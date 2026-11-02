@@ -165,6 +165,7 @@ Rules:
   * Missing Directory/File (ENOENT): If a task fails with 'ENOENT: no such file or directory', repair directory creation to ensure parent folders exist (e.g. 'mkdir -p' or fileManager action 'createDesktopDirectory' with recursive: true) before re-running the dependent command.
   * Runtime Startup Crashes (ReferenceError, SyntaxError, Cannot find module): Identify the broken import, syntax typo, or missing entry file in the entrypoint (e.g. app.js, index.js), repair toolInput to target the correct entry file, and provide the corrected command or patch parameters instead of declaring the failure unrepairable.
   * Database Connection Refusal (ECONNREFUSED / ETIMEDOUT): When connecting to database services fails, repair host/port parameters to fallback to correct local network/container host configurations.
+  * File Action Discrepancy (createDesktopFile with files array): If fileManager failed because createDesktopFile does not support a files array or file content was expected to be a string, repair toolInput.action to 'createDesktopFiles' (or supply path and content as strings for single file creation) and return valid: true.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

@@ -3508,7 +3508,15 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
     });
     lastKey = cleanupApiKey;
 
-    if (hasBackendAppOnDisk) {
+    let hasRootAppOnDisk = false;
+    try {
+        const fsMod = require('fs');
+        const osMod = require('os');
+        const rootAppPath = path.join(osMod.homedir(), 'Desktop', projectFolder, 'app.js');
+        hasRootAppOnDisk = fsMod.existsSync(rootAppPath);
+    } catch (_) {}
+
+    if (hasBackendAppOnDisk && hasRootAppOnDisk) {
         const cleanupRootAppKey = `task_cleanup_root_app_${Date.now()}`;
         additionalTasks.push({
             nodeKey: cleanupRootAppKey,
@@ -3681,6 +3689,10 @@ module.exports = bridge;
     if (gitIdx !== -1) {
         const copy = [...tasks];
         copy.splice(gitIdx, 0, ...additionalTasks);
+        const firstGitTask = copy[gitIdx + additionalTasks.length];
+        if (firstGitTask && lastKey) {
+            firstGitTask.dependencies = Array.from(new Set([...(firstGitTask.dependencies || []), lastKey]));
+        }
         return copy;
     }
 
@@ -3983,6 +3995,20 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = ensureGitPushTasksForBugFixes(plan.tasks, goalPrompt, localDestination);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
+
+        // Ensure Git operations run only after all file creation, update, and cleanup tasks have finished
+        const fileTaskKeys = plan.tasks
+            .filter((t) => t.assignedTool === 'fileManager' && t.toolInput?.action !== 'read' && t.toolInput?.action !== 'listDesktopDirectory')
+            .map((t) => t.nodeKey);
+
+        const firstGitTask = plan.tasks.find((t) => {
+            const cmd = String(t.toolInput?.command || '').toLowerCase();
+            return cmd.includes('git add') || cmd.includes('git commit') || cmd.includes('git push');
+        });
+
+        if (firstGitTask && fileTaskKeys.length > 0) {
+            firstGitTask.dependencies = Array.from(new Set([...(firstGitTask.dependencies || []), ...fileTaskKeys]));
+        }
 
         if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
             const renamePaths = extractRenamePaths(goalPrompt);

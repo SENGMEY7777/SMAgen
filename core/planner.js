@@ -1,5 +1,7 @@
 const crypto = require('crypto');
 const path = require('path');
+const fs = require('fs').promises;
+const os = require('os');
 
 const {generateStructureClient} = require('../configs/llm');
 const {
@@ -3672,6 +3674,81 @@ const normalizeLocalDestination = (value) => {
     return null;
 };
 
+const extractProjectSlugFromUrl = (goalPrompt) => {
+    if (!goalPrompt || typeof goalPrompt !== 'string') return null;
+    const vercelMatch = goalPrompt.match(/https?:\/\/([a-zA-Z0-9_-]+?)(?:-git-[a-zA-Z0-9_.-]+)?(?:\.vercel\.app)/i);
+    if (vercelMatch && vercelMatch[1]) {
+        return vercelMatch[1].toLowerCase();
+    }
+    const gitMatch = goalPrompt.match(/github\.com\/[^\/]+\/([a-zA-Z0-9_.-]+?)(?:\.git|\/|$)/i);
+    if (gitMatch && gitMatch[1]) {
+        return gitMatch[1].toLowerCase();
+    }
+    return null;
+};
+
+const findMatchingDesktopFolder = async (slug) => {
+    if (!slug) return null;
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+    try {
+        const entries = await fs.readdir(desktopRoot, { withFileTypes: true });
+        const normalizedSlug = slug.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+        // 1. Check Git remotes first (most accurate)
+        for (const entry of entries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            try {
+                const gitConfigPath = path.join(desktopRoot, entry.name, '.git', 'config');
+                const config = await fs.readFile(gitConfigPath, 'utf8');
+                const remoteMatch = config.match(/url\s*=\s*(.+)/);
+                if (remoteMatch && remoteMatch[1]) {
+                    const cleanRemote = remoteMatch[1].toLowerCase().replace(/[^a-z0-9]/g, '');
+                    if (cleanRemote.includes(normalizedSlug) || normalizedSlug.includes(cleanRemote)) {
+                        return entry.name;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // 2. Exact folder name match
+        for (const entry of entries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            if (entry.name.toLowerCase() === slug.toLowerCase()) return entry.name;
+        }
+
+        // 3. Normalized folder name match
+        for (const entry of entries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            const normalizedEntry = entry.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (normalizedEntry === normalizedSlug) return entry.name;
+        }
+
+        // 4. Substring folder name match
+        for (const entry of entries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            const normalizedEntry = entry.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (normalizedEntry.includes(normalizedSlug) || normalizedSlug.includes(normalizedEntry)) return entry.name;
+        }
+    } catch (_) {}
+    return slug;
+};
+
+const resolveTargetDestination = async (goalPrompt, localDestination) => {
+    const urlSlug = extractProjectSlugFromUrl(goalPrompt);
+    if (urlSlug) {
+        const existingDest = normalizeLocalDestination(localDestination);
+        const currentRelative = existingDest?.relativePath?.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const targetClean = urlSlug.replace(/[^a-z0-9]/g, '');
+
+        // If no existing destination or existing destination does NOT match the URL slug, switch!
+        if (!currentRelative || (!currentRelative.includes(targetClean) && !targetClean.includes(currentRelative))) {
+            const matchedFolder = await findMatchingDesktopFolder(urlSlug);
+            return { location: 'Desktop', relativePath: matchedFolder || urlSlug };
+        }
+    }
+    return normalizeLocalDestination(localDestination);
+};
+
 const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
     const destination = normalizeLocalDestination(localDestination);
     if (!destination) return goalPrompt;
@@ -3701,7 +3778,12 @@ const planWorkflowRun = async ({
         },
     });
 
-    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, localDestination);
+    const targetDest = await resolveTargetDestination(goalPrompt, localDestination);
+    const effectiveLocalDestination = targetDest
+        ? `${targetDest.location}/${targetDest.relativePath}`
+        : localDestination;
+
+    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveLocalDestination);
     const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;
 
@@ -3710,7 +3792,7 @@ const planWorkflowRun = async ({
         const cached = planCache.get(cacheKey);
         validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
             goalPrompt: planningGoalPrompt,
-            localDestination,
+            localDestination: effectiveLocalDestination,
         });
     }
 
@@ -3806,7 +3888,7 @@ ${desktopInstruction}
 
                 const parsed = validatePlan(rawResult.data, {
                     goalPrompt: planningGoalPrompt,
-                    localDestination,
+                    localDestination: effectiveLocalDestination,
                 });
 
                 if (!parsed.success) {
@@ -3931,4 +4013,5 @@ module.exports = {
     normalizePlan,
     validatePlan,
     planWorkflowRun,
+    resolveTargetDestination,
 };

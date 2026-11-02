@@ -956,24 +956,151 @@ const fileManager = async (input, workspacePath, task = {}) => {
         throw new Error('createDesktopFile supports create, write, update, or append through the mode field');
     }
 
-    const filePath = desktopFileAction
-        ? await resolveLocalDesktopPath(input.path)
-        : await resolveWorkspaceFile(workspacePath, input.path, {
-            allowWorkspaceRoot: action === 'list',
-        });
+    let filePath;
+    let isDesktopTarget = false;
+    if (desktopFileAction) {
+        filePath = await resolveLocalDesktopPath(input.path);
+        isDesktopTarget = true;
+    } else if (LOCAL_DESKTOP_OUTPUT_ENABLED && (input.desktop === true || input.location === 'local Desktop')) {
+        filePath = await resolveLocalDesktopPath(input.path);
+        isDesktopTarget = true;
+    } else {
+        // Smart Desktop resolution for reading and listing
+        let foundOnDesktop = false;
+        if (LOCAL_DESKTOP_OUTPUT_ENABLED && typeof input.path === 'string') {
+            try {
+                const desktopCandidate = await resolveLocalDesktopPath(input.path);
+                const stats = await readExistingPathStats(desktopCandidate);
+                if (stats) {
+                    filePath = desktopCandidate;
+                    foundOnDesktop = true;
+                    isDesktopTarget = true;
+                }
+            } catch (_) {}
+
+            if (!foundOnDesktop) {
+                let projectFolder = null;
+                const cwdCandidate = input.cwd || task?.toolInput?.cwd || task?.tool_input?.cwd || task?.cwd;
+                if (cwdCandidate && typeof cwdCandidate === 'string') {
+                    projectFolder = cwdCandidate.replace(/^Desktop[\\/]+/i, '').split(/[\\/]/)[0];
+                }
+                if (projectFolder) {
+                    try {
+                        const candidatePath = await resolveLocalDesktopPath(path.join(projectFolder, input.path));
+                        if (await readExistingPathStats(candidatePath)) {
+                            filePath = candidatePath;
+                            foundOnDesktop = true;
+                            isDesktopTarget = true;
+                        }
+                    } catch (_) {}
+                }
+            }
+
+            if (!foundOnDesktop && task) {
+                try {
+                    const runId = task.run_id || task.runId;
+                    if (runId) {
+                        const [prevTasks] = await databasePool.query(
+                            "SELECT tool_input FROM task_nodes WHERE run_id = ? AND status = 'SUCCESS' ORDER BY created_at DESC",
+                            [runId],
+                        );
+                        for (const pt of prevTasks) {
+                            const parsed = typeof pt.tool_input === 'string' ? JSON.parse(pt.tool_input) : pt.tool_input;
+                            const candidateProject = parsed?.cwd || parsed?.path;
+                            if (candidateProject && typeof candidateProject === 'string') {
+                                const cleanCandidate = candidateProject.replace(/^Desktop[\\/]+/i, '').split(/[\\/]/)[0];
+                                if (cleanCandidate) {
+                                    const candidatePath = await resolveLocalDesktopPath(path.join(cleanCandidate, input.path));
+                                    if (await readExistingPathStats(candidatePath)) {
+                                        filePath = candidatePath;
+                                        foundOnDesktop = true;
+                                        isDesktopTarget = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+
+        if (!foundOnDesktop) {
+            filePath = await resolveWorkspaceFile(workspacePath, input.path, {
+                allowWorkspaceRoot: action === 'list',
+            });
+        }
+    }
 
     if (action === 'read') {
-        const content = await fs.readFile(filePath, 'utf8');
+        let content;
+        try {
+            content = await fs.readFile(filePath, 'utf8');
+        } catch (readError) {
+            if (readError.code === 'ENOENT' && LOCAL_DESKTOP_OUTPUT_ENABLED && !isDesktopTarget) {
+                try {
+                    const desktopCandidate = await resolveLocalDesktopPath(input.path);
+                    if (await readExistingPathStats(desktopCandidate)) {
+                        content = await fs.readFile(desktopCandidate, 'utf8');
+                        filePath = desktopCandidate;
+                        isDesktopTarget = true;
+                    } else {
+                        // Search inside Desktop project directories
+                        const desktopRoot = path.join(os.homedir(), 'Desktop');
+                        const desktopEntries = await fs.readdir(desktopRoot, {withFileTypes: true});
+                        for (const entry of desktopEntries) {
+                            if (entry.isDirectory() && !entry.name.startsWith('.')) {
+                                const subCandidate = path.join(desktopRoot, entry.name, input.path);
+                                if (await readExistingPathStats(subCandidate)) {
+                                    content = await fs.readFile(subCandidate, 'utf8');
+                                    filePath = subCandidate;
+                                    isDesktopTarget = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!isDesktopTarget) {
+                            throw readError;
+                        }
+                    }
+                } catch (_) {
+                    throw readError;
+                }
+            } else {
+                throw readError;
+            }
+        }
 
         return {
             action,
             path: input.path,
             content,
+            ...(isDesktopTarget ? {location: 'local Desktop'} : {}),
         };
     }
 
     if (action === 'list') {
-        const entries = await fs.readdir(filePath, {withFileTypes: true});
+        let entries;
+        try {
+            entries = await fs.readdir(filePath, {withFileTypes: true});
+        } catch (listError) {
+            if (listError.code === 'ENOENT' && LOCAL_DESKTOP_OUTPUT_ENABLED && !isDesktopTarget) {
+                try {
+                    const desktopCandidate = await resolveLocalDesktopPath(input.path);
+                    if (await readExistingPathStats(desktopCandidate)) {
+                        entries = await fs.readdir(desktopCandidate, {withFileTypes: true});
+                        filePath = desktopCandidate;
+                        isDesktopTarget = true;
+                    } else {
+                        throw listError;
+                    }
+                } catch (_) {
+                    throw listError;
+                }
+            } else {
+                throw listError;
+            }
+        }
 
         return {
             action,
@@ -982,6 +1109,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 name: entry.name,
                 type: entry.isDirectory() ? 'directory' : 'file',
             })),
+            ...(isDesktopTarget ? {location: 'local Desktop'} : {}),
         };
     }
 

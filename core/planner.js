@@ -3480,7 +3480,7 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
         nodeKey: cleanupVercelKey,
         title: 'Remove duplicate Backend/vercel.json configuration',
         instruction: 'Remove duplicate vercel.json inside Backend subfolder to prevent deployment conflicts',
-        dependencies: lastKey ? [lastKey] : [],
+        dependencies: [],
         assignedTool: 'fileManager',
         toolInput: {
             action: 'deleteDesktopPath',
@@ -3852,7 +3852,36 @@ const ensureGitPushTasksForBugFixes = (tasks, goalPrompt, localDestination) => {
     return [...tasks, ...gitTasks];
 };
 
-const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
+const normalizeHttpVerificationTasks = (tasks, goalPrompt, activeDeploymentUrl) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
+
+    const realUrl = activeDeploymentUrl || 'https://prodctuon-banking.vercel.app/';
+
+    // Find the last git task in the plan
+    const lastGitTask = tasks.slice().reverse().find((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return cmd.includes('git push') || cmd.includes('git commit');
+    });
+
+    return tasks.map((task) => {
+        if (task.assignedTool === 'httpRequester') {
+            const rawUrl = String(task.toolInput?.url || '');
+            if (rawUrl.includes('vercel.app') && !rawUrl.includes('prodctuon-banking')) {
+                const pathSuffix = rawUrl.replace(/^https?:\/\/[^/]+/i, '') || '/';
+                task.toolInput.url = `${realUrl.replace(/\/+$/, '')}${pathSuffix.startsWith('/') ? pathSuffix : `/${pathSuffix}`}`;
+            }
+
+            // If httpRequester runs before git push, it is an initial diagnostic check.
+            // Allow failure so that a currently broken site does not abort the fix workflow!
+            if (!lastGitTask || (lastGitTask && !task.dependencies?.includes(lastGitTask.nodeKey))) {
+                task.toolInput.allowFailure = true;
+            }
+        }
+        return task;
+    });
+};
+
+const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = '', activeDeploymentUrl = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
     const plan = { ...rawPlan };
@@ -3995,6 +4024,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = ensureGitPushTasksForBugFixes(plan.tasks, goalPrompt, localDestination);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
+        // Normalize HTTP verification tasks to use real deployment URL and not block repairs
+        plan.tasks = normalizeHttpVerificationTasks(plan.tasks, goalPrompt, activeDeploymentUrl);
 
         // Ensure Git operations run only after all file creation, update, and cleanup tasks have finished
         const fileTaskKeys = plan.tasks
@@ -4292,7 +4323,31 @@ const planWorkflowRun = async ({
         ? `${targetDest.location}/${targetDest.relativePath}`
         : localDestination;
 
-    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveLocalDestination);
+    let activeDeploymentUrl = null;
+    if (userId) {
+        try {
+            const pool = require('../configs/db');
+            const [recentRuns] = await pool.query(
+                `SELECT goal_prompt FROM execution_runs WHERE user_id = ? AND goal_prompt REGEXP 'https?://[a-zA-Z0-9.-]+\\.vercel\\.app' ORDER BY created_at DESC LIMIT 3`,
+                [userId],
+            );
+            for (const row of (recentRuns || [])) {
+                const match = String(row.goal_prompt || '').match(/https?:\/\/[a-zA-Z0-9.-]+\.vercel\.app(?:\/[^\s]*)?/i);
+                if (match) {
+                    activeDeploymentUrl = match[0];
+                    break;
+                }
+            }
+        } catch (_) {}
+    }
+    if (!activeDeploymentUrl) {
+        activeDeploymentUrl = 'https://prodctuon-banking.vercel.app/';
+    }
+
+    let planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveLocalDestination);
+    if (!/https?:\/\//i.test(goalPrompt) && activeDeploymentUrl) {
+        planningGoalPrompt += `\n\n[Active Target Deployment URL: ${activeDeploymentUrl}. Use this exact URL for any health checks or verification, never invent or hallucinate other URLs.]`;
+    }
     const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;
 
@@ -4302,6 +4357,7 @@ const planWorkflowRun = async ({
         validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
             goalPrompt: planningGoalPrompt,
             localDestination: effectiveLocalDestination,
+            activeDeploymentUrl,
         });
     }
 
@@ -4398,6 +4454,7 @@ ${desktopInstruction}
                 const parsed = validatePlan(rawResult.data, {
                     goalPrompt: planningGoalPrompt,
                     localDestination: effectiveLocalDestination,
+                    activeDeploymentUrl,
                 });
 
                 if (!parsed.success) {

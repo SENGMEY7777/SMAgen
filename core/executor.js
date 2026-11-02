@@ -755,7 +755,18 @@ const fileManager = async (input, workspacePath, task = {}) => {
             }
 
             if (error.code === 'ENOTDIR') {
-                throw new Error(`Local Desktop asset path is not a directory: ${desktopPath}`);
+                const stats = await fs.stat(desktopPath);
+                return {
+                    action,
+                    path: input.path,
+                    location: 'local Desktop',
+                    imageOnly: false,
+                    entries: [{
+                        name: path.basename(desktopPath),
+                        type: 'file',
+                        size: stats.size,
+                    }],
+                };
             }
 
             throw error;

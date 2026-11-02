@@ -17,37 +17,62 @@ class UnitOfWork {
   }
 
   async beginTransaction() {
+    if (this.inTransaction) {
+      throw new Error('Transaction already started for this UnitOfWork instance.');
+    }
+
     const conn = await this.getConnection();
     await conn.beginTransaction();
     this.inTransaction = true;
   }
 
   async commit() {
-    if (this.connection && this.inTransaction) {
+    if (!this.connection || !this.inTransaction) {
+      return;
+    }
+
+    try {
       await this.connection.commit();
+    } finally {
       this.inTransaction = false;
+      this.connection.release();
+      this.connection = null;
     }
   }
 
   async rollback() {
-    if (this.connection && this.inTransaction) {
-      await this.connection.rollback();
+    if (!this.connection || !this.inTransaction) {
       this.inTransaction = false;
+      this.connection = null;
+      return;
+    }
+
+    try {
+      await this.connection.rollback();
+    } finally {
+      this.inTransaction = false;
+      this.connection.release();
+      this.connection = null;
     }
   }
 
   async release() {
-    if (this.connection) {
-      if (this.inTransaction) {
-        try {
-          await this.rollback();
-        } catch (err) {
-          console.error('[UnitOfWork] Rollback during release failed:', err.message);
-        }
-      }
-      this.connection.release();
-      this.connection = null;
+    if (!this.connection) {
+      this.inTransaction = false;
+      return;
     }
+
+    if (this.inTransaction) {
+      try {
+        await this.rollback();
+      } catch (err) {
+        console.error('[UnitOfWork] Rollback during release failed:', err.message);
+      }
+      return;
+    }
+
+    this.connection.release();
+    this.connection = null;
   }
 
   static async runInTransaction(workFn, pool = defaultPool) {

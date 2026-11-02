@@ -1667,6 +1667,61 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         } catch (_) {}
     }
 
+    // Smart entrypoint resolution: if inspecting or syntax-checking a guessed entry file (like server.js)
+    // that does not exist in effectiveCwd, resolve to the actual entrypoint (e.g. app.js from package.json)
+    if (commandName === 'node') {
+        const fileArgIndex = args[0] === '-c' ? 1 : (!args[0]?.startsWith('-') ? 0 : -1);
+        if (fileArgIndex !== -1 && args[fileArgIndex]) {
+            const targetName = args[fileArgIndex];
+            const targetFile = path.resolve(effectiveCwd, targetName);
+            const fileStats = await readExistingPathStats(targetFile);
+            if (!fileStats) {
+                let foundEntry = null;
+                try {
+                    const pkgPath = path.resolve(effectiveCwd, 'package.json');
+                    const pkgStats = await readExistingPathStats(pkgPath);
+                    if (pkgStats) {
+                        const pkgContent = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+                        if (pkgContent.main) {
+                            const candidate = path.resolve(effectiveCwd, pkgContent.main);
+                            if (await readExistingPathStats(candidate)) {
+                                foundEntry = pkgContent.main;
+                            }
+                        }
+                    }
+                } catch (_) {}
+
+                if (!foundEntry) {
+                    const candidates = ['app.js', 'index.js', 'server.js', 'main.js', 'src/app.js', 'src/index.js', 'src/server.js'];
+                    for (const c of candidates) {
+                        if (await readExistingPathStats(path.resolve(effectiveCwd, c))) {
+                            foundEntry = c;
+                            break;
+                        }
+                    }
+                }
+
+                if (foundEntry) {
+                    args[fileArgIndex] = foundEntry;
+                    command = `node ${args.join(' ')}`;
+                }
+            }
+        }
+    } else if (['cat', 'head', 'tail'].includes(commandName) && args.length === 1 && !args[0].startsWith('-')) {
+        const targetFile = path.resolve(effectiveCwd, args[0]);
+        const fileStats = await readExistingPathStats(targetFile);
+        if (!fileStats && ['server.js', 'index.js', 'app.js', 'main.js'].includes(args[0])) {
+            const candidates = ['app.js', 'index.js', 'server.js', 'main.js', 'src/app.js', 'src/index.js', 'src/server.js'];
+            for (const c of candidates) {
+                if (await readExistingPathStats(path.resolve(effectiveCwd, c))) {
+                    args[0] = c;
+                    command = `${commandName} ${c}`;
+                    break;
+                }
+            }
+        }
+    }
+
     for (const argument of args) {
         if (
             path.isAbsolute(argument)

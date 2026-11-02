@@ -247,6 +247,14 @@ const isRenameRequest = (value) => {
     return /\b(?:rename|move|change)\b[\s\S]{0,100}\b(?:folder|directory|project)\b[\s\S]{0,80}\bfrom\b[\s\S]{1,80}\bto\b/i.test(text);
 };
 
+const NON_TARGET_WORDS = new Set([
+    'and', 'or', 'in', 'on', 'at', 'to', 'from', 'with', 'for', 'of', 'by',
+    'fix', 'again', 'agina', 'duplicate', 'deplicate', 'duplicated', 'duplicates', 'deplicates',
+    'all', 'the', 'my', 'this', 'that', 'these', 'those', 'a', 'an', 'it', 'them', 'some',
+    'file', 'files', 'folder', 'folders', 'directory', 'directories', 'project', 'projects',
+    'path', 'paths', 'code', 'bug', 'error', 'issue', 'sever', 'server', 'url', 'vercel'
+]);
+
 const isRemovalRequest = (value) => {
     const text = String(value || '');
     if (isRenameRequest(text)) {
@@ -256,6 +264,12 @@ const isRemovalRequest = (value) => {
     // A negated instruction such as "do not overwrite or delete anything"
     // describes protection requirements, not a deletion request.
     const hasNegatedDestructiveWord = /\b(?:do\s+not|don't|dont|never|not)\b[\s\S]{0,32}\b(?:remove|delete|erase|destroy|overwrite)\b/i.test(text);
+
+    // If the prompt asks to remove duplicates and fix/deploy, it is a multi-step cleanup & repair workflow,
+    // NOT a single-target removal workflow that collapses the plan into one delete task.
+    if (/\b(?:duplicate|deplicate)\b/i.test(text) && /\b(?:fix|repair|agina|again|error|sever|server|deploy|push)\b/i.test(text)) {
+        return false;
+    }
 
     return !hasNegatedDestructiveWord
         && /\b(?:remove|delete|erase|destroy|clean\s*up|clear|strip)\b/i.test(text);
@@ -281,6 +295,9 @@ const extractRemovalTarget = (value) => {
 
     const cleaned = cleanRelativeDirectoryPath(candidate);
     if (!cleaned) return null;
+    if (NON_TARGET_WORDS.has(cleaned.toLowerCase())) {
+        return null;
+    }
     if (cleaned === 'gitkeep' || cleaned.endsWith('/gitkeep')) {
         return cleaned.replace(/(^|[\\/])gitkeep$/, '$1.gitkeep');
     }
@@ -3311,10 +3328,97 @@ const normalizeGitBranchTasks = (tasks) => {
     return tasks;
 };
 
+const purgeSubfolderVercelDuplicatesAndNormalize = (tasks, projectFolder) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
+
+    const isSubfolderDuplicate = (filePath) => {
+        if (!filePath || typeof filePath !== 'string') return false;
+        const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+        return /\bbackend\/vercel\.json$/i.test(normalized)
+            || /\bbackend\/api(?:\/|$)/i.test(normalized)
+            || /\/backend\/vercel\.json$/i.test(normalized)
+            || /\/backend\/api(?:\/|$)/i.test(normalized);
+    };
+
+    // 1. Filter out tasks creating Backend/vercel.json or Backend/api/*
+    let filteredTasks = tasks.filter((t) => {
+        const p = String(t.toolInput?.path || '');
+        if (isSubfolderDuplicate(p)) return false;
+        return true;
+    });
+
+    // 2. Filter out duplicate entries inside any batch files array
+    for (const t of filteredTasks) {
+        if (Array.isArray(t.toolInput?.files)) {
+            t.toolInput.files = t.toolInput.files.filter((f) => {
+                const fp = String(f?.path || f?.fileName || '');
+                return !isSubfolderDuplicate(fp);
+            });
+        }
+    }
+    filteredTasks = filteredTasks.filter((t) => {
+        if (t.toolInput?.files && Array.isArray(t.toolInput.files) && t.toolInput.files.length === 0) {
+            return false;
+        }
+        return true;
+    });
+
+    // 3. Check if Backend/app.js exists on disk
+    let hasBackendApp = false;
+    try {
+        const fsMod = require('fs');
+        const osMod = require('os');
+        const bPath = path.join(osMod.homedir(), 'Desktop', projectFolder || '', 'Backend', 'app.js');
+        const bPathLower = path.join(osMod.homedir(), 'Desktop', projectFolder || '', 'backend', 'app.js');
+        hasBackendApp = Boolean(projectFolder && (fsMod.existsSync(bPath) || fsMod.existsSync(bPathLower)));
+    } catch (_) {}
+
+    // If Backend/app.js exists, redirect any task creating root app.js to Backend/app.js
+    if (hasBackendApp && projectFolder) {
+        for (const t of filteredTasks) {
+            const p = String(t.toolInput?.path || '').replace(/\\/g, '/');
+            if (p === `${projectFolder}/app.js` || p === 'app.js') {
+                t.toolInput.path = `${projectFolder}/Backend/app.js`;
+            }
+            if (Array.isArray(t.toolInput?.files)) {
+                for (const f of t.toolInput.files) {
+                    const fp = String(f?.path || f?.fileName || '').replace(/\\/g, '/');
+                    if (fp === `${projectFolder}/app.js` || fp === 'app.js') {
+                        if (f.path) f.path = `${projectFolder}/Backend/app.js`;
+                        if (f.fileName) f.fileName = `${projectFolder}/Backend/app.js`;
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Deduplicate tasks creating vercel.json (keep only 1 at project root)
+    let seenVercelJson = false;
+    filteredTasks = filteredTasks.filter((t) => {
+        const p = String(t.toolInput?.path || '').replace(/\\/g, '/').toLowerCase();
+        if (p.endsWith('vercel.json')) {
+            if (seenVercelJson) return false;
+            seenVercelJson = true;
+        }
+        return true;
+    });
+
+    // 5. Deduplicate tasks creating api/index.js (keep only 1 at project root)
+    let seenApiIndex = false;
+    filteredTasks = filteredTasks.filter((t) => {
+        const p = String(t.toolInput?.path || '').replace(/\\/g, '/').toLowerCase();
+        if (p.endsWith('api/index.js')) {
+            if (seenApiIndex) return false;
+            seenApiIndex = true;
+        }
+        return true;
+    });
+
+    return filteredTasks;
+};
+
 const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
     if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
-    const isVercelGoal = /\b(?:vercel\.app|vercel|function_invocation_failed|cannot get \/)\b/i.test(goalPrompt);
-    if (!isVercelGoal) return tasks;
 
     let projectFolder = null;
     for (const t of tasks) {
@@ -3334,24 +3438,94 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
     }
     if (!projectFolder) return tasks;
 
+    let hasVercelOnDisk = false;
+    let hasBackendAppOnDisk = false;
+    try {
+        const fsMod = require('fs');
+        const osMod = require('os');
+        const vPath = path.join(osMod.homedir(), 'Desktop', projectFolder, 'vercel.json');
+        const bPath = path.join(osMod.homedir(), 'Desktop', projectFolder, 'Backend', 'app.js');
+        const bPathLower = path.join(osMod.homedir(), 'Desktop', projectFolder, 'backend', 'app.js');
+        hasVercelOnDisk = fsMod.existsSync(vPath);
+        hasBackendAppOnDisk = fsMod.existsSync(bPath) || fsMod.existsSync(bPathLower);
+    } catch (_) {}
+
+    const isVercelGoal = /\b(?:vercel\.app|vercel|function_invocation_failed|cannot get \/|deplicate|duplicate|sever.*error|server.*error|deployment|deploy)\b/i.test(goalPrompt)
+        || hasVercelOnDisk;
+
+    if (!isVercelGoal) return tasks;
+
+    // Purge duplicate subfolder tasks from LLM plan first
+    tasks = purgeSubfolderVercelDuplicatesAndNormalize(tasks, projectFolder);
+
     const hasVercelJson = tasks.some((t) => {
         const p = String(t.toolInput?.path || '').toLowerCase();
         const files = Array.isArray(t.toolInput?.files) ? t.toolInput.files : [];
-        return p.includes('vercel.json') || files.some((f) => String(f?.path || f?.fileName || '').toLowerCase().includes('vercel.json'));
+        return p.endsWith('vercel.json') || files.some((f) => String(f?.path || f?.fileName || '').toLowerCase().endsWith('vercel.json'));
     });
 
     const hasApiIndex = tasks.some((t) => {
         const p = String(t.toolInput?.path || '').toLowerCase();
         const files = Array.isArray(t.toolInput?.files) ? t.toolInput.files : [];
-        return p.includes('api/index.js') || p.includes('api\\index.js')
-            || files.some((f) => {
-                const fp = String(f?.path || f?.fileName || '').toLowerCase();
-                return fp.includes('api/index.js') || fp.includes('api\\index.js');
-            });
+        return p.endsWith('api/index.js')
+            || files.some((f) => String(f?.path || f?.fileName || '').toLowerCase().endsWith('api/index.js'));
     });
 
     const additionalTasks = [];
     let lastKey = tasks[0]?.nodeKey;
+
+    // Automated cleanup tasks to delete any existing physical duplicates on Desktop
+    const cleanupVercelKey = `task_cleanup_subfolder_vercel_${Date.now()}`;
+    additionalTasks.push({
+        nodeKey: cleanupVercelKey,
+        title: 'Remove duplicate Backend/vercel.json configuration',
+        instruction: 'Remove duplicate vercel.json inside Backend subfolder to prevent deployment conflicts',
+        dependencies: lastKey ? [lastKey] : [],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'deleteDesktopPath',
+            path: `${projectFolder}/Backend/vercel.json`,
+            ignoreMissing: true,
+            desktop: true,
+        },
+    });
+    lastKey = cleanupVercelKey;
+
+    const cleanupApiKey = `task_cleanup_subfolder_api_${Date.now()}`;
+    additionalTasks.push({
+        nodeKey: cleanupApiKey,
+        title: 'Remove duplicate Backend/api serverless bridge',
+        instruction: 'Remove duplicate api directory inside Backend subfolder to keep serverless bridge at project root only',
+        dependencies: [lastKey],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'deleteDesktopPath',
+            path: `${projectFolder}/Backend/api`,
+            kind: 'directory',
+            ignoreMissing: true,
+            desktop: true,
+        },
+    });
+    lastKey = cleanupApiKey;
+
+    if (hasBackendAppOnDisk) {
+        const cleanupRootAppKey = `task_cleanup_root_app_${Date.now()}`;
+        additionalTasks.push({
+            nodeKey: cleanupRootAppKey,
+            title: 'Remove duplicate root app.js',
+            instruction: 'Remove root app.js stub to allow serverless bridge to load real Backend/app.js directly',
+            dependencies: [lastKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'deleteDesktopPath',
+                path: `${projectFolder}/app.js`,
+                kind: 'file',
+                ignoreMissing: true,
+                desktop: true,
+            },
+        });
+        lastKey = cleanupRootAppKey;
+    }
 
     if (!hasVercelJson) {
         const vKey = `task_vercel_json_${Date.now()}`;
@@ -3381,11 +3555,11 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
     }
 
     const ROBUST_API_BRIDGE_CONTENT = `process.env.VERCEL = "1";
-let app;
+let backendApp;
 const candidates = [
-    "../app",
     "../Backend/app",
     "../backend/app",
+    "../app",
     "../src/app",
     "../server",
     "../Backend/server",
@@ -3396,26 +3570,64 @@ const candidates = [
 ];
 for (const cand of candidates) {
     try {
-        app = require(cand);
-        if (app) break;
+        const mod = require(cand);
+        if (mod && (typeof mod === 'function' || typeof mod.handle === 'function' || typeof mod.get === 'function')) {
+            backendApp = mod;
+            break;
+        } else if (mod && mod.app && (typeof mod.app === 'function' || typeof mod.app.handle === 'function')) {
+            backendApp = mod.app;
+            break;
+        }
     } catch (_) {}
 }
 
-if (app && typeof app.get === 'function') {
+const express = (() => {
+    try { return require('express'); } catch (_) { return null; }
+})();
+
+let bridge;
+if (express && typeof express === 'function') {
+    bridge = express();
     const handleRoot = (req, res) => {
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
             status: "online",
             message: "API server is live and running",
             timestamp: new Date().toISOString()
         });
     };
-    app.get('/', handleRoot);
-    app.get('/health', handleRoot);
-    app.get('/api/health', handleRoot);
+    bridge.get('/', handleRoot);
+    bridge.get('/health', handleRoot);
+    bridge.get('/api/health', handleRoot);
+
+    if (backendApp) {
+        bridge.use(backendApp);
+    }
+
+    bridge.use((req, res) => {
+        res.status(200).json({
+            success: true,
+            status: "online",
+            message: "API server is live and running",
+            path: req.url,
+            timestamp: new Date().toISOString()
+        });
+    });
+} else if (backendApp) {
+    bridge = backendApp;
+} else {
+    bridge = (req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            success: true,
+            status: "online",
+            message: "API server is live and running",
+            timestamp: new Date().toISOString()
+        }));
+    };
 }
 
-module.exports = app;
+module.exports = bridge;
 `;
 
     // Ensure all existing api/index.js tasks in the plan use ROBUST_API_BRIDGE_CONTENT with the root route
@@ -3459,35 +3671,6 @@ module.exports = app;
         lastKey = aKey;
     }
 
-    // 1. Remove any subfolder duplicates of vercel.json or api/index.js (e.g. Backend/vercel.json or Backend/api/index.js)
-    tasks = tasks.filter((t) => {
-        const p = String(t.toolInput?.path || '').toLowerCase();
-        if (p.includes('/backend/vercel.json') || p.includes('\\backend\\vercel.json')
-            || p.includes('/backend/api/') || p.includes('\\backend\\api\\')) {
-            return false;
-        }
-        return true;
-    });
-
-    // 2. Redirect root app.js tasks if app.js actually exists inside Backend/
-    try {
-        const fsMod = require('fs');
-        const osMod = require('os');
-        const backendAppCandidate = path.join(osMod.homedir(), 'Desktop', projectFolder, 'Backend', 'app.js');
-        const backendAppCandidateLower = path.join(osMod.homedir(), 'Desktop', projectFolder, 'backend', 'app.js');
-        const realSubfolder = fsMod.existsSync(backendAppCandidate) ? 'Backend'
-            : (fsMod.existsSync(backendAppCandidateLower) ? 'backend' : null);
-
-        if (realSubfolder) {
-            for (const t of tasks) {
-                const p = String(t.toolInput?.path || '').replace(/\\/g, '/');
-                if (p === `${projectFolder}/app.js` || p === 'app.js') {
-                    t.toolInput.path = `${projectFolder}/${realSubfolder}/app.js`;
-                }
-            }
-        }
-    } catch (_) {}
-
     if (additionalTasks.length === 0) return tasks;
 
     const gitIdx = tasks.findIndex((t) => {
@@ -3507,7 +3690,7 @@ module.exports = app;
 const ensureGitPushTasksForBugFixes = (tasks, goalPrompt, localDestination) => {
     if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
 
-    const isFixGoal = /\b(?:fix|repair|bug|crash|error|500|issue|vercel\.app|netlify\.app)\b/i.test(goalPrompt);
+    const isFixGoal = /\b(?:fix|repair|bug|crash|error|500|issue|vercel\.app|netlify\.app|duplicate|deplicate)\b/i.test(goalPrompt);
     if (!isFixGoal) return tasks;
 
     const hasPush = tasks.some((t) => {
@@ -3517,73 +3700,144 @@ const ensureGitPushTasksForBugFixes = (tasks, goalPrompt, localDestination) => {
     if (hasPush) return tasks;
 
     let projectCwd = null;
+    let projectFolder = null;
     let lastTaskKey = null;
 
     for (const t of tasks) {
         if (t.toolInput?.desktop && t.toolInput?.cwd) {
             projectCwd = t.toolInput.cwd;
+            projectFolder = t.toolInput.cwd.replace(/^Desktop[\\/]+/i, '').split(/[\\/]/)[0];
         } else if (t.toolInput?.path && typeof t.toolInput.path === 'string') {
-            const parts = t.toolInput.path.split(/[\\/]/).filter(Boolean);
-            if (parts.length > 0 && !['.', 'src', 'validator', 'dist'].includes(parts[0])) {
+            const parts = t.toolInput.path.replace(/^Desktop[\\/]+/i, '').split(/[\\/]/).filter(Boolean);
+            if (parts.length > 0 && !['.', 'src', 'validator', 'dist', 'api'].includes(parts[0])) {
                 projectCwd = `Desktop/${parts[0]}`;
+                projectFolder = parts[0];
             }
         }
         lastTaskKey = t.nodeKey;
     }
 
     if (!projectCwd && localDestination) {
-        const dest = String(localDestination).trim().replace(/^Desktop\//, '');
+        const dest = String(localDestination).trim().replace(/^Desktop[\\/]+/, '');
         if (dest) {
             projectCwd = `Desktop/${dest}`;
+            projectFolder = dest;
         }
     }
 
     if (!projectCwd) return tasks;
 
-    const addKey = `task_git_add_${Date.now()}`;
-    const commitKey = `task_git_commit_${Date.now()}`;
+    // Collect all specific files created or modified by fileManager tasks
+    const touchedFiles = [];
+    for (const t of tasks) {
+        if (t.assignedTool === 'fileManager' && t.toolInput?.path && t.toolInput?.action !== 'deleteDesktopPath') {
+            let p = String(t.toolInput.path).replace(/\\/g, '/');
+            if (projectFolder && p.startsWith(`${projectFolder}/`)) {
+                p = p.slice(projectFolder.length + 1);
+            }
+            if (p && !p.startsWith('.') && !touchedFiles.includes(p)) {
+                touchedFiles.push(p);
+            }
+        }
+        if (Array.isArray(t.toolInput?.files)) {
+            for (const f of t.toolInput.files) {
+                let p = String(f?.path || f?.fileName || '').replace(/\\/g, '/');
+                if (projectFolder && p.startsWith(`${projectFolder}/`)) {
+                    p = p.slice(projectFolder.length + 1);
+                }
+                if (p && !p.startsWith('.') && !touchedFiles.includes(p)) {
+                    touchedFiles.push(p);
+                }
+            }
+        }
+    }
+
+    const gitTasks = [];
+    let prevDep = lastTaskKey;
+
+    if (touchedFiles.length > 0) {
+        // Enforce 1 file per commit
+        for (let i = 0; i < touchedFiles.length; i++) {
+            const relFile = touchedFiles[i];
+            const addKey = `task_git_add_${i}_${Date.now()}`;
+            const commitKey = `task_git_commit_${i}_${Date.now()}`;
+
+            gitTasks.push({
+                nodeKey: addKey,
+                title: `Stage ${relFile} for Git`,
+                instruction: `Stage ${relFile} for git commit`,
+                dependencies: prevDep ? [prevDep] : [],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: `git add "${relFile}"`,
+                    cwd: projectCwd,
+                    desktop: true,
+                },
+            });
+
+            gitTasks.push({
+                nodeKey: commitKey,
+                title: `Commit ${relFile} changes`,
+                instruction: `Commit ${relFile} changes`,
+                dependencies: [addKey],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: `git commit -m "fix: update ${relFile} configuration"`,
+                    cwd: projectCwd,
+                    desktop: true,
+                },
+            });
+
+            prevDep = commitKey;
+        }
+    } else {
+        const addKey = `task_git_add_${Date.now()}`;
+        const commitKey = `task_git_commit_${Date.now()}`;
+
+        gitTasks.push({
+            nodeKey: addKey,
+            title: 'Stage changes in Git',
+            instruction: 'Stage changes for git commit',
+            dependencies: prevDep ? [prevDep] : [],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git add .',
+                cwd: projectCwd,
+                desktop: true,
+            },
+        });
+
+        gitTasks.push({
+            nodeKey: commitKey,
+            title: 'Commit changes with Git',
+            instruction: 'Commit bug fixes and updates',
+            dependencies: [addKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git commit -m "fix: resolve bug and update project configuration"',
+                cwd: projectCwd,
+                desktop: true,
+            },
+        });
+
+        prevDep = commitKey;
+    }
+
     const pushKey = `task_git_push_${Date.now()}`;
-
-    const gitAdd = {
-        nodeKey: addKey,
-        title: 'Stage fixed files for GitHub',
-        instruction: 'Stage all modified files for git commit',
-        dependencies: lastTaskKey ? [lastTaskKey] : [],
-        assignedTool: 'executeCommand',
-        toolInput: {
-            command: 'git add .',
-            cwd: projectCwd,
-            desktop: true,
-        },
-    };
-
-    const gitCommit = {
-        nodeKey: commitKey,
-        title: 'Commit bug fixes',
-        instruction: 'Commit changes with fix message',
-        dependencies: [addKey],
-        assignedTool: 'executeCommand',
-        toolInput: {
-            command: 'git commit -m "fix: resolve bug and update project configuration"',
-            cwd: projectCwd,
-            desktop: true,
-        },
-    };
-
-    const gitPush = {
+    gitTasks.push({
         nodeKey: pushKey,
         title: 'Push bug fixes to GitHub directly',
         instruction: 'Push changes to GitHub to trigger automatic redeployment',
-        dependencies: [commitKey],
+        dependencies: [prevDep],
         assignedTool: 'executeCommand',
         toolInput: {
             command: 'git push origin main',
             cwd: projectCwd,
             desktop: true,
         },
-    };
+    });
 
-    return [...tasks, gitAdd, gitCommit, gitPush];
+    return [...tasks, ...gitTasks];
 };
 
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
@@ -4043,12 +4297,12 @@ Rules:
 - Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.
 - For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
-- For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. The workflow should initialize Git if needed (git init), stage files (git add .), and commit changes (git commit -m "feat: initial commit"). When pushing to GitHub, check or configure the remote origin URL on main branch (git push -u origin main).
-- When the user provides a deployment URL (e.g. vercel.app, netlify.app) or asks to fix a server crash, 500 error, FUNCTION_INVOCATION_FAILED, or 'Cannot GET /': The goal is to make the deployed site live and working, not just inspect it. Do NOT stop after read-only checks. The workflow MUST plan an end-to-end fix:
+- For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. The workflow should initialize Git if needed (git init), stage and commit files (commit 1 file per commit, never commit multiple files together in a single commit), and push changes to GitHub on main branch (git push -u origin main).
+- When the user provides a deployment URL (e.g. vercel.app, netlify.app) or asks to fix a server crash, 500 error, FUNCTION_INVOCATION_FAILED, duplicate files, or 'Cannot GET /': The goal is to make the deployed site live and working, not just inspect it. Do NOT stop after read-only checks. The workflow MUST plan an end-to-end fix:
   1. For Express apps deployed on Vercel, ensure the official Vercel serverless bridge exists: create 'api/index.js' at the project root with multi-path candidate resolution (handling both root and Backend/ subfolder), and ALWAYS attach an explicit root health route (app.get('/', (req, res) => res.json({ success: true, message: "API is live and running" }))) so navigating to the deployment domain root never produces 'Cannot GET /'. Also create 'vercel.json' with { "version": 2, "rewrites": [{ "source": "/(.*)", "destination": "/api/index.js" }] } at the project root only. Never create duplicate api/ or vercel.json inside subfolders such as Backend/.
-  2. Fix runtime/syntax bugs in 'app.js' (or 'Backend/app.js'): add a root health route (app.get('/', (req, res) => res.json({ success: true, message: "API is live" }))), wrap server.listen in if (!process.env.VERCEL) check, and ensure module.exports = app.
-  3. Deploy the fix: automatically stage and push all changes to GitHub (git add ., git commit -m "fix: resolve deployment 500 error and configure vercel serverless", git push origin main) so Vercel triggers a fresh deployment and repairs the live site.
-- For any bug fixing, troubleshooting, or code repair requests (e.g. "fix bug", "find the bug and fix", "fix url to correctly", "repair crash", "fix this error"): Locate the bug, update the affected files using fileManager, and ALWAYS finish the workflow by staging, committing, and pushing the fix directly to GitHub (git add ., git commit -m "fix: resolve bug and update project configuration", git push origin main with cwd Desktop/<project> and desktop: true) so changes are deployed to remote environments immediately.
+  2. If the real Express app is inside 'Backend/app.js', NEVER create a conflicting 'app.js' at the project root. If duplicate vercel.json or api/ exists inside Backend/, remove them using fileManager deleteDesktopPath.
+  3. Deploy the fix: automatically stage and commit each modified file individually (commit 1 file per commit, e.g. git add vercel.json, git commit -m "fix: update vercel.json", git add api/index.js, git commit -m "feat: add serverless bridge"), and push to GitHub (git push origin main) so Vercel triggers a fresh deployment and repairs the live site.
+- For any bug fixing, troubleshooting, duplicate cleanup, or code repair requests (e.g. "fix bug", "find the bug and fix", "fix url to correctly", "remove duplicate file and fix", "it still duplicate"): Clean up duplicate files, update the affected files using fileManager, and ALWAYS finish the workflow by staging and committing modified files individually (1 file per commit) and pushing directly to GitHub (git push origin main with cwd Desktop/<project> and desktop: true) so changes are deployed to remote environments immediately.
 - Never add '|| true', '|| exit 0', redirects, or chained operators to executeCommand commands; keep every command as a single clean executable command.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.
 - For Pinia requests, use the correct package name 'pinia'. Install it with the package manager, create or update a store file with fileManager, and register createPinia() in the Vue entry file. Do not return manual shell heredocs or PowerShell write scripts as the workflow result.

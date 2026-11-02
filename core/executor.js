@@ -78,6 +78,13 @@ const WORKSPACE_WRITE_ACTIONS = new Set([
     'createDesktopDirectory',
     'createDesktopFile',
     'createDesktopFiles',
+    'updateDesktopFile',
+    'updateDesktopFiles',
+    'writeDesktopFile',
+    'writeDesktopFiles',
+    'editDesktopFile',
+    'editDesktopFiles',
+    'appendDesktopFile',
     'deleteDesktopPath',
     'renameDesktopPath',
     'exportWorkspaceToDesktop',
@@ -535,7 +542,22 @@ const fileManager = async (input, workspacePath, task = {}) => {
             ? 'createDesktopDirectory'
         : requestedAction === 'createdesktopfile' || requestedAction === 'create_desktop_file'
             ? 'createDesktopFile'
+        : requestedAction === 'updatedesktopfile' || requestedAction === 'update_desktop_file'
+            || requestedAction === 'writedesktopfile' || requestedAction === 'write_desktop_file'
+            || requestedAction === 'editdesktopfile' || requestedAction === 'edit_desktop_file'
+            ? (() => {
+                if (!input.mode) input.mode = 'update';
+                input.overwrite = true;
+                return 'createDesktopFile';
+            })()
+        : requestedAction === 'appenddesktopfile' || requestedAction === 'append_desktop_file'
+            ? (() => {
+                if (!input.mode) input.mode = 'append';
+                return 'createDesktopFile';
+            })()
         : requestedAction === 'createdesktopfiles' || requestedAction === 'create_desktop_files'
+            || requestedAction === 'updatedesktopfiles' || requestedAction === 'update_desktop_files'
+            || requestedAction === 'writedesktopfiles' || requestedAction === 'write_desktop_files'
             ? 'createDesktopFiles'
         : requestedAction === 'deletedesktoppath' || requestedAction === 'delete_desktop_path'
             ? 'deleteDesktopPath'

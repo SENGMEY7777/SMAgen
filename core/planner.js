@@ -1012,7 +1012,10 @@ const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
             return task;
         }
 
-        if (action === 'createfiles' || action === 'writefiles') {
+        const hasFilesArray = Array.isArray(task.toolInput?.files)
+            || (task.toolInput?.files && typeof task.toolInput.files === 'object');
+
+        if (action === 'createfiles' || action === 'writefiles' || (hasFilesArray && (isDesktopFileWriteAction || action === 'create' || action === 'write'))) {
             const fileEntries = Array.isArray(task.toolInput.files)
                 ? task.toolInput.files
                 : task.toolInput.files && typeof task.toolInput.files === 'object'

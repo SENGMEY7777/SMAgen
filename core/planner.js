@@ -113,8 +113,8 @@ const IMAGE_INTENT_PATTERN = /\b(?:generate|create|draw|design|make|render)\b[\s
 const IMAGE_KEYWORD_PATTERN = /\b(?:image|logo|icon|banner|illustration|artwork|picture|poster)\b/i;
 const IMAGE_URL_INTENT_PATTERN = /\b(?:image|images|photo|photos|picture|pictures|logo|logos|icon|icons|banner|banners|asset|assets)\b[\s\S]{0,100}\b(?:url|urls|link|links|remote|external|cdn)\b|\b(?:use|using|with|from)\s+(?:an?\s+)?(?:image|logo|icon|banner)?\s*(?:url|urls|link|links)\b/i;
 const DESKTOP_ASSET_INTENT_PATTERN = /\b(?:list|read|inspect|scan|find|load|use|utili[sz]e|map|import|copy)\b[\s\S]{0,120}\b(?:asset|image|banner|product|file|folder|directory)\b/i;
-const LOCAL_DESTINATION_PATH_PATTERN = /\b(?:desktop|downloads?)[\\/]+([A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)*)/i;
-const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\s'"`]+(?:[\\/][^\s'"`]+)*)/i;
+const LOCAL_DESTINATION_PATH_PATTERN = /\b(?:desktop|downloads?)[\\/]+([A-Za-z0-9._ -]+(?:[\\/][A-Za-z0-9._ -]+)*)/i;
+const DESKTOP_PATH_PATTERN = /(?:~[\\/]\s*|\/Users\/[^\s/'"`]+[\\/])?Desktop[\\/]+([^\n'"`]+(?:[\\/][^\n'"`]+)*)/i;
 
 const isHtmlSourceRequest = (goalPrompt) => {
     const text = String(goalPrompt || '');
@@ -168,6 +168,17 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+    const projectPattern = taskText.match(
+        /\bin\s+(?:the\s+)?([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)*)\s+project\b/i,
+    );
+    if (projectPattern && projectPattern[1]) {
+        const candidate = projectPattern[1].trim();
+        if (!['existing', 'current', 'new', 'this'].includes(candidate.toLowerCase())) {
+            const cleaned = cleanRelativeDirectoryPath(candidate);
+            if (cleaned) return cleaned;
+        }
+    }
+
     const localDestinationMatch = taskText.match(LOCAL_DESTINATION_PATH_PATTERN);
 
     if (localDestinationMatch) {
@@ -188,7 +199,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const nameSuffix = taskText.match(
-        /\b(?:directory|folder|project)\s+name(?:['’]s)?\s*[:=-]?\s*([A-Za-z0-9_-]+)/i,
+        /\b(?:directory|folder|project)\s+name(?:['’]s)?\s*[:=-]?\s*([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)*)/i,
     );
 
     if (nameSuffix) {
@@ -196,7 +207,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const desktopFolderName = taskText.match(
-        /\b(?:desktop|downloads?)\b[\s\S]{0,40}\b(?:folder|directory|project)\b(?:\s+name(?:['’]s)?|\s+named|\s+called)?\s*[:=-]?\s*([A-Za-z0-9][A-Za-z0-9_-]*)/i,
+        /\b(?:desktop|downloads?)\b[\s\S]{0,40}\b(?:folder|directory|project)\b(?:\s+name(?:['’]s)?|\s+named|\s+called)?\s*[:=-]?\s*([A-Za-z0-9][A-Za-z0-9_.-]*(?:\s+[A-Za-z0-9_.-]+)*)/i,
     );
 
     if (desktopFolderName) {
@@ -204,7 +215,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const plainName = taskText.match(
-        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and|i\s+want)\b|[.,;!?]|$)/i,
+        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s+([A-Za-z0-9_.-]+(?:\s+[A-Za-z0-9_.-]+)*)(?=\s+(?:on|in|inside|with|and|i\s+want)\b|[.,;!?]|$)/i,
     );
 
     return cleanRelativeDirectoryPath(plainName?.[1]);
@@ -512,6 +523,14 @@ const canonicalizeProjectPath = (value, projectRootPath) => {
             ...rootSegments,
             ...pathSegments.slice(rootIndex + rootSegments.length),
         ].join('/');
+    }
+
+    // Overlap and multi-word folder protection (e.g. cleanPath="Core Banking/api/index.js", cleanRoot="Core"):
+    // If the path's first segment contains or is contained in cleanRoot, prevent duplication like "Core/Core Banking"
+    const firstSegmentClean = normalizedPathSegments[0].replace(/[^a-z0-9]/g, '');
+    const rootClean = normalizedRootSegments.join('').replace(/[^a-z0-9]/g, '');
+    if (firstSegmentClean && rootClean && (firstSegmentClean === rootClean || firstSegmentClean.startsWith(rootClean) || rootClean.startsWith(firstSegmentClean))) {
+        return cleanPath;
     }
 
     return [cleanRoot, cleanPath].join('/');
@@ -3363,12 +3382,59 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
             toolInput: {
                 action: 'create',
                 path: `${projectFolder}/api/index.js`,
-                content: 'let app;\ntry {\n    app = require("../app");\n} catch (_) {\n    try {\n        app = require("../server");\n    } catch (_) {\n        app = require("../index");\n    }\n}\nmodule.exports = app;\n',
+                content: 'let app;\nconst candidates = ["../app", "../Backend/app", "../backend/app", "../src/app", "../server", "../Backend/server", "../backend/server", "../index", "../Backend/index", "../backend/index"];\nfor (const cand of candidates) {\n    try {\n        app = require(cand);\n        if (app) break;\n    } catch (_) {}\n}\nmodule.exports = app;\n',
                 desktop: true,
                 location: 'local Desktop',
             },
         });
         lastKey = aKey;
+    }
+
+    // Also check if any task targets a Backend or backend subfolder
+    const hasBackendSubfolder = tasks.some((t) => {
+        const p = String(t.toolInput?.path || t.toolInput?.cwd || '').toLowerCase();
+        return p.includes('backend/') || p.includes('backend\\');
+    });
+
+    if (hasBackendSubfolder) {
+        const backendVKey = `task_vercel_backend_json_${Date.now()}`;
+        additionalTasks.push({
+            nodeKey: backendVKey,
+            title: 'Create or update Backend vercel.json rewrite configuration',
+            instruction: 'Configure Vercel to route traffic to api/index.js when root directory is Backend',
+            dependencies: lastKey ? [lastKey] : [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'create',
+                path: `${projectFolder}/Backend/vercel.json`,
+                content: JSON.stringify({
+                    version: 2,
+                    rewrites: [
+                        { source: '/(.*)', destination: '/api/index.js' },
+                    ],
+                }, null, 2),
+                desktop: true,
+                location: 'local Desktop',
+            },
+        });
+        lastKey = backendVKey;
+
+        const backendAKey = `task_api_backend_bridge_${Date.now()}`;
+        additionalTasks.push({
+            nodeKey: backendAKey,
+            title: 'Create Backend Vercel serverless entry point api/index.js',
+            instruction: 'Bridge Express application inside Backend to Vercel Serverless Function',
+            dependencies: lastKey ? [lastKey] : [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'create',
+                path: `${projectFolder}/Backend/api/index.js`,
+                content: 'let app;\nconst candidates = ["../app", "../server", "../index"];\nfor (const cand of candidates) {\n    try {\n        app = require(cand);\n        if (app) break;\n    } catch (_) {}\n}\nmodule.exports = app;\n',
+                desktop: true,
+                location: 'local Desktop',
+            },
+        });
+        lastKey = backendAKey;
     }
 
     if (additionalTasks.length === 0) return tasks;

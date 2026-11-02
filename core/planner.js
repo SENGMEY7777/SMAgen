@@ -3380,12 +3380,69 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
         lastKey = vKey;
     }
 
+    const ROBUST_API_BRIDGE_CONTENT = `process.env.VERCEL = "1";
+let app;
+const candidates = [
+    "../app",
+    "../Backend/app",
+    "../backend/app",
+    "../src/app",
+    "../server",
+    "../Backend/server",
+    "../backend/server",
+    "../index",
+    "../Backend/index",
+    "../backend/index"
+];
+for (const cand of candidates) {
+    try {
+        app = require(cand);
+        if (app) break;
+    } catch (_) {}
+}
+
+if (app && typeof app.get === 'function') {
+    const handleRoot = (req, res) => {
+        res.status(200).json({
+            success: true,
+            status: "online",
+            message: "API server is live and running",
+            timestamp: new Date().toISOString()
+        });
+    };
+    app.get('/', handleRoot);
+    app.get('/health', handleRoot);
+    app.get('/api/health', handleRoot);
+}
+
+module.exports = app;
+`;
+
+    // Ensure all existing api/index.js tasks in the plan use ROBUST_API_BRIDGE_CONTENT with the root route
+    for (const t of tasks) {
+        if (t.toolInput?.path && typeof t.toolInput.path === 'string' && /api[\\/]index\.js$/i.test(t.toolInput.path)) {
+            t.toolInput.content = ROBUST_API_BRIDGE_CONTENT;
+            t.toolInput.mode = 'update';
+            t.toolInput.overwrite = true;
+            t.toolInput.ifExists = 'skip';
+        }
+        if (Array.isArray(t.toolInput?.files)) {
+            for (const f of t.toolInput.files) {
+                const fp = String(f?.path || f?.fileName || '');
+                if (/api[\\/]index\.js$/i.test(fp)) {
+                    f.content = ROBUST_API_BRIDGE_CONTENT;
+                    f.mode = 'update';
+                }
+            }
+        }
+    }
+
     if (!hasApiIndex) {
         const aKey = `task_api_bridge_${Date.now()}`;
         additionalTasks.push({
             nodeKey: aKey,
             title: 'Create Vercel serverless entry point api/index.js',
-            instruction: 'Bridge Express application to Vercel Serverless Function',
+            instruction: 'Bridge Express application to Vercel Serverless Function with root route',
             dependencies: lastKey ? [lastKey] : [],
             assignedTool: 'fileManager',
             toolInput: {
@@ -3394,7 +3451,7 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
                 overwrite: true,
                 ifExists: 'skip',
                 path: `${projectFolder}/api/index.js`,
-                content: 'let app;\nconst candidates = ["../app", "../Backend/app", "../backend/app", "../src/app", "../server", "../Backend/server", "../backend/server", "../index", "../Backend/index", "../backend/index"];\nfor (const cand of candidates) {\n    try {\n        app = require(cand);\n        if (app) break;\n    } catch (_) {}\n}\nmodule.exports = app;\n',
+                content: ROBUST_API_BRIDGE_CONTENT,
                 desktop: true,
                 location: 'local Desktop',
             },
@@ -3402,11 +3459,23 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
         lastKey = aKey;
     }
 
-    // Also check if any task targets a Backend or backend subfolder
-    const hasBackendSubfolder = tasks.some((t) => {
+    // Also check if any task targets a Backend or backend subfolder or if Backend exists on disk
+    let hasBackendSubfolder = tasks.some((t) => {
         const p = String(t.toolInput?.path || t.toolInput?.cwd || '').toLowerCase();
         return p.includes('backend/') || p.includes('backend\\');
     });
+
+    if (!hasBackendSubfolder && projectFolder) {
+        try {
+            const fsModule = require('fs');
+            const osModule = require('os');
+            const candidateDir = path.join(osModule.homedir(), 'Desktop', projectFolder, 'Backend');
+            const candidateLower = path.join(osModule.homedir(), 'Desktop', projectFolder, 'backend');
+            if (fsModule.existsSync(candidateDir) || fsModule.existsSync(candidateLower)) {
+                hasBackendSubfolder = true;
+            }
+        } catch (_) {}
+    }
 
     if (hasBackendSubfolder) {
         const backendVKey = `task_vercel_backend_json_${Date.now()}`;
@@ -3418,6 +3487,9 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'create',
+                mode: 'update',
+                overwrite: true,
+                ifExists: 'skip',
                 path: `${projectFolder}/Backend/vercel.json`,
                 content: JSON.stringify({
                     version: 2,
@@ -3435,13 +3507,16 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
         additionalTasks.push({
             nodeKey: backendAKey,
             title: 'Create Backend Vercel serverless entry point api/index.js',
-            instruction: 'Bridge Express application inside Backend to Vercel Serverless Function',
+            instruction: 'Bridge Express application inside Backend to Vercel Serverless Function with root route',
             dependencies: lastKey ? [lastKey] : [],
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'create',
+                mode: 'update',
+                overwrite: true,
+                ifExists: 'skip',
                 path: `${projectFolder}/Backend/api/index.js`,
-                content: 'let app;\nconst candidates = ["../app", "../server", "../index"];\nfor (const cand of candidates) {\n    try {\n        app = require(cand);\n        if (app) break;\n    } catch (_) {}\n}\nmodule.exports = app;\n',
+                content: `process.env.VERCEL = "1";\nlet app;\nconst candidates = ["../app", "../server", "../index", "../src/app"];\nfor (const cand of candidates) {\n    try {\n        app = require(cand);\n        if (app) break;\n    } catch (_) {}\n}\nif (app && typeof app.get === 'function') {\n    const handleRoot = (req, res) => {\n        res.status(200).json({\n            success: true,\n            status: "online",\n            message: "API server is live and running",\n            timestamp: new Date().toISOString()\n        });\n    };\n    app.get('/', handleRoot);\n    app.get('/health', handleRoot);\n    app.get('/api/health', handleRoot);\n}\nmodule.exports = app;\n`,
                 desktop: true,
                 location: 'local Desktop',
             },
@@ -4005,9 +4080,9 @@ Rules:
 - For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. The workflow should initialize Git if needed (git init), stage files (git add .), and commit changes (git commit -m "feat: initial commit"). When pushing to GitHub, check or configure the remote origin URL on main branch (git push -u origin main).
-- When the user provides a deployment URL (e.g. vercel.app, netlify.app) or asks to fix a server crash, 500 error, or FUNCTION_INVOCATION_FAILED: The goal is to make the deployed site live and working, not just inspect it. Do NOT stop after read-only checks. The workflow MUST plan an end-to-end fix:
-  1. For Express apps deployed on Vercel, ensure the official Vercel serverless bridge exists: create 'api/index.js' with 'const app = require("../app"); module.exports = app;' and create 'vercel.json' with { "version": 2, "rewrites": [{ "source": "/(.*)", "destination": "/api/index.js" }] }.
-  2. Fix runtime/syntax bugs in 'app.js': replace typos (e.g. h\`elmet()\` -> helmet()), add a root health route (app.get('/', ...)), wrap server.listen in if (!process.env.VERCEL) check, and ensure module.exports = app.
+- When the user provides a deployment URL (e.g. vercel.app, netlify.app) or asks to fix a server crash, 500 error, FUNCTION_INVOCATION_FAILED, or 'Cannot GET /': The goal is to make the deployed site live and working, not just inspect it. Do NOT stop after read-only checks. The workflow MUST plan an end-to-end fix:
+  1. For Express apps deployed on Vercel, ensure the official Vercel serverless bridge exists: create 'api/index.js' with multi-path candidate resolution (handling both root and Backend/ subfolder), and ALWAYS attach an explicit root health route (app.get('/', (req, res) => res.json({ success: true, message: "API is live and running" }))) so navigating to the deployment domain root never produces 'Cannot GET /'. Also create 'vercel.json' with { "version": 2, "rewrites": [{ "source": "/(.*)", "destination": "/api/index.js" }] }. If the project has a Backend subfolder, create both at the root and inside Backend/.
+  2. Fix runtime/syntax bugs in 'app.js' (or 'Backend/app.js'): add a root health route (app.get('/', (req, res) => res.json({ success: true, message: "API is live" }))), wrap server.listen in if (!process.env.VERCEL) check, and ensure module.exports = app.
   3. Deploy the fix: automatically stage and push all changes to GitHub (git add ., git commit -m "fix: resolve deployment 500 error and configure vercel serverless", git push origin main) so Vercel triggers a fresh deployment and repairs the live site.
 - For any bug fixing, troubleshooting, or code repair requests (e.g. "fix bug", "find the bug and fix", "fix url to correctly", "repair crash", "fix this error"): Locate the bug, update the affected files using fileManager, and ALWAYS finish the workflow by staging, committing, and pushing the fix directly to GitHub (git add ., git commit -m "fix: resolve bug and update project configuration", git push origin main with cwd Desktop/<project> and desktop: true) so changes are deployed to remote environments immediately.
 - Never add '|| true', '|| exit 0', redirects, or chained operators to executeCommand commands; keep every command as a single clean executable command.

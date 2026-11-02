@@ -159,6 +159,7 @@ Rules:
 - For multiple Vue components, use fileManager action 'createFiles' with a files array; for one file use action 'create' or 'write'.
 - When exporting a completed local-development workspace for Finder, keep fileManager action 'exportWorkspaceToDesktop' with a safe relative Desktop folder such as 'kairo-ecommerce'. For a local Downloads export or an unspecified destination, keep fileManager action 'exportWorkspaceToDownloads' with a safe relative folder such as 'kairo-workflow'.
 - For sshRequester, preserve the configured target alias and never add or change passwords, private keys, host keys, user credentials, or SSH configuration. Keep the command to one simple command without shell operators, newlines, or nested SSH/scp/sftp calls. SSH authentication, host-key, and permission failures require manual configuration rather than automatic repair.
+- If a command failed because an assumed entry file (such as 'server.js') does not exist in the project, repair toolInput.command to target the actual project entry file (such as 'app.js' or 'index.js') and return valid: true instead of declaring the failure unrepairable.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

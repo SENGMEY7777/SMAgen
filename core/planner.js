@@ -3459,6 +3459,35 @@ module.exports = app;
         lastKey = aKey;
     }
 
+    // 1. Remove any subfolder duplicates of vercel.json or api/index.js (e.g. Backend/vercel.json or Backend/api/index.js)
+    tasks = tasks.filter((t) => {
+        const p = String(t.toolInput?.path || '').toLowerCase();
+        if (p.includes('/backend/vercel.json') || p.includes('\\backend\\vercel.json')
+            || p.includes('/backend/api/') || p.includes('\\backend\\api\\')) {
+            return false;
+        }
+        return true;
+    });
+
+    // 2. Redirect root app.js tasks if app.js actually exists inside Backend/
+    try {
+        const fsMod = require('fs');
+        const osMod = require('os');
+        const backendAppCandidate = path.join(osMod.homedir(), 'Desktop', projectFolder, 'Backend', 'app.js');
+        const backendAppCandidateLower = path.join(osMod.homedir(), 'Desktop', projectFolder, 'backend', 'app.js');
+        const realSubfolder = fsMod.existsSync(backendAppCandidate) ? 'Backend'
+            : (fsMod.existsSync(backendAppCandidateLower) ? 'backend' : null);
+
+        if (realSubfolder) {
+            for (const t of tasks) {
+                const p = String(t.toolInput?.path || '').replace(/\\/g, '/');
+                if (p === `${projectFolder}/app.js` || p === 'app.js') {
+                    t.toolInput.path = `${projectFolder}/${realSubfolder}/app.js`;
+                }
+            }
+        }
+    } catch (_) {}
+
     if (additionalTasks.length === 0) return tasks;
 
     const gitIdx = tasks.findIndex((t) => {

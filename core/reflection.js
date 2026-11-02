@@ -88,6 +88,9 @@ const getNonRepairableFailureReason = ({task, error, errorTrace}) => {
     const action = String(toolInput?.action || '').trim().toLowerCase();
 
     if (assignedTool === 'fileManager' && action === 'deleteDesktopPath') {
+        if (code === 'LOCAL_DESKTOP_PATH_NOT_FOUND' || /not found/i.test(text)) {
+            return ''; // Allow self-healing with ignoreMissing: true
+        }
         return 'Local file removal is deterministic and does not require AI repair.';
     }
 
@@ -166,6 +169,7 @@ Rules:
   * Runtime Startup Crashes (ReferenceError, SyntaxError, Cannot find module): Identify the broken import, syntax typo, or missing entry file in the entrypoint (e.g. app.js, index.js), repair toolInput to target the correct entry file, and provide the corrected command or patch parameters instead of declaring the failure unrepairable.
   * Database Connection Refusal (ECONNREFUSED / ETIMEDOUT): When connecting to database services fails, repair host/port parameters to fallback to correct local network/container host configurations.
   * File Action Discrepancy (createDesktopFile with files array): If fileManager failed because createDesktopFile does not support a files array or file content was expected to be a string, repair toolInput.action to 'createDesktopFiles' (or supply path and content as strings for single file creation) and return valid: true.
+  * Missing Desktop Path to Delete: If fileManager deleteDesktopPath failed because the target was not found on Desktop (LOCAL_DESKTOP_PATH_NOT_FOUND), set toolInput.ignoreMissing = true and return valid: true so the absent file does not stop the workflow.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

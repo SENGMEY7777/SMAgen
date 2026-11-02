@@ -3289,6 +3289,101 @@ const normalizeGitBranchTasks = (tasks) => {
     return tasks;
 };
 
+const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
+    const isVercelGoal = /\b(?:vercel\.app|vercel|function_invocation_failed|cannot get \/)\b/i.test(goalPrompt);
+    if (!isVercelGoal) return tasks;
+
+    let projectFolder = null;
+    for (const t of tasks) {
+        if (t.toolInput?.cwd && typeof t.toolInput.cwd === 'string') {
+            projectFolder = t.toolInput.cwd.replace(/^Desktop[\\/]+/i, '').split(/[\\/]/)[0];
+            break;
+        } else if (t.toolInput?.path && typeof t.toolInput.path === 'string') {
+            const parts = t.toolInput.path.replace(/^Desktop[\\/]+/i, '').split(/[\\/]/).filter(Boolean);
+            if (parts.length > 0 && !['.', 'src', 'validator', 'dist', 'api'].includes(parts[0])) {
+                projectFolder = parts[0];
+                break;
+            }
+        }
+    }
+    if (!projectFolder && localDestination) {
+        projectFolder = String(localDestination).trim().replace(/^Desktop[\\/]+/i, '');
+    }
+    if (!projectFolder) return tasks;
+
+    const hasVercelJson = tasks.some((t) => {
+        const p = String(t.toolInput?.path || '').toLowerCase();
+        return p.includes('vercel.json');
+    });
+
+    const hasApiIndex = tasks.some((t) => {
+        const p = String(t.toolInput?.path || '').toLowerCase();
+        return p.includes('api/index.js') || p.includes('api\\index.js');
+    });
+
+    const additionalTasks = [];
+    let lastKey = tasks[0]?.nodeKey;
+
+    if (!hasVercelJson) {
+        const vKey = `task_vercel_json_${Date.now()}`;
+        additionalTasks.push({
+            nodeKey: vKey,
+            title: 'Create or update vercel.json rewrite configuration',
+            instruction: 'Configure Vercel to route all traffic to the serverless bridge api/index.js',
+            dependencies: lastKey ? [lastKey] : [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'create',
+                path: `${projectFolder}/vercel.json`,
+                content: JSON.stringify({
+                    version: 2,
+                    rewrites: [
+                        { source: '/(.*)', destination: '/api/index.js' },
+                    ],
+                }, null, 2),
+                desktop: true,
+                location: 'local Desktop',
+            },
+        });
+        lastKey = vKey;
+    }
+
+    if (!hasApiIndex) {
+        const aKey = `task_api_bridge_${Date.now()}`;
+        additionalTasks.push({
+            nodeKey: aKey,
+            title: 'Create Vercel serverless entry point api/index.js',
+            instruction: 'Bridge Express application to Vercel Serverless Function',
+            dependencies: lastKey ? [lastKey] : [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'create',
+                path: `${projectFolder}/api/index.js`,
+                content: 'let app;\ntry {\n    app = require("../app");\n} catch (_) {\n    try {\n        app = require("../server");\n    } catch (_) {\n        app = require("../index");\n    }\n}\nmodule.exports = app;\n',
+                desktop: true,
+                location: 'local Desktop',
+            },
+        });
+        lastKey = aKey;
+    }
+
+    if (additionalTasks.length === 0) return tasks;
+
+    const gitIdx = tasks.findIndex((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return cmd.includes('git add') || cmd.includes('git commit') || cmd.includes('git push');
+    });
+
+    if (gitIdx !== -1) {
+        const copy = [...tasks];
+        copy.splice(gitIdx, 0, ...additionalTasks);
+        return copy;
+    }
+
+    return [...tasks, ...additionalTasks];
+};
+
 const ensureGitPushTasksForBugFixes = (tasks, goalPrompt, localDestination) => {
     if (!Array.isArray(tasks) || tasks.length === 0) return tasks;
 
@@ -3496,6 +3591,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt, localDestination);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
+        // Ensure Vercel serverless entrypoint and configuration exist for deployment fixes
+        plan.tasks = ensureVercelServerlessTasks(plan.tasks, goalPrompt, localDestination);
         // Automatically ensure bug fixes and project repairs push directly to GitHub
         plan.tasks = ensureGitPushTasksForBugFixes(plan.tasks, goalPrompt, localDestination);
         // Ensure Git pushes always rename default branch to main

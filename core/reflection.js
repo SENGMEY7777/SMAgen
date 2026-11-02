@@ -322,6 +322,53 @@ const markTaskFailedAndSkipDependents = async ({
     };
 };
 
+const findDeterministicCorrection = ({task, error, errorTrace}) => {
+    const text = getFailureText({error, errorTrace});
+    const lastToolInput = parseJsonValue(task.tool_input || task.toolInput, {});
+    const assignedTool = String(task.assigned_tool || task.assignedTool || '').trim();
+
+    if (assignedTool === 'fileManager') {
+        const action = String(lastToolInput.action || '').toLowerCase();
+
+        // 1. Unsupported action: updatedesktopfile / writedesktopfile / editdesktopfile
+        if (/unsupported filemanager action/i.test(text) && /desktopfile/i.test(action)) {
+            const nextInput = { ...lastToolInput };
+            if (action.includes('files')) {
+                nextInput.action = 'createDesktopFiles';
+            } else {
+                nextInput.action = 'createDesktopFile';
+                if (!nextInput.mode) nextInput.mode = 'update';
+                nextInput.overwrite = true;
+            }
+            return {
+                valid: true,
+                toolInput: nextInput,
+                reason: `Normalized action ${lastToolInput.action} to ${nextInput.action} with update mode`,
+            };
+        }
+
+        // 2. files array passed to createDesktopFile
+        if (/does not support a 'files' array|files.*array/i.test(text) && Array.isArray(lastToolInput.files)) {
+            return {
+                valid: true,
+                toolInput: { ...lastToolInput, action: 'createDesktopFiles' },
+                reason: 'Converted createDesktopFile to createDesktopFiles for batch files array',
+            };
+        }
+
+        // 3. deleteDesktopPath target not found
+        if (action === 'deleteDesktopPath' && (/not found/i.test(text) || error?.code === 'LOCAL_DESKTOP_PATH_NOT_FOUND')) {
+            return {
+                valid: true,
+                toolInput: { ...lastToolInput, ignoreMissing: true },
+                reason: 'Enabled ignoreMissing on deleteDesktopPath so absent target does not halt workflow',
+            };
+        }
+    }
+
+    return null;
+};
+
 const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
     const errorTrace = createErrorTrace({runId, task, error, telemetry});
     const retryCount = getRetryCount(task);
@@ -390,6 +437,41 @@ const reflectOnTaskFailure = async ({runId, task, error, telemetry, io}) => {
         nodeKey: task.node_key || task.nodeKey,
         retryCount: nextRetryCount,
     });
+
+    const deterministic = findDeterministicCorrection({task, error, errorTrace});
+    if (deterministic && deterministic.valid) {
+        await updateTaskNode(task.id, {
+            status: 'PENDING',
+            toolInput: deterministic.toolInput,
+            retryCount: nextRetryCount,
+            errorMessage: null,
+            startedAt: null,
+            completedAt: null,
+        });
+
+        emitEvent(io, runId, 'node_retrying', {
+            runId,
+            taskId: task.id,
+            nodeKey: task.node_key || task.nodeKey,
+            status: 'PENDING',
+            highlight: 'yellow',
+            retryCount: nextRetryCount,
+            maxRetries: MAX_SELF_HEAL_RETRIES,
+            correctedToolInput: deterministic.toolInput,
+            reason: deterministic.reason,
+            errorTrace,
+        });
+
+        return {
+            status: 'RETRYING',
+            taskId: task.id,
+            nodeKey: task.node_key || task.nodeKey,
+            retryCount: nextRetryCount,
+            maxRetries: MAX_SELF_HEAL_RETRIES,
+            toolInput: deterministic.toolInput,
+            reason: deterministic.reason,
+        };
+    }
 
     let reflectionResult;
 

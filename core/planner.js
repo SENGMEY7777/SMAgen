@@ -1714,7 +1714,7 @@ const isExplicitExistingProjectUpdateRequest = (goalPrompt) => {
         return true;
     }
 
-    const hasUpdateIntent = /\b(?:update|modify|edit|rewrite|refactor|replace|overwrite)\b/i.test(text);
+    const hasUpdateIntent = /\b(?:update|modify|edit|rewrite|refactor|replace|overwrite|fix|repair|resolve)\b/i.test(text);
     const targetsExistingWork = /\b(?:existing|current|already[-\s]?created|present)\b[\s\S]{0,80}\b(?:project|app(?:lication)?|file|component|codebase|source)\b/i.test(text)
         || /\b(?:project|app(?:lication)?|file|component|codebase|source)\b[\s\S]{0,80}\b(?:existing|current|already[-\s]?created|present)\b/i.test(text);
     const hasProjectTarget = /\b(?:project|app(?:lication)?|file|files|component|components|codebase|source)\b/i.test(text);
@@ -3336,12 +3336,18 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
 
     const hasVercelJson = tasks.some((t) => {
         const p = String(t.toolInput?.path || '').toLowerCase();
-        return p.includes('vercel.json');
+        const files = Array.isArray(t.toolInput?.files) ? t.toolInput.files : [];
+        return p.includes('vercel.json') || files.some((f) => String(f?.path || f?.fileName || '').toLowerCase().includes('vercel.json'));
     });
 
     const hasApiIndex = tasks.some((t) => {
         const p = String(t.toolInput?.path || '').toLowerCase();
-        return p.includes('api/index.js') || p.includes('api\\index.js');
+        const files = Array.isArray(t.toolInput?.files) ? t.toolInput.files : [];
+        return p.includes('api/index.js') || p.includes('api\\index.js')
+            || files.some((f) => {
+                const fp = String(f?.path || f?.fileName || '').toLowerCase();
+                return fp.includes('api/index.js') || fp.includes('api\\index.js');
+            });
     });
 
     const additionalTasks = [];
@@ -3357,6 +3363,9 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'create',
+                mode: 'update',
+                overwrite: true,
+                ifExists: 'skip',
                 path: `${projectFolder}/vercel.json`,
                 content: JSON.stringify({
                     version: 2,
@@ -3381,6 +3390,9 @@ const ensureVercelServerlessTasks = (tasks, goalPrompt, localDestination) => {
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'create',
+                mode: 'update',
+                overwrite: true,
+                ifExists: 'skip',
                 path: `${projectFolder}/api/index.js`,
                 content: 'let app;\nconst candidates = ["../app", "../Backend/app", "../backend/app", "../src/app", "../server", "../Backend/server", "../backend/server", "../index", "../Backend/index", "../backend/index"];\nfor (const cand of candidates) {\n    try {\n        app = require(cand);\n        if (app) break;\n    } catch (_) {}\n}\nmodule.exports = app;\n',
                 desktop: true,

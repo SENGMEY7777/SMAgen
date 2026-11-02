@@ -160,6 +160,11 @@ Rules:
 - When exporting a completed local-development workspace for Finder, keep fileManager action 'exportWorkspaceToDesktop' with a safe relative Desktop folder such as 'kairo-ecommerce'. For a local Downloads export or an unspecified destination, keep fileManager action 'exportWorkspaceToDownloads' with a safe relative folder such as 'kairo-workflow'.
 - For sshRequester, preserve the configured target alias and never add or change passwords, private keys, host keys, user credentials, or SSH configuration. Keep the command to one simple command without shell operators, newlines, or nested SSH/scp/sftp calls. SSH authentication, host-key, and permission failures require manual configuration rather than automatic repair.
 - If a command failed because an assumed entry file (such as 'server.js') does not exist in the project, repair toolInput.command to target the actual project entry file (such as 'app.js' or 'index.js') and return valid: true instead of declaring the failure unrepairable.
+- Server Auto-Healing Rules:
+  * Port Conflict (EADDRINUSE / address already in use): If a server command fails because a port is occupied (e.g. :::4000, :::5000, :::3000), repair toolInput.command to specify an available fallback port (such as PORT=4001 or PORT=5001) or restart with an open port configuration.
+  * Missing Directory/File (ENOENT): If a task fails with 'ENOENT: no such file or directory', repair directory creation to ensure parent folders exist (e.g. 'mkdir -p' or fileManager action 'createDesktopDirectory' with recursive: true) before re-running the dependent command.
+  * Runtime Startup Crashes (ReferenceError, SyntaxError, Cannot find module): Identify the broken import, syntax typo, or missing entry file in the entrypoint (e.g. app.js, index.js), repair toolInput to target the correct entry file, and provide the corrected command or patch parameters instead of declaring the failure unrepairable.
+  * Database Connection Refusal (ECONNREFUSED / ETIMEDOUT): When connecting to database services fails, repair host/port parameters to fallback to correct local network/container host configurations.
 - toolInput must be a JSON object, never a string or array.
 `,
         userPrompt: JSON.stringify({

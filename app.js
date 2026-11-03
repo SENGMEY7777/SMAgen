@@ -20,6 +20,23 @@ const logger = require('./utils/logger');
 const app = express();
 app.disable('x-powered-by');
 app.set('json escape', true);
+
+// Trust the number of reverse-proxy hops configured via TRUST_PROXY.
+// When running behind the Nginx container, TRUST_PROXY="1" so that
+// express-rate-limit reads the real client IP from X-Forwarded-For
+// instead of treating the proxy's IP as the client.
+// Acceptable values: "1" (one proxy hop), "loopback", or a CIDR range.
+// See: https://expressjs.com/en/guide/behind-proxies.html
+const trustProxySetting = process.env.TRUST_PROXY;
+if (trustProxySetting) {
+    const parsed = Number(trustProxySetting);
+    app.set('trust proxy', Number.isFinite(parsed) ? parsed : trustProxySetting);
+} else if (config.nodeEnv !== 'production') {
+    // Allow local development without a proxy — do not set trust proxy so
+    // express-rate-limit falls back to req.ip (the direct connection IP).
+    app.set('trust proxy', false);
+}
+
 app.use(correlationMiddleware);
 
 const workspaceRoot = path.resolve(

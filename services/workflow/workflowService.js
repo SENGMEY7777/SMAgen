@@ -177,6 +177,17 @@ const cancelRun = async ({runId, userId, reason = 'Workflow cancelled by user'})
     };
 };
 
+const deleteRun = async (runId, userId) => {
+    cancelActiveRun(runId);
+    const deleted = await workflowModel.deleteExecutionRunById(runId, userId);
+    if (!deleted) {
+        const error = new Error('Workflow run not found');
+        error.code = 'RUN_NOT_FOUND';
+        throw error;
+    }
+    return { success: true, id: runId };
+};
+
 module.exports = {
     create,
     list,
@@ -184,4 +195,5 @@ module.exports = {
     listRuns,
     getWorkflowRun,
     cancelRun,
+    deleteRun,
 };

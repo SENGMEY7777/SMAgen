@@ -191,6 +191,15 @@ const cancelWorkflow = async (req, res, next) => {
     }
 };
 
+const deleteWorkflowRun = async (req, res, next) => {
+    try {
+        const result = await workflowService.deleteRun(req.params.runId, req.user.id);
+        return sendResponse(res, 200, true, 'Workflow run deleted successfully', result);
+    } catch (error) {
+        return next(error);
+    }
+};
+
 module.exports = {
     create,
     list,
@@ -199,4 +208,5 @@ module.exports = {
     listRuns,
     getWorkflowRun,
     cancelWorkflow,
+    deleteWorkflowRun,
 };

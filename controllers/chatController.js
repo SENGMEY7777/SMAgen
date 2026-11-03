@@ -19,7 +19,17 @@ const LOCAL_ENVIRONMENT_INSTRUCTION = `
 
 ### 💻 Local macOS Environment & File System Context:
 - You run as the core AI engine for **KAIRO** operating on the user's local macOS machine.
-- **STRICT PROHIBITION AGAINST CLOUD DISCLAIMERS:** NEVER say or hallucinate: "As an AI assistant operating within a cloud environment, I do not have direct access to your local computer's file system or local storage..." or give generic cloud assistant refusals.
+- **STRICT PROHIBITION AGAINST CLOUD & REMOTE DISCLAIMERS:**
+  - NEVER say or hallucinate: "As an AI assistant operating within a cloud environment, I do not have direct access to your local computer's file system or local storage..." or give generic cloud assistant refusals.
+  - NEVER say or hallucinate: "No, I cannot perform a remote SSH connection directly to an external server...", "I do not maintain an interactive shell or network capability to dial out via SSH...", or refuse remote SSH commands.
+- **Remote SSH & Autonomous Capabilities:**
+  - **KAIRO DOES support Remote SSH execution** through its Autonomous Workflow Engine using the **\`sshRequester\`** tool.
+  - When the user asks about or requests remote SSH execution, remote commands, deployments, or server checks:
+    1. Affirm clearly that **KAIRO supports Remote SSH** via **\`sshRequester\`** and its Autonomous Workflow Engine.
+    2. Guide the user on how to run it:
+       - **Config:** Pre-configure remote host aliases in the \`SSH_TARGETS_JSON\` environment variable (with \`host\`, \`user\`, \`port\`, and \`identityFile\`).
+       - **Mode:** Switch to **Workflow Mode** (click the **✨ Workflow** button in the composer) or request KAIRO to plan an execution workflow so the DAG planner assigns the \`sshRequester\` task.
+       - **Approval:** KAIRO enforces strict Human-in-the-Loop (HITL) approval, displaying an Approval Panel for user verification before running.
 - When the user asks where a file, folder, project, or task output is located on their computer (e.g., "tell me path of this file in local computer", "where is this file", "where was this folder saved", "how to open this file"):
   1. **Desktop Projects & Files (Default Destination for User Projects):**
      - Any project folder or file created by KAIRO for the user (such as Vue/React projects, \`Testing-Production\`, \`New Testing\`, scripts like \`main.js\`, HTML files, etc.) is saved to the local macOS Desktop:
@@ -42,6 +52,32 @@ const LOCAL_ENVIRONMENT_INSTRUCTION = `
   4. **KAIRO Project Root:**
      - Path: \`/Users/user/Documents/Project/Kairo-Production\`
 - Always provide direct, actionable answers with the exact local paths and copy-pasteable macOS terminal commands (\`open\`, \`cd\`, \`ls -la\`).`;
+
+const SERVER_CAPACITY_PLANNING_INSTRUCTION = `
+
+### 🧮 Server Resource & Capacity Sizing Calculation Engine (10/10 Standard):
+Whenever the user asks to calculate, size, estimate, or plan server resources (CPU, RAM, storage, disk, bandwidth, IOPS, or instance sizing) for any workload (e.g. web API, microservices, databases, streaming, or background workers):
+1. **Mathematical Rigor & Exact Formulations:**
+   - **Concurrency (Little's Law):** Calculate $L = \\lambda \\times W$ (Concurrent In-Flight Requests = Peak RPS $\\times$ Average Latency in seconds).
+   - **vCPU Calculation:**
+     $$\\text{Required vCPUs} = \\lceil \\frac{\\text{Peak RPS} \\times \\text{Latency (s)} \\times \\text{Active CPU Ratio}}{\\text{Target Utilization (0.70)}} \\rceil + 1 \\text{ (OS Reserve Core)}$$
+     - Active CPU Ratio: ~0.20–0.25 for async I/O web APIs, ~0.80–0.90 for compute-heavy tasks, ~0.45 for databases, ~0.10 for socket streaming.
+   - **RAM Memory Breakdown (GB):**
+     $$\\text{Total RAM (GB)} = \\text{OS Base (1.5–2 GB)} + (\\text{Workers} \\times \\text{App Heap}) + \\text{Connection Overhead} + \\text{DB Buffer Pool} + \\text{Cache Reserve} + \\text{Safety Headroom (25\\%)}$$
+     - Round up to standard hardware tiers: 2 GB, 4 GB, 8 GB, 16 GB, 32 GB, 64 GB, 128 GB.
+   - **Storage Capacity & IOPS:**
+     $$\\text{Disk Capacity (GB)} = \\text{OS/Docker (30 GB)} + \\text{Base Data} + (\\text{Daily Growth MB} \\times \\text{Retention Days} / 1024) \\times 1.35 \\text{ (WAL/Safety Buffer)}$$
+     - Calculate Required Disk IOPS: $\\text{Write IOPS} + (\\text{Read IOPS} \\times (1 - \\text{Cache Hit Ratio}))$.
+     - Disk Throughput (MB/s) = $\\text{IOPS} \\times 16\\text{KB} / 1024$.
+   - **Network Bandwidth:** Peak Bandwidth (Mbps) $= \\frac{\\text{Peak RPS} \\times \\text{Avg Payload (KB)} \\times 8}{1024} \\times 1.5 \\text{ (burst headroom)}$.
+2. **Standard Output Structure for Server Sizing:**
+   - **1. Workload Parameters & Assumptions** (Markdown table: Peak RPS, Average Latency, Concurrency, Payload size, Data size, Daily Growth).
+   - **2. Step-by-Step Mathematical Calculations** (Explicit arithmetic for CPU cores, RAM breakdown, Disk capacity, IOPS, and Bandwidth).
+   - **3. Recommended Server Specification Summary** (vCPUs, RAM GB, Disk GB & Type, IOPS, Bandwidth Mbps).
+   - **4. Cloud Provider Instance Mapping** (Concrete instance types and estimated monthly cost for AWS EC2, GCP, DigitalOcean, and Hetzner).
+   - **5. Live Server Diagnostic & Profiling Commands** (Copy-pasteable terminal commands for remote or local inspection: \`lscpu\`, \`free -h\`, \`df -hT\`, \`iostat -xz 1 2\`, \`ss -s\`).
+   - **6. Bottleneck & Scaling Strategy** (Connection pooling, caching, and horizontal scaling triggers).`;
+
 
 const RESPONSE_QUALITY_INSTRUCTION = `
 
@@ -174,6 +210,9 @@ const buildTurnGoalDirective = (message) => {
     } else if (has(/\b(?:what is|what are|how does|how do|explain|describe|under the hood|definition|difference between|compare)\b/i)) {
         mode = 'explanation';
         directive = 'Start with a clear direct explanation, then add technical depth, examples, trade-offs, or corrections only as needed for the user’s requested level.';
+    } else if (has(/\b(?:server|cpu|ram|memory|storage|disk|hardware|capacity|sizing|resources?|compute|bandwidth|iops|infrastructure|vcpus?)\b/i) && has(/\b(?:calculate|calulate|estimate|size|sizing|plan|spec|specs|requirement|how much|how many)\b/i)) {
+        mode = 'capacity_planning';
+        directive = 'Execute a comprehensive 10/10 Server Resource Sizing & Capacity Calculation. Provide exact mathematical formulas for CPU (vCPUs via Little’s Law and Peak RPS), RAM breakdown (OS reserve + app heap + connection footprint + DB buffer pool + cache), Storage (disk capacity + daily ingestion + IOPS/throughput), and Network Bandwidth. Present the results in a structured Sizing Table and map them to concrete Cloud Instance tiers (AWS, GCP, DigitalOcean, Hetzner) with cost estimates.';
     } else if (has(/\b(?:email|cover letter|resume|cv|message|translate|translation|application)\b/i)) {
         mode = 'writing';
         directive = 'Return the finished polished text in the requested tone and format. Preserve the user’s real facts and do not invent experience, credentials, employers, metrics, or links.';
@@ -315,7 +354,7 @@ const buildConversationRequest = ({message, history = [], projectContext = null,
     return {
         contents,
         config: {
-            systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}${FOUNDER_RELATIONSHIP_INSTRUCTION}${LOCAL_ENVIRONMENT_INSTRUCTION}${RESPONSE_QUALITY_INSTRUCTION}${ADAPTIVE_RESPONSE_INSTRUCTION}${TURN_GOAL_CONTRACT_INSTRUCTION}${REMEMBERED_USER_PREFERENCES_INSTRUCTION}${projectMemoryInstruction}${buildTurnGoalDirective(cleanMessage)}${CASUAL_CONVERSATION_INSTRUCTION}${dynamicLanguageDirective}`,
+            systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}${FOUNDER_RELATIONSHIP_INSTRUCTION}${LOCAL_ENVIRONMENT_INSTRUCTION}${SERVER_CAPACITY_PLANNING_INSTRUCTION}${RESPONSE_QUALITY_INSTRUCTION}${ADAPTIVE_RESPONSE_INSTRUCTION}${TURN_GOAL_CONTRACT_INSTRUCTION}${REMEMBERED_USER_PREFERENCES_INSTRUCTION}${projectMemoryInstruction}${buildTurnGoalDirective(cleanMessage)}${CASUAL_CONVERSATION_INSTRUCTION}${dynamicLanguageDirective}`,
             temperature: 0.2,
             maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
         },

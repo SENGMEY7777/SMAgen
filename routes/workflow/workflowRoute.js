@@ -52,5 +52,11 @@ router.get(
     validateParams(workflowRunParamsSchema),
     workflowController.getWorkflowRun,
 );
+router.delete(
+    '/runs/:runId',
+    isLogin,
+    validateParams(workflowRunParamsSchema),
+    workflowController.deleteWorkflowRun,
+);
 
 module.exports = router;

@@ -360,6 +360,38 @@ const bulkInsertTaskNodes = async (tasks) => {
     return result;
 }
 
+const deleteExecutionRunById = async (runId, userId) => {
+    const [runs] = await pool.query(
+        `SELECT id FROM execution_runs WHERE id = ? AND user_id = ?`,
+        [runId, userId],
+    );
+    if (!runs.length) return false;
+
+    await pool.query(
+        `DELETE ar FROM approval_requests ar
+         INNER JOIN task_nodes tn ON ar.task_id = tn.id
+         WHERE tn.run_id = ?`,
+        [runId],
+    ).catch(() => {});
+
+    await pool.query(
+        `DELETE to_tbl FROM task_outputs to_tbl
+         INNER JOIN task_nodes tn ON to_tbl.task_id = tn.id
+         WHERE tn.run_id = ?`,
+        [runId],
+    ).catch(() => {});
+
+    await pool.query(`DELETE FROM task_nodes WHERE run_id = ?`, [runId]);
+    await pool.query(`DELETE FROM execution_logs WHERE run_id = ?`, [runId]);
+
+    const [result] = await pool.query(
+        `DELETE FROM execution_runs WHERE id = ? AND user_id = ?`,
+        [runId, userId],
+    );
+
+    return result.affectedRows > 0;
+};
+
 module.exports = {
     create,
     listWorkflowsByUser,
@@ -370,6 +402,7 @@ module.exports = {
     incrementExecutionRunUsage,
     getExecutionById,
     listExecutionRunsByUser,
+    deleteExecutionRunById,
     createExecutionLog,
     listExecutionLogsByRunId,
     listTaskNodesByRunId,

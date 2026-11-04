@@ -21,10 +21,10 @@ const parseRetryLimit = (value, fallback = 3) => {
 };
 
 const MAX_SELF_HEAL_RETRIES = parseRetryLimit(process.env.MAX_SELF_HEAL_RETRIES);
-const configuredReflectionTimeout = Number.parseInt(process.env.LLM_REFLECTION_TIMEOUT_MS || '15000', 10);
+const configuredReflectionTimeout = Number.parseInt(process.env.LLM_REFLECTION_TIMEOUT_MS || process.env.LLM_TIMEOUT_MS || '35000', 10);
 const REFLECTION_LLM_TIMEOUT_MS = Number.isInteger(configuredReflectionTimeout) && configuredReflectionTimeout >= 1000
     ? configuredReflectionTimeout
-    : 15000;
+    : 35000;
 
 const emitEvent = (io, runId, event, payload) => {
     emitWorkflowEvent({

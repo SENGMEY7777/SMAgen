@@ -104,6 +104,8 @@ function errorHandler(err, req, res, next) {
     title = err.errorCode || (statusCode >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR');
     detail = err.message || 'Request rejected';
     details = err.details || null;
+  } else if (err && err.message) {
+    detail = err.message;
   }
 
   const problemDetails = {

@@ -1,6 +1,6 @@
 const dotenv = require('dotenv');
 
-dotenv.config({ override: true });
+dotenv.config();
 
 const DEFAULTS = {
     PORT: '8080',

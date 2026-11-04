@@ -125,10 +125,18 @@ const cleanRelativeDirectoryPath = (value) => {
         return null;
     }
 
-    const cleaned = value
+    let cleaned = value
         .trim()
         .replace(/^['"`]|['"`]$/g, '')
         .replace(/^desktop[\\/]+/i, '');
+
+    // Strip any accidental instruction sentences appended from context
+    cleaned = cleaned
+        .split(/\.\s*Create or update/i)[0]
+        .split(/\s*\[Follow-up/i)[0]
+        .split(/\.\s*Do not choose/i)[0]
+        .trim()
+        .replace(/[.,;!?]+$/, '');
 
     if (
         !cleaned
@@ -684,6 +692,9 @@ const cleanDesktopRelativePath = (value) => {
     let cleaned = value
         .trim()
         .replace(/^['"`]|['"`]$/g, '')
+        .split(/\.\s*Create or update/i)[0]
+        .split(/\s*\[Follow-up/i)[0]
+        .split(/\.\s*Do not choose/i)[0]
         .replace(/[.,;!?]+$/, '')
         .replace(/[\\/]$/, '');
 
@@ -3566,6 +3577,13 @@ const normalizeLocalDestination = (value) => {
         : String(value || '').trim();
     raw = raw.replace(/\\/g, '/').replace(/^['"`]|['"`]$/g, '');
 
+    // Strip trailing instruction context if present
+    raw = raw
+        .split(/\.\s*Create or update/i)[0]
+        .split(/\s*\[Follow-up/i)[0]
+        .split(/\.\s*Do not choose/i)[0]
+        .trim();
+
     // Strip leading home/tilde or absolute desktop/downloads path
     raw = raw.replace(/^.*?\/(Desktop|Downloads)\//i, '$1/');
     raw = raw.replace(/^~[\\/]+/i, '');
@@ -3592,7 +3610,7 @@ const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
     const destination = normalizeLocalDestination(localDestination);
     if (!destination) return goalPrompt;
 
-    return `${goalPrompt}\n\n[Follow-up execution context: continue working in the existing local ${destination.location} folder ${destination.location}/${destination.relativePath}. Create or update the requested output there. Do not choose a different default destination.]`;
+    return `${goalPrompt}\n\n[Follow-up execution context: Target local folder is "${destination.location}/${destination.relativePath}". Work inside this project directory.]`;
 };
 
 const planWorkflowRun = async ({
@@ -3660,8 +3678,10 @@ Rules:
 - Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.
 - For an explicit remove or delete request, create exactly one fileManager task targeting only the named path. Use deleteDesktopPath for a local Desktop target. Do not add create-file, project-setup, or export tasks to a removal workflow.
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
+- When the user asks to "add file <filename>" (e.g. "add file main.java", "add file app.js", "create file"), this means CREATE/WRITE a new file using fileManager. Do NOT run git add, git commit, or execute git commands for file creation requests unless the user explicitly requested Git/GitHub operations.
+- STRICT DEPLOYMENT & VERCEL RULE: NEVER generate 'vercel.json', 'api/index.js', or serverless deployment configurations unless the user explicitly and directly asks to deploy to Vercel or fix a Vercel deployment (e.g. "deploy to vercel", "fix vercel deployment"). For normal feature development, coding, adding files, building applications, or working in existing projects, NEVER create, modify, or delete vercel.json or api/index.js.
 - For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. The workflow should initialize Git if needed (git init), stage files (git add .), and commit changes (git commit -m "feat: initial commit"). When pushing to GitHub, check or configure the remote origin URL on main branch (git push -u origin main).
-- When the user asks to FIX, DEPLOY, or RESOLVE a deployment error for a URL (e.g. "fix vercel deployment", "fix 500 error on vercel.app", "deploy project to vercel"): Do NOT search for the URL domain string in the codebase. Instead, diagnose the server code: inspect main entry files (app.js, server.js, index.js), check syntax with 'node -c <file>', verify required dependencies and exports, and ensure serverless deployment configs (e.g. vercel.json for Express on Vercel). If the user only asks for information, explanation, or server resources without asking to fix or deploy, do NOT generate deployment file changes.
+- When the user specifically asks to FIX, DEPLOY, or RESOLVE a deployment error for a URL (e.g. "fix vercel deployment", "fix 500 error on vercel.app", "deploy project to vercel"): Do NOT search for the URL domain string in the codebase. Instead, diagnose the server code: inspect main entry files (app.js, server.js, index.js), check syntax with 'node -c <file>', verify required dependencies and exports, and ensure serverless deployment configs (e.g. vercel.json for Express on Vercel). If the user only asks for information, explanation, or server resources without asking to fix or deploy, do NOT generate deployment file changes.
 - When asked to inspect, profile, or calculate remote server resources (CPU, RAM, storage, disk, or memory usage): For a configured remote target, plan diagnostic tasks using 'sshRequester' (e.g. command 'free -m' for RAM, 'df -hT' for storage, 'lscpu' for CPU cores, or 'uptime' for load average) to collect accurate server hardware telemetry.
 - Never add '|| true', '|| exit 0', redirects, or chained operators to executeCommand commands; keep every command as a single clean executable command.
 - Use imageGenerator only for visual image, logo, icon, banner, illustration, or artwork generation. Never use it for HTML, JSON, CSS, JavaScript, metadata, project structure, file creation, or asset listing.

@@ -2006,6 +2006,16 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             }
         }
 
+        if (commandName === 'grep' && error.code === 1) {
+            return {
+                command,
+                cwd: effectiveCwd,
+                stdout: error.stdout || '',
+                stderr: '',
+                exitCode: 0,
+            };
+        }
+
         return {
             command,
             cwd: effectiveCwd,

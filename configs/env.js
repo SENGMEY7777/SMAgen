@@ -60,7 +60,7 @@ const getCorsOrigins = (env = process.env) => {
 };
 
 const isLocalDatabaseHost = (host) => {
-    return ['localhost', '127.0.0.1', '::1'].includes(String(host || '').trim().toLowerCase());
+    return ['localhost', '127.0.0.1', '::1', 'host.docker.internal'].includes(String(host || '').trim().toLowerCase());
 };
 
 const getValue = (env, key) => {

@@ -1498,7 +1498,8 @@ const httpRequester = async (input, workspacePath, task, options = {}) => {
     });
 
     const ok = response.status >= 200 && response.status < 400;
-    const allowFailure = input.allowFailure === true || input.expectFailure === true;
+    // When inspecting, reviewing, or testing URLs, any HTTP response status (200-599) is a valid diagnostic response, not a tool failure
+    const allowFailure = input.allowFailure === true || input.expectFailure === true || input.inspect === true || !input.failOnStatus;
 
     return {
         method,
@@ -1510,6 +1511,7 @@ const httpRequester = async (input, workspacePath, task, options = {}) => {
         data: response.data,
         ok,
         exitCode: ok || allowFailure ? 0 : 1,
+        stdout: typeof response.data === 'string' ? response.data.slice(0, 1000) : JSON.stringify(response.data || {}).slice(0, 1000),
         stderr: ok || allowFailure ? '' : `HTTP ${method} ${url} failed with status ${response.status} (${response.statusText || 'Error'}): ${typeof response.data === 'string' ? response.data.slice(0, 500) : JSON.stringify(response.data || {}).slice(0, 500)}`,
     };
 };

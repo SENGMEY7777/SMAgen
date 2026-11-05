@@ -4013,6 +4013,18 @@ ${desktopInstruction}
         }
 
         if (!validatedPlan) {
+            const fallbackTasks = normalizeServerReviewAndFixTasks([], goalPrompt, effectiveDestination);
+            if (fallbackTasks && fallbackTasks.length > 0) {
+                console.log(`🛡️ [Planner Resilience] Gemini API experienced high demand (${lastPlannerError?.message}). Using autonomous server review & fix plan.`);
+                validatedPlan = {
+                    workflowTitle: `Review and Fix Server for ${goalPrompt.match(/https?:\/\/[^\s]+/i)?.[0] || 'API'}`,
+                    summary: `Autonomously test live endpoint, inspect server, apply route fix, and verify syntax.`,
+                    tasks: fallbackTasks,
+                };
+            }
+        }
+
+        if (!validatedPlan) {
             await updateExecutionRunStatus(runId, 'FAILED');
 
             const errorMessage = lastPlannerError?.message || 'Failed to generate a valid acyclic DAG plan after maximum attempts.';

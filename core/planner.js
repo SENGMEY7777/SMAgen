@@ -3312,8 +3312,12 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     if (!isFixOrReviewRequest) return tasks;
 
     let projectPath = null;
+    const urlDomain = (targetUrl.match(/https?:\/\/([a-z0-9_-]+)/i)?.[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const dest = normalizeLocalDestination(localDestination);
-    if (dest?.relativePath) {
+    const destNorm = String(dest?.relativePath || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    // Only accept localDestination if it actually matches the URL domain!
+    if (dest?.relativePath && urlDomain && (destNorm.includes(urlDomain) || urlDomain.includes(destNorm))) {
         projectPath = dest.relativePath;
     } else {
         for (const t of tasks) {
@@ -3847,7 +3851,21 @@ const planWorkflowRun = async ({
         },
     });
 
-    const effectiveDestination = localDestination || await findMatchingDesktopProject(goalPrompt);
+    let effectiveDestination = localDestination;
+    const urlMatches = String(goalPrompt || '').match(/https?:\/\/([a-z0-9_-]+)/i);
+    if (urlMatches) {
+        const urlDomain = urlMatches[1].toLowerCase().replace(/[^a-z0-9]/g, '');
+        const destNorm = String(localDestination || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        // If localDestination does not match the URL domain, ignore it and search Desktop
+        if (!destNorm || (!destNorm.includes(urlDomain) && !urlDomain.includes(destNorm))) {
+            const matchedProject = await findMatchingDesktopProject(goalPrompt);
+            if (matchedProject) {
+                effectiveDestination = matchedProject;
+            }
+        }
+    } else if (!effectiveDestination) {
+        effectiveDestination = await findMatchingDesktopProject(goalPrompt);
+    }
     const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
     const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;

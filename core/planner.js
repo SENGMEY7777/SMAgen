@@ -3342,9 +3342,92 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
         const action = String(t.toolInput?.action || '').toLowerCase();
         return (t.assignedTool === 'fileManager' && ['create', 'update', 'createdesktopfile', 'write'].includes(action) && !action.includes('directory'));
     });
+    const hasPushTask = tasks.some((t) => {
+        const cmd = String(t.toolInput?.command || '').toLowerCase();
+        return t.assignedTool === 'executeCommand' && (cmd.includes('git push') || cmd.includes('push origin'));
+    });
 
-    if (hasHttpTask && hasCodeUpdateTask && tasks.length >= 4) {
+    if (hasHttpTask && hasCodeUpdateTask && hasPushTask) {
         return tasks;
+    }
+
+    if (hasCodeUpdateTask && !hasPushTask) {
+        const updatedTasks = [...tasks];
+        const lastTask = tasks[tasks.length - 1];
+
+        const hasCommitTask = tasks.some((t) => {
+            const cmd = String(t.toolInput?.command || '').toLowerCase();
+            return t.assignedTool === 'executeCommand' && cmd.includes('git commit');
+        });
+
+        if (!hasCommitTask) {
+            updatedTasks.push({
+                nodeKey: 'git_stage_changes',
+                title: 'Stage modified files',
+                instruction: 'Run git add . to stage server route fixes.',
+                dependencies: [lastTask.nodeKey],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: 'git add .',
+                    cwd: desktopProjectPath,
+                    desktop: true,
+                },
+            });
+
+            updatedTasks.push({
+                nodeKey: 'git_commit_changes',
+                title: 'Commit server route fix',
+                instruction: 'Commit root route implementation.',
+                dependencies: ['git_stage_changes'],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: 'git commit -m "fix: add root GET route for welcome message"',
+                    cwd: desktopProjectPath,
+                    desktop: true,
+                },
+            });
+        }
+
+        const commitDep = hasCommitTask
+            ? tasks.find((t) => String(t.toolInput?.command || '').toLowerCase().includes('git commit')).nodeKey
+            : 'git_commit_changes';
+
+        const hasBranchTask = tasks.some((t) => {
+            const cmd = String(t.toolInput?.command || '').toLowerCase();
+            return t.assignedTool === 'executeCommand' && (cmd.includes('git branch -m') || cmd.includes('checkout -b main'));
+        });
+
+        if (!hasBranchTask) {
+            updatedTasks.push({
+                nodeKey: 'git_branch_main',
+                title: 'Set default branch to main',
+                instruction: 'Ensure branch is named main before pushing.',
+                dependencies: [commitDep],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: 'git branch -M main',
+                    cwd: desktopProjectPath,
+                    desktop: true,
+                },
+            });
+        }
+
+        const pushDep = !hasBranchTask ? 'git_branch_main' : commitDep;
+
+        updatedTasks.push({
+            nodeKey: 'git_push_deploy',
+            title: 'Push changes to deploy',
+            instruction: 'Push commit to remote repository to trigger live deployment.',
+            dependencies: [pushDep],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git push origin main',
+                cwd: desktopProjectPath,
+                desktop: true,
+            },
+        });
+
+        return updatedTasks;
     }
 
     const newTasks = [];
@@ -3431,10 +3514,23 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     });
 
     newTasks.push({
+        nodeKey: 'git_branch_main',
+        title: 'Set default branch to main',
+        instruction: 'Ensure branch is named main before pushing.',
+        dependencies: ['git_commit_changes'],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git branch -M main',
+            cwd: desktopProjectPath,
+            desktop: true,
+        },
+    });
+
+    newTasks.push({
         nodeKey: 'git_push_deploy',
         title: 'Push changes to deploy',
         instruction: 'Push commit to remote repository to trigger live deployment.',
-        dependencies: ['git_commit_changes'],
+        dependencies: ['git_branch_main'],
         assignedTool: 'executeCommand',
         toolInput: {
             command: 'git push origin main',
@@ -3571,10 +3667,10 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt, localDestination);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
-        // Ensure Git pushes always rename default branch to main
-        plan.tasks = normalizeGitBranchTasks(plan.tasks);
         // Autonomous server review and repair: ensure URL modify/fix requests include diagnosis, route fix, syntax check, and git commit/push
         plan.tasks = normalizeServerReviewAndFixTasks(plan.tasks, goalPrompt, localDestination);
+        // Ensure Git pushes always rename default branch to main
+        plan.tasks = normalizeGitBranchTasks(plan.tasks);
 
         if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
             const renamePaths = extractRenamePaths(goalPrompt);

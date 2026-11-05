@@ -583,6 +583,10 @@ const fileManager = async (input, workspacePath, task = {}) => {
             ? 'listDesktopDirectory'
         : requestedAction === 'listdesktopfiles' || requestedAction === 'list_desktop_files'
             ? 'listDesktopDirectory'
+        : requestedAction === 'readdesktopfile' || requestedAction === 'read_desktop_file'
+            || requestedAction === 'inspectdesktopfile' || requestedAction === 'inspect_desktop_file'
+            || requestedAction === 'catdesktopfile' || requestedAction === 'cat_desktop_file'
+            ? 'readDesktopFile'
         : requestedAction;
 
     assertServerFileWriteAccess(action);

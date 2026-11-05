@@ -1200,7 +1200,15 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
-    const writeAction = desktopFileAction ? String(input.mode || 'create').trim().toLowerCase() : action;
+    const writeAction = (action === 'update' || input.mode === 'update')
+        ? 'update'
+        : (action === 'write' || input.mode === 'write')
+            ? 'write'
+        : (action === 'append' || input.mode === 'append')
+            ? 'append'
+        : action === 'createDesktopFile'
+            ? String(input.mode || 'create').trim().toLowerCase()
+            : action;
 
     if (!['create', 'write', 'update', 'append'].includes(writeAction)) {
         throw new Error(`Unsupported fileManager action: ${action}`);

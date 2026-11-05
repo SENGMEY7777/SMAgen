@@ -31,30 +31,54 @@ const wait = (milliseconds) => new Promise((resolve) => {
 });
 
 const getErrorCode = (error) => {
-    if (Number.isInteger(error?.code)) {
-        return error.code;
+    if (Number.isInteger(Number(error?.code))) {
+        return Number(error.code);
     }
 
-    if (Number.isInteger(error?.status)) {
-        return error.status;
+    if (Number.isInteger(Number(error?.status))) {
+        return Number(error.status);
     }
 
     try {
         const parsedMessage = JSON.parse(error?.message || '{}');
-        return parsedMessage.error?.code;
+        if (Number.isInteger(Number(parsedMessage.error?.code))) {
+            return Number(parsedMessage.error.code);
+        }
     } catch (parseError) {
         return null;
     }
+    return null;
 };
 
 const isRetryableError = (error) => {
     const code = getErrorCode(error);
-    return [408, 429, 500, 502, 503, 504].includes(code);
+    if ([404, 408, 429, 500, 502, 503, 504].includes(code)) {
+        return true;
+    }
+
+    const message = String(error?.message || '').toLowerCase();
+    const status = String(error?.status || '').toLowerCase();
+    const errorString = `${message} ${status}`;
+
+    return (
+        errorString.includes('high demand')
+        || errorString.includes('spikes in demand')
+        || errorString.includes('temporarily unavailable')
+        || errorString.includes('rate limit')
+        || errorString.includes('resource_exhausted')
+        || errorString.includes('unavailable')
+        || errorString.includes('overloaded')
+        || errorString.includes('timeout')
+        || errorString.includes('econnreset')
+        || errorString.includes('etimedout')
+        || errorString.includes('503')
+        || errorString.includes('429')
+        || errorString.includes('500')
+    );
 };
 
 const isTransientProviderError = (error) => {
-    const code = getErrorCode(error);
-    return [429, 500, 502, 503].includes(code);
+    return isRetryableError(error);
 };
 
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
@@ -97,12 +121,17 @@ const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
         model,
         process.env.GEMINI_MODEL,
         process.env.GEMINI_FALLBACK_MODEL,
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+        'gemini-1.5-flash',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
         ...String(process.env.GEMINI_EXTRA_MODELS || '')
             .split(',')
             .map((candidate) => candidate.trim())
             .filter(Boolean),
     ].filter(Boolean);
-    return [...new Set(candidates)].slice(0, maxAttempts);
+    return [...new Set(candidates)].slice(0, Math.max(maxAttempts, 4));
 };
 
 const createLlmFailure = (lastError, operation = 'Gemini request') => {

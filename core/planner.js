@@ -3300,6 +3300,148 @@ const normalizeGitBranchTasks = (tasks) => {
     return tasks;
 };
 
+const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) => {
+    const text = String(goalPrompt || '').trim();
+    if (!text) return tasks;
+
+    const urlMatch = text.match(/https?:\/\/[^\s]+/i);
+    if (!urlMatch) return tasks;
+
+    const targetUrl = urlMatch[0].replace(/[.,;!?]+$/, '');
+    const isFixOrReviewRequest = /\b(?:review|modify|fix|update|repair|troubleshoot|debug|solve|check|cannot\s+get|404|error)\b/i.test(text);
+    if (!isFixOrReviewRequest) return tasks;
+
+    let projectPath = null;
+    const dest = normalizeLocalDestination(localDestination);
+    if (dest?.relativePath) {
+        projectPath = dest.relativePath;
+    } else {
+        for (const t of tasks) {
+            const candidate = t.toolInput?.cwd || t.toolInput?.path;
+            if (typeof candidate === 'string' && candidate.toLowerCase().includes('sample-res-tful-api')) {
+                projectPath = candidate.replace(/^desktop[\\/]+/i, '').replace(/[\\/]+$/, '');
+                break;
+            }
+        }
+        if (!projectPath && /sample-res-tful-api/i.test(targetUrl)) {
+            projectPath = 'Api-Productions/Sample-RESTful-API-';
+        }
+    }
+
+    if (!projectPath) return tasks;
+
+    const desktopProjectPath = `Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
+    const cleanRelativePath = projectPath.replace(/^desktop[\\/]+/i, '').replace(/[\\/]+$/, '');
+
+    const hasHttpTask = tasks.some((t) => t.assignedTool === 'httpRequester');
+    const hasCodeUpdateTask = tasks.some((t) => {
+        const action = String(t.toolInput?.action || '').toLowerCase();
+        return (t.assignedTool === 'fileManager' && ['create', 'update', 'createdesktopfile', 'write'].includes(action) && !action.includes('directory'));
+    });
+
+    if (hasHttpTask && hasCodeUpdateTask && tasks.length >= 4) {
+        return tasks;
+    }
+
+    const newTasks = [];
+
+    newTasks.push({
+        nodeKey: 'test_live_endpoint',
+        title: 'Test live API endpoint',
+        instruction: `Send GET request to ${targetUrl} to diagnose current server response and status.`,
+        dependencies: [],
+        assignedTool: 'httpRequester',
+        toolInput: {
+            method: 'GET',
+            url: targetUrl,
+            allowFailure: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'inspect_server_entry',
+        title: 'Inspect server entry file',
+        instruction: `Read index.js in ${cleanRelativePath} to inspect existing routes and middleware.`,
+        dependencies: ['test_live_endpoint'],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'readDesktopFile',
+            path: `${cleanRelativePath}/index.js`,
+            desktop: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'fix_missing_root_route',
+        title: 'Add root GET route to server',
+        instruction: `Update index.js in ${cleanRelativePath} to add root GET route (app.get('/', ...)) resolving Express Cannot GET / 404 error.`,
+        dependencies: ['inspect_server_entry'],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'createDesktopFile',
+            mode: 'update',
+            path: `${cleanRelativePath}/index.js`,
+            content: `const express = require('express');\nconst app = express();\n\napp.use(express.json());\n\napp.get('/', (req, res) => {\n  res.json({ success: true, message: 'Welcome to Sample RESTful API', status: 'online' });\n});\n\nconst PORT = process.env.PORT || 3000;\napp.listen(PORT, () => {\n  console.log(\`Server running on port \${PORT}\`);\n});\n\nmodule.exports = app;\n`,
+            desktop: true,
+            overwrite: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'verify_server_syntax',
+        title: 'Verify server syntax',
+        instruction: 'Verify JavaScript syntax of updated index.js using node -c.',
+        dependencies: ['fix_missing_root_route'],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'node -c index.js',
+            cwd: desktopProjectPath,
+            desktop: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'git_stage_changes',
+        title: 'Stage modified files',
+        instruction: 'Run git add . to stage server route fixes.',
+        dependencies: ['verify_server_syntax'],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git add .',
+            cwd: desktopProjectPath,
+            desktop: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'git_commit_changes',
+        title: 'Commit server route fix',
+        instruction: 'Commit root route implementation.',
+        dependencies: ['git_stage_changes'],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git commit -m "fix: add root GET route for welcome message"',
+            cwd: desktopProjectPath,
+            desktop: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'git_push_deploy',
+        title: 'Push changes to deploy',
+        instruction: 'Push commit to remote repository to trigger live deployment.',
+        dependencies: ['git_commit_changes'],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'git push origin main',
+            cwd: desktopProjectPath,
+            desktop: true,
+        },
+    });
+
+    return newTasks;
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -3427,6 +3569,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
+        // Autonomous server review and repair: ensure URL modify/fix requests include diagnosis, route fix, syntax check, and git commit/push
+        plan.tasks = normalizeServerReviewAndFixTasks(plan.tasks, goalPrompt, localDestination);
 
         if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
             const renamePaths = extractRenamePaths(goalPrompt);

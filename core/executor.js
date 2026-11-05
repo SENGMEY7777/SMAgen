@@ -2077,20 +2077,31 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             ? await resolveDynamicGitCredentials(task, effectiveCwd)
             : null;
 
+        let sshCommand = 'ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts';
+        const sshDir = path.join(os.homedir(), '.ssh');
+        for (const keyName of ['id_ed25519', 'id_rsa', 'id_ecdsa']) {
+            const keyPath = path.join(sshDir, keyName);
+            try {
+                if (fsSync.existsSync(keyPath)) {
+                    sshCommand += ` -i "${keyPath}"`;
+                    break;
+                }
+            } catch (_) {}
+        }
+
         const gitEnv = gitCreds ? {
             GIT_AUTHOR_NAME: gitCreds.authorName,
             GIT_AUTHOR_EMAIL: gitCreds.authorEmail,
             GIT_COMMITTER_NAME: gitCreds.committerName,
             GIT_COMMITTER_EMAIL: gitCreds.committerEmail,
             GIT_TERMINAL_PROMPT: '0',
+            GIT_SSH_COMMAND: sshCommand,
             ...(gitCreds.githubToken ? {
                 GIT_ASKPASS: 'echo',
                 GIT_CONFIG_COUNT: '1',
                 GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
                 GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${gitCreds.githubToken.trim()}`).toString('base64')}`,
-            } : {
-                GIT_SSH_COMMAND: 'ssh -o StrictHostKeyChecking=accept-new',
-            }),
+            } : {}),
         } : {};
 
         if (commandName === 'git' && effectiveCwd && !args.includes('clone') && !args.includes('init')) {
@@ -2101,6 +2112,50 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                     await execFileAsync('git', ['init'], { cwd: effectiveCwd, timeout: 3000 });
                 } catch (_) {}
             }
+        }
+
+        // Dynamic Commit Message Resolution based on actual staged files in Git
+        if (commandName === 'git' && args[0] === 'commit' && effectiveCwd) {
+            try {
+                const msgIndex = args.indexOf('-m');
+                const currentMsg = msgIndex !== -1 ? args[msgIndex + 1] : '';
+                const isGeneric = !currentMsg || /^(?:chore:\s*)?(?:prepare changes|update|commit|changes|initial commit|fix:\s*update server and deploy)(?:\s+to\s+production)?$/i.test(currentMsg.trim());
+
+                if (isGeneric) {
+                    const stagedFilesOutput = await execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: effectiveCwd, timeout: 2000 }).then(r => r.stdout.trim()).catch(() => '');
+                    const files = stagedFilesOutput ? stagedFilesOutput.split('\n').map(f => f.trim()).filter(Boolean) : [];
+
+                    if (files.length > 0) {
+                        let dynamicMessage = '';
+                        const hasValidation = files.some(f => /validat|schema|regex/i.test(f));
+                        const hasAuth = files.some(f => /auth|jwt|user|login|token|pass/i.test(f));
+                        const hasRoute = files.some(f => /route|controller|api/i.test(f));
+                        const hasServer = files.some(f => /app\.js|index\.js|server\.js|vercel\.json/i.test(f));
+                        const hasModel = files.some(f => /model|db/i.test(f));
+
+                        if (hasValidation) {
+                            dynamicMessage = 'feat(validation): add validation middleware and schemas';
+                        } else if (hasAuth) {
+                            dynamicMessage = 'feat(auth): implement user authentication handlers';
+                        } else if (hasRoute) {
+                            dynamicMessage = 'feat(api): update API routes and controller logic';
+                        } else if (hasServer) {
+                            dynamicMessage = 'fix(server): configure server entry points and routing';
+                        } else if (hasModel) {
+                            dynamicMessage = 'feat(database): update models and schema definitions';
+                        } else {
+                            const sampleFiles = files.slice(0, 3).map(f => path.basename(f)).join(', ');
+                            dynamicMessage = `feat: update ${sampleFiles}`;
+                        }
+
+                        if (msgIndex !== -1) {
+                            args[msgIndex + 1] = dynamicMessage;
+                        } else {
+                            args.push('-m', dynamicMessage);
+                        }
+                    }
+                }
+            } catch (_) {}
         }
 
         const result = await execFileAsync(commandName, args, {

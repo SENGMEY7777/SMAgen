@@ -1830,7 +1830,17 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
         } catch (_) {}
     }
 
-    // 3. Fallback to clean generic KAIRO Bot identity if absolutely nothing is found
+    // 3. Ensure local repository git config user.name and user.email are actively populated
+    if (effectiveCwd && authorName && authorEmail) {
+        try {
+            await Promise.allSettled([
+                execFileAsync('git', ['config', 'user.name', authorName], { cwd: effectiveCwd, timeout: 2000 }),
+                execFileAsync('git', ['config', 'user.email', authorEmail], { cwd: effectiveCwd, timeout: 2000 }),
+            ]);
+        } catch (_) {}
+    }
+
+    // 4. Fallback to clean generic KAIRO Bot identity if absolutely nothing is found
     if (!authorName) {
         authorName = 'KAIRO AI';
         committerName = 'KAIRO AI';
@@ -2083,6 +2093,16 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             }),
         } : {};
 
+        if (commandName === 'git' && effectiveCwd && !args.includes('clone') && !args.includes('init')) {
+            try {
+                await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: effectiveCwd, timeout: 2000 });
+            } catch (_) {
+                try {
+                    await execFileAsync('git', ['init'], { cwd: effectiveCwd, timeout: 3000 });
+                } catch (_) {}
+            }
+        }
+
         const result = await execFileAsync(commandName, args, {
             cwd: effectiveCwd,
             timeout: COMMAND_TIMEOUT_MS,
@@ -2121,6 +2141,42 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
         if (commandName === 'git' && args[0] === 'push') {
             const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
+            if (/no upstream branch|set-upstream/i.test(combined)) {
+                try {
+                    const branchName = args[args.length - 1] || 'main';
+                    const retryResult = await execFileAsync('git', ['push', '-u', 'origin', branchName], {
+                        cwd: effectiveCwd,
+                        timeout: COMMAND_TIMEOUT_MS,
+                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                    });
+                    return {
+                        command: `git push -u origin ${branchName}`,
+                        cwd: effectiveCwd,
+                        stdout: retryResult.stdout,
+                        stderr: retryResult.stderr,
+                        exitCode: 0,
+                    };
+                } catch (_) {}
+            }
+
+            if (/src refspec main does not match any/i.test(combined)) {
+                try {
+                    await execFileAsync('git', ['branch', '-M', 'main'], { cwd: effectiveCwd, timeout: 3000 });
+                    const retryResult = await execFileAsync('git', ['push', '-u', 'origin', 'main'], {
+                        cwd: effectiveCwd,
+                        timeout: COMMAND_TIMEOUT_MS,
+                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                    });
+                    return {
+                        command: 'git push -u origin main',
+                        cwd: effectiveCwd,
+                        stdout: retryResult.stdout,
+                        stderr: retryResult.stderr,
+                        exitCode: 0,
+                    };
+                } catch (_) {}
+            }
+
             if (/could not read (?:Username|password)|Permission denied|Authentication failed|terminal prompts disabled|device not configured/i.test(combined)) {
                 return {
                     command,

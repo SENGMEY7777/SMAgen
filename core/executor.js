@@ -2177,14 +2177,34 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                 } catch (_) {}
             }
 
+            if (gitCreds?.githubToken && (/Permission denied/i.test(combined) || /could not read/i.test(combined))) {
+                try {
+                    const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd: effectiveCwd, timeout: 2000 }).then(r => r.stdout.trim()).catch(() => '');
+                    const sshMatch = originUrl.match(/git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
+                    if (sshMatch) {
+                        const tokenPushUrl = `https://x-access-token:${gitCreds.githubToken.trim()}@github.com/${sshMatch[1]}/${sshMatch[2]}.git`;
+                        const retryResult = await execFileAsync('git', ['push', tokenPushUrl, 'HEAD:main'], {
+                            cwd: effectiveCwd,
+                            timeout: COMMAND_TIMEOUT_MS,
+                        });
+                        return {
+                            command: 'git push origin main',
+                            cwd: effectiveCwd,
+                            stdout: retryResult.stdout,
+                            stderr: retryResult.stderr,
+                            exitCode: 0,
+                        };
+                    }
+                } catch (_) {}
+            }
+
             if (/could not read (?:Username|password)|Permission denied|Authentication failed|terminal prompts disabled|device not configured/i.test(combined)) {
-                return {
-                    command,
-                    cwd: effectiveCwd,
-                    stdout: error.stdout || '',
-                    stderr: 'Git push requires local GitHub credentials. Run "git push" in your terminal to deploy to Vercel.',
-                    exitCode: 0,
-                };
+                const pushAuthError = new Error(
+                    'Git push failed: GitHub authentication required. Ensure your SSH key is added or set GITHUB_TOKEN in your environment. You can deploy by running in terminal: cd "' + effectiveCwd + '" && git push origin main'
+                );
+                pushAuthError.code = 'GIT_PUSH_AUTH_REQUIRED';
+                pushAuthError.status = 401;
+                throw pushAuthError;
             }
         }
 

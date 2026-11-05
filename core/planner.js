@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const fs = require('fs/promises');
+const os = require('os');
 const path = require('path');
 
 const {generateStructureClient} = require('../configs/llm');
@@ -3606,6 +3608,72 @@ const normalizeLocalDestination = (value) => {
     return null;
 };
 
+const findMatchingDesktopProject = async (goalPrompt) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) return null;
+    const text = String(goalPrompt || '').trim();
+    if (!text) return null;
+
+    // 1. Extract potential project names from URLs in the prompt (e.g. sample-res-tful-api)
+    const urlMatches = text.match(/https?:\/\/([a-z0-9_-]+)(?:\.[a-z0-9_-]+)*\.[a-z]{2,}/gi) || [];
+    const candidates = [];
+
+    for (const urlStr of urlMatches) {
+        try {
+            const parsed = new URL(urlStr);
+            const hostParts = parsed.hostname.split('.');
+            if (hostParts.length >= 2) {
+                candidates.push(hostParts[0]);
+            }
+        } catch (_) {}
+    }
+
+    const words = text.match(/[a-zA-Z0-9_-]{3,}/g) || [];
+    candidates.push(...words);
+
+    const normalize = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+
+    try {
+        const topEntries = await fs.readdir(desktopRoot, {withFileTypes: true});
+        const directories = [];
+
+        for (const entry of topEntries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            directories.push({relativePath: entry.name, name: entry.name});
+
+            // Also check 1 level deep inside category folders (e.g. Api-Productions, projects, etc.)
+            if (['api-productions', 'projects', 'apps', 'code', 'apis', 'services', 'servers'].includes(entry.name.toLowerCase()) || entry.name.includes('-')) {
+                try {
+                    const subDir = path.join(desktopRoot, entry.name);
+                    const subEntries = await fs.readdir(subDir, {withFileTypes: true});
+                    for (const sub of subEntries) {
+                        if (sub.isDirectory() && !sub.name.startsWith('.')) {
+                            directories.push({
+                                relativePath: `${entry.name}/${sub.name}`,
+                                name: sub.name,
+                            });
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+
+        for (const candidate of candidates) {
+            const candNorm = normalize(candidate);
+            if (!candNorm || candNorm.length < 3) continue;
+
+            for (const dir of directories) {
+                const dirNorm = normalize(dir.name);
+                if (dirNorm === candNorm || (candNorm.length >= 6 && (dirNorm.includes(candNorm) || candNorm.includes(dirNorm)))) {
+                    return `Desktop/${dir.relativePath}`;
+                }
+            }
+        }
+    } catch (_) {}
+
+    return null;
+};
+
 const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
     const destination = normalizeLocalDestination(localDestination);
     if (!destination) return goalPrompt;
@@ -3635,7 +3703,8 @@ const planWorkflowRun = async ({
         },
     });
 
-    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, localDestination);
+    const effectiveDestination = localDestination || await findMatchingDesktopProject(goalPrompt);
+    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
     const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;
 
@@ -3644,7 +3713,7 @@ const planWorkflowRun = async ({
         const cached = planCache.get(cacheKey);
         validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
             goalPrompt: planningGoalPrompt,
-            localDestination,
+            localDestination: effectiveDestination,
         });
     }
 
@@ -3739,7 +3808,7 @@ ${desktopInstruction}
 
                 const parsed = validatePlan(rawResult.data, {
                     goalPrompt: planningGoalPrompt,
-                    localDestination,
+                    localDestination: effectiveDestination,
                 });
 
                 if (!parsed.success) {

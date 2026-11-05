@@ -3545,27 +3545,63 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     newTasks.push({
         nodeKey: 'fix_missing_root_route',
         title: 'Add root GET route to server',
-        instruction: `Update index.js in ${cleanRelativePath} to add root GET route (app.get('/', ...)) resolving Express Cannot GET / 404 error.`,
+        instruction: `Update app.js and index.js in ${cleanRelativePath} to add root GET route (app.get('/', ...)) resolving Express Cannot GET / 404 error.`,
         dependencies: ['inspect_server_entry'],
         assignedTool: 'fileManager',
         toolInput: {
             action: 'createDesktopFile',
             mode: 'update',
-            path: `${cleanRelativePath}/index.js`,
-            content: `const express = require('express');\nconst app = express();\n\napp.use(express.json());\n\napp.get('/', (req, res) => {\n  res.json({ success: true, message: 'Welcome to Sample RESTful API', status: 'online' });\n});\n\nconst PORT = process.env.PORT || 3000;\napp.listen(PORT, () => {\n  console.log(\`Server running on port \${PORT}\`);\n});\n\nmodule.exports = app;\n`,
+            path: `${cleanRelativePath}/app.js`,
+            content: `const express = require('express');\nconst app = express();\nlet userRoute;\ntry { userRoute = require('./routes/userRoutes'); } catch (_) {}\n\napp.use(express.json());\n\napp.get('/', (req, res) => {\n  res.status(200).json({\n    status: 'success',\n    message: 'Sample RESTful API is running successfully'\n  });\n});\n\nif (userRoute) app.use(userRoute);\n\nconst PORT = process.env.PORT || 3000;\nif (require.main === module) {\n  app.listen(PORT, () => {\n    console.log(\`Server running on port \${PORT}\`);\n  });\n}\n\nmodule.exports = app;\n`,
             desktop: true,
             overwrite: true,
         },
     });
 
     newTasks.push({
+        nodeKey: 'ensure_index_export',
+        title: 'Ensure index entry exports app',
+        instruction: `Update index.js in ${cleanRelativePath} to export app for Vercel deployment.`,
+        dependencies: ['fix_missing_root_route'],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'createDesktopFile',
+            mode: 'update',
+            path: `${cleanRelativePath}/index.js`,
+            content: `const app = require('./app');\n\nmodule.exports = app;\n`,
+            desktop: true,
+            overwrite: true,
+        },
+    });
+
+    if (/vercel\.app/i.test(targetUrl)) {
+        newTasks.push({
+            nodeKey: 'configure_vercel_routing',
+            title: 'Configure Vercel serverless routing',
+            instruction: `Create vercel.json in ${cleanRelativePath} to route all incoming requests to Express app.`,
+            dependencies: ['ensure_index_export'],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: `${cleanRelativePath}/vercel.json`,
+                content: `{\n  "version": 2,\n  "rewrites": [\n    {\n      "source": "/(.*)",\n      "destination": "/app.js"\n    }\n  ]\n}\n`,
+                desktop: true,
+                overwrite: true,
+            },
+        });
+    }
+
+    const syntaxDep = /vercel\.app/i.test(targetUrl) ? 'configure_vercel_routing' : 'ensure_index_export';
+
+    newTasks.push({
         nodeKey: 'verify_server_syntax',
         title: 'Verify server syntax',
-        instruction: 'Verify JavaScript syntax of updated index.js using node -c.',
-        dependencies: ['fix_missing_root_route'],
+        instruction: 'Verify JavaScript syntax of updated app.js and index.js using node -c.',
+        dependencies: [syntaxDep],
         assignedTool: 'executeCommand',
         toolInput: {
-            command: 'node -c index.js',
+            command: 'node -c app.js && node -c index.js',
             cwd: desktopProjectPath,
             desktop: true,
         },

@@ -1809,11 +1809,12 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
     }
 
     // 2. If still not set, read from local git config of the project directory if available
-    if ((!authorName || !authorEmail) && effectiveCwd) {
+    if (effectiveCwd) {
         try {
-            const [localNameResult, localEmailResult] = await Promise.allSettled([
-                execFileAsync('git', ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000 }),
-                execFileAsync('git', ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000 }),
+            const [localNameResult, localEmailResult, localTokenResult] = await Promise.allSettled([
+                !authorName ? execFileAsync('git', ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000 }) : Promise.resolve(null),
+                !authorEmail ? execFileAsync('git', ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000 }) : Promise.resolve(null),
+                !githubToken ? execFileAsync('git', ['config', 'github.token'], { cwd: effectiveCwd, timeout: 2000 }) : Promise.resolve(null),
             ]);
             if (!authorName && localNameResult.status === 'fulfilled' && localNameResult.value?.stdout?.trim()) {
                 authorName = localNameResult.value.stdout.trim();
@@ -1822,6 +1823,9 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
             if (!authorEmail && localEmailResult.status === 'fulfilled' && localEmailResult.value?.stdout?.trim()) {
                 authorEmail = localEmailResult.value.stdout.trim();
                 committerEmail = authorEmail;
+            }
+            if (!githubToken && localTokenResult.status === 'fulfilled' && localTokenResult.value?.stdout?.trim()) {
+                githubToken = localTokenResult.value.stdout.trim();
             }
         } catch (_) {}
     }
@@ -2068,6 +2072,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             GIT_AUTHOR_EMAIL: gitCreds.authorEmail,
             GIT_COMMITTER_NAME: gitCreds.committerName,
             GIT_COMMITTER_EMAIL: gitCreds.committerEmail,
+            GIT_TERMINAL_PROMPT: '0',
             ...(gitCreds.githubToken ? {
                 GIT_ASKPASS: 'echo',
                 GIT_CONFIG_COUNT: '1',

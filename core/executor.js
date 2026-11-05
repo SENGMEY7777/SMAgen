@@ -1775,6 +1775,76 @@ const getNodeRuntimePath = async () => {
     ].filter(Boolean))].join(path.delimiter);
 };
 
+const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
+    let authorName = process.env.GIT_AUTHOR_NAME;
+    let authorEmail = process.env.GIT_AUTHOR_EMAIL;
+    let committerName = process.env.GIT_COMMITTER_NAME || authorName;
+    let committerEmail = process.env.GIT_COMMITTER_EMAIL || authorEmail;
+    let githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+
+    // 1. Try to fetch user profile dynamically from the current execution run in database
+    const runId = task?.run_id || task?.runId;
+    if (runId && (!authorName || !authorEmail || !githubToken)) {
+        try {
+            const [runs] = await databasePool.query(
+                `SELECT u.full_name, u.email
+                 FROM execution_runs er
+                 JOIN users u ON u.id = er.user_id
+                 WHERE er.id = ?
+                 LIMIT 1`,
+                [runId],
+            );
+            if (runs && runs[0]) {
+                const user = runs[0];
+                if (!authorName && user.full_name) {
+                    authorName = user.full_name;
+                    committerName = user.full_name;
+                }
+                if (!authorEmail && user.email) {
+                    authorEmail = user.email;
+                    committerEmail = user.email;
+                }
+            }
+        } catch (_) {}
+    }
+
+    // 2. If still not set, read from local git config of the project directory if available
+    if ((!authorName || !authorEmail) && effectiveCwd) {
+        try {
+            const [localNameResult, localEmailResult] = await Promise.allSettled([
+                execFileAsync('git', ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000 }),
+                execFileAsync('git', ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000 }),
+            ]);
+            if (!authorName && localNameResult.status === 'fulfilled' && localNameResult.value?.stdout?.trim()) {
+                authorName = localNameResult.value.stdout.trim();
+                committerName = authorName;
+            }
+            if (!authorEmail && localEmailResult.status === 'fulfilled' && localEmailResult.value?.stdout?.trim()) {
+                authorEmail = localEmailResult.value.stdout.trim();
+                committerEmail = authorEmail;
+            }
+        } catch (_) {}
+    }
+
+    // 3. Fallback to clean generic KAIRO Bot identity if absolutely nothing is found
+    if (!authorName) {
+        authorName = 'KAIRO AI';
+        committerName = 'KAIRO AI';
+    }
+    if (!authorEmail) {
+        authorEmail = 'agent@kairo.ai';
+        committerEmail = 'agent@kairo.ai';
+    }
+
+    return {
+        authorName,
+        authorEmail,
+        committerName,
+        committerEmail,
+        githubToken,
+    };
+};
+
 const executeCommand = async (input, workspacePath, task, options = {}) => {
     let command = typeof input.command === 'string' ? input.command.trim() : '';
 
@@ -1989,6 +2059,25 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
     try {
         const commandPath = await getNodeRuntimePath();
+        const gitCreds = commandName === 'git'
+            ? await resolveDynamicGitCredentials(task, effectiveCwd)
+            : null;
+
+        const gitEnv = gitCreds ? {
+            GIT_AUTHOR_NAME: gitCreds.authorName,
+            GIT_AUTHOR_EMAIL: gitCreds.authorEmail,
+            GIT_COMMITTER_NAME: gitCreds.committerName,
+            GIT_COMMITTER_EMAIL: gitCreds.committerEmail,
+            ...(gitCreds.githubToken ? {
+                GIT_ASKPASS: 'echo',
+                GIT_CONFIG_COUNT: '1',
+                GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+                GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${gitCreds.githubToken.trim()}`).toString('base64')}`,
+            } : {
+                GIT_SSH_COMMAND: 'ssh -o StrictHostKeyChecking=accept-new',
+            }),
+        } : {};
+
         const result = await execFileAsync(commandName, args, {
             cwd: effectiveCwd,
             timeout: COMMAND_TIMEOUT_MS,
@@ -1998,14 +2087,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             env: {
                 ...process.env,
                 PATH: commandPath,
-                GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'SENGMEY7777',
-                GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || 'vannsengmey748@gmail.com',
-                GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'SENGMEY7777',
-                GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || 'vannsengmey748@gmail.com',
-                GIT_SSH_COMMAND: 'ssh -o StrictHostKeyChecking=accept-new',
-                GIT_CONFIG_COUNT: '1',
-                GIT_CONFIG_KEY_0: 'url.git@github.com:.insteadOf',
-                GIT_CONFIG_VALUE_0: 'https://github.com/',
+                ...gitEnv,
                 npm_config_yes: 'true',
                 CI: 'true',
             },

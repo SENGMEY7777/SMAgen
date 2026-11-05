@@ -1004,17 +1004,28 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
-    const desktopFileAction = action === 'createDesktopFile';
-    if (desktopFileAction && !['create', 'write', 'update', 'append'].includes(input.mode || 'create')) {
+    const isDesktopAction = action === 'createDesktopFile'
+        || action === 'readDesktopFile'
+        || action === 'listDesktopDirectory';
+
+    const isExplicitDesktop = LOCAL_DESKTOP_OUTPUT_ENABLED && (
+        isDesktopAction
+        || input.desktop === true
+        || input.location === 'local Desktop'
+        || input.location === 'Desktop'
+        || (typeof input.path === 'string' && /^desktop[\\/]/i.test(input.path.trim()))
+    );
+
+    const desktopFileAction = action === 'createDesktopFile'
+        || (isExplicitDesktop && ['create', 'write', 'update', 'append'].includes(action));
+
+    if (action === 'createDesktopFile' && !['create', 'write', 'update', 'append'].includes(input.mode || 'create')) {
         throw new Error('createDesktopFile supports create, write, update, or append through the mode field');
     }
 
     let filePath;
     let isDesktopTarget = false;
-    if (desktopFileAction) {
-        filePath = await resolveLocalDesktopPath(input.path);
-        isDesktopTarget = true;
-    } else if (LOCAL_DESKTOP_OUTPUT_ENABLED && (input.desktop === true || input.location === 'local Desktop')) {
+    if (desktopFileAction || isExplicitDesktop) {
         filePath = await resolveLocalDesktopPath(input.path);
         isDesktopTarget = true;
     } else {
@@ -1085,7 +1096,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         }
     }
 
-    if (action === 'read') {
+    if (action === 'read' || action === 'readDesktopFile') {
         let content;
         try {
             content = await fs.readFile(filePath, 'utf8');
@@ -1132,7 +1143,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
-    if (action === 'list') {
+    if (action === 'list' || action === 'listDesktopDirectory') {
         let entries;
         try {
             entries = await fs.readdir(filePath, {withFileTypes: true});
@@ -1920,7 +1931,8 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         if (
             path.isAbsolute(argument)
             || argument.split(/[\\/]/).includes('..')
-            || /[;&|`$()]/.test(argument)
+            || (commandName !== 'git' && /[;&|`$]/.test(argument))
+            || (commandName === 'git' && /[;&|`]/.test(argument) && !args.includes('-m'))
         ) {
             throw new Error('Command arguments must remain inside the task workspace');
         }

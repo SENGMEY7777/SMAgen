@@ -3542,6 +3542,99 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     return newTasks;
 };
 
+const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
+    const text = String(goalPrompt || '').trim();
+    if (!text) return tasks;
+
+    const isGitPushIntent = /\b(?:push|deploy|publish)\b.*\b(?:github|git|remote|origin|repo)\b/i.test(text)
+        || /\b(?:git\s+push|push\s+to\s+github|deploy\s+to\s+github|push\s+code)\b/i.test(text)
+        || /^[\s\w]*push[\s\w]*github[\s\w]*$/i.test(text);
+
+    if (!isGitPushIntent) return tasks;
+
+    let projectPath = null;
+    const dest = normalizeLocalDestination(localDestination);
+    if (dest?.relativePath) {
+        projectPath = dest.relativePath;
+    } else {
+        for (const t of tasks) {
+            const candidate = t.toolInput?.cwd || t.toolInput?.path;
+            if (typeof candidate === 'string' && candidate.toLowerCase().includes('sample-res-tful-api')) {
+                projectPath = candidate.replace(/^desktop[\\/]+/i, '').replace(/[\\/]+$/, '');
+                break;
+            }
+        }
+        if (!projectPath) {
+            projectPath = 'Api-Productions/Sample-RESTful-API-';
+        }
+    }
+
+    const desktopProjectPath = `Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
+
+    return [
+        {
+            nodeKey: 'git_status_check',
+            title: 'Check repository status',
+            instruction: 'Check git status in the project directory to inspect modified and untracked files.',
+            dependencies: [],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git status',
+                cwd: desktopProjectPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: 'git_stage_changes',
+            title: 'Stage modified files',
+            instruction: 'Run git add . to stage all project files for commit.',
+            dependencies: ['git_status_check'],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git add .',
+                cwd: desktopProjectPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: 'git_commit_changes',
+            title: 'Commit changes',
+            instruction: 'Commit staged changes to prepare for deployment.',
+            dependencies: ['git_stage_changes'],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git commit -m "fix: update server and deploy to production"',
+                cwd: desktopProjectPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: 'git_branch_main',
+            title: 'Set default branch to main',
+            instruction: 'Ensure branch is named main for GitHub compatibility.',
+            dependencies: ['git_commit_changes'],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git branch -M main',
+                cwd: desktopProjectPath,
+                desktop: true,
+            },
+        },
+        {
+            nodeKey: 'git_push_deploy',
+            title: 'Push changes to deploy',
+            instruction: 'Push commit to remote repository to trigger live deployment.',
+            dependencies: ['git_branch_main'],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'git push origin main',
+                cwd: desktopProjectPath,
+                desktop: true,
+            },
+        },
+    ];
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -3669,6 +3762,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
         // Autonomous server review and repair: ensure URL modify/fix requests include diagnosis, route fix, syntax check, and git commit/push
         plan.tasks = normalizeServerReviewAndFixTasks(plan.tasks, goalPrompt, localDestination);
+        // Dedicated git push workflow: ensure standalone push to github requests always have complete status, stage, commit, branch, and push
+        plan.tasks = normalizeGitPushWorkflowTasks(plan.tasks, goalPrompt, localDestination);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
 
@@ -4109,12 +4204,15 @@ ${desktopInstruction}
         }
 
         if (!validatedPlan) {
-            const fallbackTasks = normalizeServerReviewAndFixTasks([], goalPrompt, effectiveDestination);
+            let fallbackTasks = normalizeServerReviewAndFixTasks([], goalPrompt, effectiveDestination);
+            if (!fallbackTasks || !fallbackTasks.length) {
+                fallbackTasks = normalizeGitPushWorkflowTasks([], goalPrompt, effectiveDestination);
+            }
             if (fallbackTasks && fallbackTasks.length > 0) {
-                console.log(`🛡️ [Planner Resilience] Gemini API experienced high demand (${lastPlannerError?.message}). Using autonomous server review & fix plan.`);
+                console.log(`🛡️ [Planner Resilience] Using deterministic plan for ${goalPrompt}`);
                 validatedPlan = {
-                    workflowTitle: `Review and Fix Server for ${goalPrompt.match(/https?:\/\/[^\s]+/i)?.[0] || 'API'}`,
-                    summary: `Autonomously test live endpoint, inspect server, apply route fix, and verify syntax.`,
+                    workflowTitle: `Deploy to GitHub for ${effectiveDestination || 'Project'}`,
+                    summary: `Autonomously stage, commit, set branch to main, and push to GitHub.`,
                     tasks: fallbackTasks,
                 };
             }

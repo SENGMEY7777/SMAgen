@@ -2012,6 +2012,19 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             }
         }
 
+        if (commandName === 'git' && args[0] === 'push') {
+            const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
+            if (/could not read (?:Username|password)|Permission denied|Authentication failed|terminal prompts disabled|device not configured/i.test(combined)) {
+                return {
+                    command,
+                    cwd: effectiveCwd,
+                    stdout: error.stdout || '',
+                    stderr: 'Git push requires local GitHub credentials. Run "git push" in your terminal to deploy to Vercel.',
+                    exitCode: 0,
+                };
+            }
+        }
+
         if (commandName === 'grep' && error.code === 1) {
             return {
                 command,

@@ -3300,6 +3300,89 @@ const normalizeGitBranchTasks = (tasks) => {
     return tasks;
 };
 
+const generateDynamicCommitMessage = (goalPrompt = '', tasks = []) => {
+    const text = String(goalPrompt || '').trim();
+
+    // 1. Explicit commit message in user prompt
+    const quotedMatch = text.match(/(?:commit\s+(?:with\s+)?(?:message|msg|-m)?\s*["'“]([^"'”]+)["'”])/i);
+    if (quotedMatch && quotedMatch[1]?.trim()) {
+        return quotedMatch[1].trim();
+    }
+
+    // 2. Identify modified or created files from tasks
+    const changedFiles = [];
+    if (Array.isArray(tasks)) {
+        tasks.forEach((t) => {
+            if (t.assignedTool === 'fileManager') {
+                const p = t.toolInput?.path || t.toolInput?.filePath;
+                if (p && typeof p === 'string') {
+                    const base = p.split(/[\\/]/).pop();
+                    if (base && !changedFiles.includes(base)) changedFiles.push(base);
+                }
+            }
+        });
+    }
+
+    const fileScope = changedFiles.length === 1 ? `(${changedFiles[0]})` : '';
+
+    // 3. Dynamic semantic intent inference
+    if (/\b(?:cannot\s+get|404|route|not\s+found)\b/i.test(text)) {
+        return `fix${fileScope}: add root route handler to resolve 404 Cannot GET /`;
+    }
+    if (/\b(?:fix|repair|bug|error|issue|problem|broken|crash)\b/i.test(text)) {
+        const cleanGoal = text
+            .replace(/^please\s+/i, '')
+            .replace(/^i want (?:to )?/i, '')
+            .replace(/\b(?:review and |please )\b/i, '')
+            .replace(/https?:\/\/[^\s]+/i, '')
+            .trim();
+        return `fix${fileScope}: ${cleanGoal ? cleanGoal.slice(0, 68) : 'resolve server runtime issues'}`;
+    }
+    if (/\b(?:add|create|new|implement|feature)\b/i.test(text)) {
+        const cleanGoal = text
+            .replace(/^please\s+/i, '')
+            .replace(/^i want (?:to )?/i, '')
+            .trim();
+        return `feat${fileScope}: ${cleanGoal ? cleanGoal.slice(0, 68) : 'add requested application features'}`;
+    }
+    if (/\b(?:refactor|clean|structure|mvc|service)\b/i.test(text)) {
+        return `refactor${fileScope}: reorganize project architecture and modularize code`;
+    }
+    if (/\b(?:docs?|readme)\b/i.test(text)) {
+        return `docs: update documentation and project specifications`;
+    }
+    if (/\b(?:push|deploy|publish|release)\b/i.test(text)) {
+        return `chore: prepare changes and deploy to production`;
+    }
+
+    const cleanText = text.replace(/^please\s+/i, '').replace(/^i want (?:to )?/i, '').trim();
+    return `chore: ${cleanText ? cleanText.slice(0, 68) : 'update project files and configurations'}`;
+};
+
+const normalizeGitCommitTasks = (tasks, goalPrompt) => {
+    if (!Array.isArray(tasks) || !tasks.length) return tasks;
+
+    const dynamicMsg = generateDynamicCommitMessage(goalPrompt, tasks);
+
+    return tasks.map((t) => {
+        if (t.assignedTool === 'executeCommand') {
+            const cmd = String(t.toolInput?.command || '').trim();
+            if (/^git\s+commit\s+-m\s*["'](?:initial\s+commit|update|commit|save|changes)["']$/i.test(cmd)) {
+                return {
+                    ...t,
+                    title: `Commit: ${dynamicMsg}`,
+                    instruction: `Commit project changes with message: "${dynamicMsg}"`,
+                    toolInput: {
+                        ...t.toolInput,
+                        command: `git commit -m "${dynamicMsg}"`,
+                    },
+                };
+            }
+        }
+        return t;
+    });
+};
+
 const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) => {
     const text = String(goalPrompt || '').trim();
     if (!text) return tasks;
@@ -3374,14 +3457,15 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
                 },
             });
 
+            const dynamicCommitMsg = generateDynamicCommitMessage(goalPrompt, tasks);
             updatedTasks.push({
                 nodeKey: 'git_commit_changes',
-                title: 'Commit server route fix',
-                instruction: 'Commit root route implementation.',
+                title: 'Commit server changes',
+                instruction: `Commit server route implementation with message: "${dynamicCommitMsg}".`,
                 dependencies: ['git_stage_changes'],
                 assignedTool: 'executeCommand',
                 toolInput: {
-                    command: 'git commit -m "fix: add root GET route for welcome message"',
+                    command: `git commit -m "${dynamicCommitMsg}"`,
                     cwd: desktopProjectPath,
                     desktop: true,
                 },
@@ -3500,14 +3584,15 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
         },
     });
 
+    const dynamicCommitMsg = generateDynamicCommitMessage(goalPrompt, newTasks);
     newTasks.push({
         nodeKey: 'git_commit_changes',
-        title: 'Commit server route fix',
-        instruction: 'Commit root route implementation.',
+        title: 'Commit server changes',
+        instruction: `Commit server route implementation with message: "${dynamicCommitMsg}".`,
         dependencies: ['git_stage_changes'],
         assignedTool: 'executeCommand',
         toolInput: {
-            command: 'git commit -m "fix: add root GET route for welcome message"',
+            command: `git commit -m "${dynamicCommitMsg}"`,
             cwd: desktopProjectPath,
             desktop: true,
         },
@@ -3603,7 +3688,7 @@ const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
             dependencies: ['git_stage_changes'],
             assignedTool: 'executeCommand',
             toolInput: {
-                command: 'git commit -m "fix: update server and deploy to production"',
+                command: `git commit -m "${generateDynamicCommitMessage(goalPrompt, tasks)}"`,
                 cwd: desktopProjectPath,
                 desktop: true,
             },
@@ -3764,6 +3849,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = normalizeServerReviewAndFixTasks(plan.tasks, goalPrompt, localDestination);
         // Dedicated git push workflow: ensure standalone push to github requests always have complete status, stage, commit, branch, and push
         plan.tasks = normalizeGitPushWorkflowTasks(plan.tasks, goalPrompt, localDestination);
+        // Ensure Git commits use dynamic semantic commit messages
+        plan.tasks = normalizeGitCommitTasks(plan.tasks, goalPrompt);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
 

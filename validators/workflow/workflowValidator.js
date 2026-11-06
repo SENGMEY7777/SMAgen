@@ -20,6 +20,7 @@ const runWorkflowSchema = Joi.object({
     projectContext: Joi.object().unknown(true).allow(null),
     localDestination: Joi.string().allow('', null),
     projectName: Joi.string().allow('', null),
+    images: Joi.array().items(Joi.string().max(25000000)).max(5).default([]),
 }).unknown(true);
 
 const resumeWorkflowSchema = Joi.object({}).unknown(false);

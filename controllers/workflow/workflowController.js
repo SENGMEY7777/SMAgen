@@ -39,6 +39,7 @@ const runWorkflow = async (req, res, next) => {
             runId: req.params.runId,
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
+            images: body.images || [],
             projectContext: body.projectContext,
             localDestination: body.localDestination
                 || body.projectContext?.workspacePath
@@ -103,6 +104,7 @@ const runWorkflowStream = async (req, res) => {
             runId: req.params.runId,
             workflowId: body.workflowId,
             goalPrompt: body.goalPrompt,
+            images: body.images || [],
             projectContext: body.projectContext,
             localDestination: body.localDestination
                 || body.projectContext?.workspacePath

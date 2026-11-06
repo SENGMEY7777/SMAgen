@@ -307,7 +307,15 @@ const resolveLocalDesktopPath = async (requestedPath) => {
                 // 1. src/ actually exists and is a directory
                 // 2. The project does NOT organize its source folders directly at root level
                 // 3. The target is not already pointing into src/
-                if (srcStats && srcStats.isDirectory() && !hasRootSourceFolders && subSegments[0] !== 'src') {
+                if (hasRootSourceFolders && subSegments[0] === 'src') {
+                    // Project uses root-level folders (controllers, routes, etc.)
+                    // Automatically strip the accidental 'src' segment so files go directly into root folders
+                    const cleanSubSegments = subSegments.slice(1);
+                    if (cleanSubSegments.length > 0) {
+                        const targetInRoot = path.resolve(projectDir, ...cleanSubSegments);
+                        desktopRelativePath = path.relative(desktopRoot, targetInRoot);
+                    }
+                } else if (srcStats && srcStats.isDirectory() && !hasRootSourceFolders && subSegments[0] !== 'src') {
                     const targetInSrc = path.resolve(srcDir, ...subSegments);
                     desktopRelativePath = path.relative(desktopRoot, targetInSrc);
                 }

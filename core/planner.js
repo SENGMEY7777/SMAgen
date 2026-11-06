@@ -130,7 +130,8 @@ const cleanRelativeDirectoryPath = (value) => {
     let cleaned = value
         .trim()
         .replace(/^['"`]|['"`]$/g, '')
-        .replace(/^desktop[\\/]+/i, '');
+        .replace(/^[~\\/]*desktops?[\\/]+/i, '')
+        .replace(/(?:^|[\\/])desktops[\\/]/gi, '/');
 
     // Strip any accidental instruction sentences appended from context
     cleaned = cleaned
@@ -4247,6 +4248,8 @@ Rules:
 - Use imageGenerator only when the user explicitly requests an image, photo, logo, banner, illustration, artwork, or image URL. Words such as homepage, ecommerce, product, dark mode, or light mode alone do not request an image.
 - If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
+- When modifying or adding files/folders to an existing local project (e.g. 'Api-Productions/Sample-RESTful-API-'): Always inspect and follow the project's existing directory structure. If the project places its code folders (such as controllers/, routes/, models/) directly at the project root, place new folders (like validation/) directly at the project root matching the existing pattern. NEVER prepend or create an unneeded 'src/' folder, NEVER create subfolders named 'desktops', and NEVER duplicate existing files into 'src/'.
+- When asked to add validation to routes, do not merely create a validator file; also update the existing router/controller files to import and apply the validation middleware to the routes so the validation is actually active.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {

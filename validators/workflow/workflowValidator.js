@@ -16,7 +16,7 @@ const workflowCreateSchema = Joi.object({
 
 const runWorkflowSchema = Joi.object({
     workflowId: uuid().allow(null),
-    goalPrompt: secureText({min: 3, max: 20000}).required(),
+    goalPrompt: secureText({min: 1, max: 20000}).allow('', null).default('Review project and execute requested workflow tasks'),
     projectContext: Joi.object().unknown(true).allow(null),
     localDestination: Joi.string().allow('', null),
     projectName: Joi.string().allow('', null),

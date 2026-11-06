@@ -246,7 +246,10 @@ const resolveLocalDesktopPath = async (requestedPath) => {
         throw new Error('Desktop paths must be relative and cannot contain ..');
     }
 
-    let desktopRelativePath = requestedPath.replace(/^desktop[\\/]+/i, '').replace(/^[\\/]+/, '');
+    let desktopRelativePath = requestedPath
+        .replace(/^[~\\/]*desktops?[\\/]+/i, '')
+        .replace(/(?:^|[\\/])desktops[\\/]/gi, '/')
+        .replace(/^[\\/]+/, '');
 
     if (!desktopRelativePath.trim()) {
         throw new Error('A Desktop folder name is required');
@@ -255,38 +258,58 @@ const resolveLocalDesktopPath = async (requestedPath) => {
     const desktopRoot = path.join(os.homedir(), 'Desktop');
 
     // Smart project src routing:
-    // If the path targets a project on Desktop (e.g. "smart-parking-system/validator/Helper")
-    // and the project has a src/ directory:
+    // Determine the true project directory by checking for package.json or .git
     const segments = desktopRelativePath.split(/[\\/]/).filter(Boolean);
     if (segments.length >= 2) {
-        const projectName = segments[0];
-        const subSegments = segments.slice(1);
-        const projectDir = path.resolve(desktopRoot, projectName);
+        let projectDir = null;
+        let subSegments = null;
+
+        for (let i = segments.length - 1; i >= 1; i--) {
+            const candidate = path.resolve(desktopRoot, ...segments.slice(0, i));
+            try {
+                const hasPkg = await readExistingPathStats(path.resolve(candidate, 'package.json'));
+                const hasGit = await readExistingPathStats(path.resolve(candidate, '.git'));
+                if (hasPkg || hasGit) {
+                    projectDir = candidate;
+                    subSegments = segments.slice(i);
+                    break;
+                }
+            } catch (_) {}
+        }
+
+        if (!projectDir) {
+            projectDir = path.resolve(desktopRoot, segments[0]);
+            subSegments = segments.slice(1);
+        }
 
         try {
             const projectStats = await fs.lstat(projectDir);
             if (projectStats.isDirectory()) {
                 const srcDir = path.resolve(projectDir, 'src');
                 const srcStats = await readExistingPathStats(srcDir);
-                if (srcStats && srcStats.isDirectory() && subSegments[0] !== 'src') {
-                    const firstSub = subSegments[0];
-                    const targetInSrc = path.resolve(srcDir, ...subSegments);
-                    const firstInSrc = path.resolve(srcDir, firstSub);
-                    const firstInRoot = path.resolve(projectDir, firstSub);
 
-                    const firstInSrcStats = await readExistingPathStats(firstInSrc);
-                    const firstInRootStats = await readExistingPathStats(firstInRoot);
-
-                    const commonSourceFolders = new Set([
-                        'controllers', 'models', 'routes', 'services', 'middlewares',
-                        'utils', 'validators', 'validator', 'helpers', 'helper',
-                        'views', 'components', 'config', 'configs'
-                    ]);
-
-                    if ((firstInSrcStats && firstInSrcStats.isDirectory())
-                        || (!firstInRootStats && commonSourceFolders.has(firstSub.toLowerCase()))) {
-                        desktopRelativePath = path.relative(desktopRoot, targetInSrc);
+                // Check if project root directly contains common source folders
+                const commonSourceFolders = [
+                    'controllers', 'models', 'routes', 'services', 'middlewares',
+                    'utils', 'validators', 'validator', 'helpers', 'helper',
+                    'views', 'components', 'config', 'configs',
+                ];
+                let hasRootSourceFolders = false;
+                for (const folder of commonSourceFolders) {
+                    const check = await readExistingPathStats(path.resolve(projectDir, folder));
+                    if (check && check.isDirectory()) {
+                        hasRootSourceFolders = true;
+                        break;
                     }
+                }
+
+                // ONLY route into src/ if:
+                // 1. src/ actually exists and is a directory
+                // 2. The project does NOT organize its source folders directly at root level
+                // 3. The target is not already pointing into src/
+                if (srcStats && srcStats.isDirectory() && !hasRootSourceFolders && subSegments[0] !== 'src') {
+                    const targetInSrc = path.resolve(srcDir, ...subSegments);
+                    desktopRelativePath = path.relative(desktopRoot, targetInSrc);
                 }
             }
         } catch (_) {}
@@ -348,10 +371,13 @@ const isMatchingEntryName = (candidateName, requestedName) => {
     if (requestedLower === 'gitkeep' && candidateLower === '.gitkeep') return true;
     if (requestedLower === '.gitkeep' && candidateLower === 'gitkeep') return true;
     // Singular / Plural variations (e.g. view <-> views, model <-> models, route <-> routes, test <-> tests)
-    if (requestedLower + 's' === candidateLower) return true;
-    if (requestedLower === candidateLower + 's') return true;
-    if (requestedLower + 'es' === candidateLower) return true;
-    if (requestedLower === candidateLower + 'es') return true;
+    // Never pluralize desktop to desktops to avoid creating accidental desktops/ folders
+    if (requestedLower !== 'desktop' && candidateLower !== 'desktop') {
+        if (requestedLower + 's' === candidateLower) return true;
+        if (requestedLower === candidateLower + 's') return true;
+        if (requestedLower + 'es' === candidateLower) return true;
+        if (requestedLower === candidateLower + 'es') return true;
+    }
     return false;
 };
 

@@ -4191,6 +4191,7 @@ const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
 const planWorkflowRun = async ({
     runId,
     goalPrompt,
+    images = [],
     localDestination = '',
     userId,
     io = null,
@@ -4328,6 +4329,7 @@ ${desktopInstruction}
                 const rawResult = await generateStructureClient({
                     systemPrompt,
                     userPrompt: currentPrompt,
+                    images,
                     runId,
                     io,
                 });

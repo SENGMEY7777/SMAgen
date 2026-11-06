@@ -264,6 +264,31 @@ const getUserGoalText = (value) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim();
 
+const INVALID_REMOVAL_TARGETS = new Set([
+    'already',
+    'it',
+    'them',
+    'this',
+    'that',
+    'folder',
+    'directory',
+    'project',
+    'file',
+    'files',
+    'all',
+    'now',
+    'please',
+    'again',
+    'here',
+    'there',
+]);
+
+const isStructureCleanupRequest = (value) => {
+    const text = String(value || '');
+    return /\b(?:clean|cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
+        || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|src|redundant|empty|schema)\b/i.test(text));
+};
+
 const extractRemovalTarget = (value) => {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     const quotedMatch = text.match(
@@ -276,6 +301,12 @@ const extractRemovalTarget = (value) => {
         /\b(?:remove|delete|erase|destroy|clean\s*up|clear|strip)\s+(?:all\s+)?(?:the\s+)?(?:of\s+the\s+)?(?:files?\s+)?["'`]?([A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*)["'`]?/i,
     );
     const candidate = quotedMatch?.[1] || plainMatch?.[1] || directActionMatch?.[1] || '';
+    if (candidate && INVALID_REMOVAL_TARGETS.has(candidate.trim().toLowerCase())) {
+        if (/\b(?:src|validation|schema)\b/i.test(text)) {
+            return 'src';
+        }
+        return null;
+    }
 
     const cleaned = cleanRelativeDirectoryPath(candidate);
     if (!cleaned) return null;
@@ -328,6 +359,53 @@ const normalizeRenamePlan = (tasks, goalPrompt) => {
             kind: 'directory',
         },
     }];
+};
+
+const normalizeStructureCleanupTasks = (tasks, goalPrompt, localDestination = '') => {
+    if (!isStructureCleanupRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    let targetProject = cleanRelativeDirectoryPath(localDestination)
+        || cleanRelativeDirectoryPath(inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt));
+
+    if (targetProject === 'Api-Productions' || !targetProject) {
+        if (/Sample-RESTful-API-/i.test(goalPrompt)) {
+            targetProject = 'Api-Productions/Sample-RESTful-API-';
+        }
+    }
+
+    let filteredTasks = tasks.filter((task) => {
+        const action = String(task.toolInput?.action || '').toLowerCase();
+        return action !== 'exportworkspacetodownloads' && action !== 'exportworkspacetodesktop';
+    });
+
+    const hasRemovalTask = filteredTasks.some((task) => {
+        const action = String(task.toolInput?.action || '').toLowerCase();
+        return action === 'deletedesktoppath';
+    });
+
+    if (!hasRemovalTask && targetProject) {
+        const projectRoot = targetProject.replace(/^[~\/]*desktops?[\/]+/i, '');
+        const srcPath = `${projectRoot}/src`;
+        const nodeKey = 'cleanup_redundant_src';
+
+        filteredTasks.push({
+            nodeKey,
+            title: `Remove redundant empty src directory from ${projectRoot}`,
+            instruction: `Delete the redundant empty 'src' directory (and nested folders like 'src/validation/schema') from ${projectRoot} to keep the project structure clean and aligned with root-level MVC layout.`,
+            dependencies: filteredTasks.map((t) => t.nodeKey),
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'deleteDesktopPath',
+                path: srcPath,
+                kind: 'directory',
+                ignoreMissing: true,
+            },
+        });
+    }
+
+    return filteredTasks;
 };
 
 const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
@@ -909,6 +987,7 @@ const appendDownloadsExportTask = (tasks, goalPrompt) => {
         !LOCAL_DESKTOP_OUTPUT_ENABLED
         || isDesktopOutputRequest(goalPrompt)
         || isNodeProjectSetupRequest(goalPrompt)
+        || isStructureCleanupRequest(goalPrompt)
         || hasLocalExportTask(tasks)
     ) {
         return tasks;
@@ -3845,6 +3924,8 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = appendDesktopExportTask(plan.tasks, goalPrompt, localDestination);
         // File-producing workflows without an explicit destination are downloaded locally by default.
         plan.tasks = appendDownloadsExportTask(plan.tasks, goalPrompt);
+        // Clean up redundant directory structures for existing projects in-place without exporting
+        plan.tasks = normalizeStructureCleanupTasks(plan.tasks, goalPrompt, localDestination);
         // Autonomous server review and repair: ensure URL modify/fix requests include diagnosis, route fix, syntax check, and git commit/push
         plan.tasks = normalizeServerReviewAndFixTasks(plan.tasks, goalPrompt, localDestination);
         // Dedicated git push workflow: ensure standalone push to github requests always have complete status, stage, commit, branch, and push
@@ -4213,6 +4294,9 @@ Rules:
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 - When modifying or adding files/folders to an existing local project (e.g. 'Api-Productions/Sample-RESTful-API-'): Always inspect and follow the project's existing directory structure. If the project places its code folders (such as controllers/, routes/, models/) directly at the project root, place new folders (like validation/) directly at the project root matching the existing pattern. NEVER prepend or create an unneeded 'src/' folder, NEVER create subfolders named 'desktops', and NEVER duplicate existing files into 'src/'.
 - When asked to add validation to routes, do not merely create a validator file; also update the existing router/controller files to import and apply the validation middleware to the routes so the validation is actually active.
+- PROJECT STRUCTURE CLEANUP RULE: When the user requests to clean, organize, or modify a project structure (e.g. 'modify structure project to clean', 'clean up project structure', 'remove unused folders', 'clean redundant folder', 'remove already but it still have'):
+  - Inspect the project's layout and remove redundant or unneeded directories in-place using fileManager with action 'deleteDesktopPath' (e.g., {"action":"deleteDesktopPath","path":"<project>/src","kind":"directory"}).
+  - NEVER export to Downloads or divert the project when the user asks to clean an existing local project.
 ${desktopInstruction}
 - Output must strictly follow this JSON structure:
 {

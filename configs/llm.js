@@ -466,9 +466,32 @@ const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
     throw createLlmFailure(lastError, 'Gemini stream');
 };
 
+const parseImagePart = (imageString) => {
+    if (typeof imageString !== 'string') return null;
+    const match = imageString.match(/^data:([^;]+);base64,(.+)$/s);
+    if (match) {
+        return {
+            inlineData: {
+                mimeType: match[1],
+                data: match[2].trim(),
+            },
+        };
+    }
+    if (/^[A-Za-z0-9+/=]+$/.test(imageString.trim()) && imageString.length > 50) {
+        return {
+            inlineData: {
+                mimeType: 'image/png',
+                data: imageString.trim(),
+            },
+        };
+    }
+    return null;
+};
+
 const generateStructureClient = async ({
     systemPrompt,
     userPrompt,
+    images = [],
     model = process.env.GEMINI_MODEL || DEFAULT_MODEL,
     runId = null,
     io = null,
@@ -476,9 +499,24 @@ const generateStructureClient = async ({
     timeoutMs = LLM_TIMEOUT_MS,
 }) => {
     try {
+        let contentsPayload;
+        if (Array.isArray(images) && images.length > 0) {
+            const promptText = `${systemPrompt}\n\nUser Request / Goal:\n${userPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the schema with no extra prose.`;
+            const parts = [{text: promptText}];
+            for (const img of images) {
+                const part = parseImagePart(img);
+                if (part) {
+                    parts.push(part);
+                }
+            }
+            contentsPayload = [{role: 'user', parts}];
+        } else {
+            contentsPayload = `${systemPrompt}\n\nUser Request / Goal:\n${userPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the schema with no extra prose.`;
+        }
+
         const response = await generateContentWithRetry({
             model,
-            contents: `${systemPrompt}\n\nUser Request / Goal:\n${userPrompt}\n\nIMPORTANT: Return ONLY valid JSON matching the schema with no extra prose.`,
+            contents: contentsPayload,
             config: {
                 responseMimeType: 'application/json',
                 temperature: 0.2,
@@ -546,6 +584,7 @@ const generateStructureClient = async ({
 };
 
 module.exports = {
+    parseImagePart,
     skGemini,
     skGeminiStream,
     generateStructureClient,

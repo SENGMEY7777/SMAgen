@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const {skGemini, skGeminiStream} = require('../configs/llm');
+const {skGemini, skGeminiStream, parseImagePart} = require('../configs/llm');
 const {executeTaskNode} = require('../core/executor');
 const sendResponse = require('../utils/responseHelper');
 const logger = require('../utils/logger');
@@ -14,6 +14,14 @@ const FOUNDER_RELATIONSHIP_INSTRUCTION = `
 ### 👤 Founder Relationship Status:
 - **When asked whether your founder is single or about his relationship status in English (e.g. "Is your founder single?"):** Respond with:
 "He is currently single! At 22, his main companions are terminal logs, system architecture, and late-night debugging. Building KAIRO takes up most of his RAM right now!"`;
+
+const IMAGE_ANALYSIS_INSTRUCTION = `\n\n### 👁️ Image Understanding & Multimodal Vision:
+- When the user uploads or attaches an image, screenshot, photo, certificate, document, architecture diagram, UI design, or error log:
+  1. THOROUGHLY inspect and analyze every detail in the image (text, names, dates, badges, icons, UI components, code, terminal errors, architecture components).
+  2. Answer the user's questions about the image directly, accurately, and comprehensively.
+  3. If the image is a certificate or award (e.g., Microsoft, Google, AWS, university), recognize the recipient name, topic/credential title, date, issuing organization, and significance.
+  4. If the image is code, a terminal screenshot, or a project explorer, read the exact file paths, errors, and code lines, and provide immediate fixes or solutions.
+  5. Never state that you cannot see the image or that the user didn't attach an image when image data is provided.`;
 
 const LOCAL_ENVIRONMENT_INSTRUCTION = `
 
@@ -324,8 +332,9 @@ const buildProjectContextMemoryInstruction = ({projectContext, localDestination,
   5. If the user asks where their files are, state clearly that they are located in \`${resolvedPath}\` on their macOS Desktop and provide the terminal navigation: \`cd ${resolvedPath}\` or \`open ${resolvedPath}\`.`;
 };
 
-const buildConversationRequest = ({message, history = [], projectContext = null, localDestination = ''}) => {
-    const cleanMessage = sanitizeChatResponse(message);
+const buildConversationRequest = ({message, history = [], images = [], projectContext = null, localDestination = ''}) => {
+    const fallbackPrompt = Array.isArray(images) && images.length > 0 ? 'Please inspect and analyze the attached image.' : '';
+    const cleanMessage = sanitizeChatResponse(message || fallbackPrompt);
     const contents = history
         .slice(-MAX_HISTORY_MESSAGES)
         .filter((entry) => (
@@ -339,9 +348,20 @@ const buildConversationRequest = ({message, history = [], projectContext = null,
             parts: [{text: sanitizeChatResponse(content.trim())}],
         }));
 
+    const userParts = [{text: cleanMessage.trim()}];
+
+    if (Array.isArray(images) && images.length > 0) {
+        for (const img of images) {
+            const part = parseImagePart(img);
+            if (part) {
+                userParts.push(part);
+            }
+        }
+    }
+
     contents.push({
         role: 'user',
-        parts: [{text: cleanMessage.trim()}],
+        parts: userParts,
     });
 
     const isKhmer = /[\u1780-\u17FF]/.test(cleanMessage);
@@ -439,9 +459,10 @@ const chat = async (req, res, next) => {
     }
 
     try {
-        const {message, history = [], projectContext, localDestination} = req.body || {};
-        if (typeof message !== 'string' || !message.trim()) {
-            return sendResponse(res, 400, false, 'A chat message is required', null, {
+        const {message, history = [], images = [], projectContext, localDestination} = req.body || {};
+        const effectiveMessage = String(message || '').trim() || (Array.isArray(images) && images.length > 0 ? 'Please inspect and analyze the attached image.' : '');
+        if (!effectiveMessage && (!images || images.length === 0)) {
+            return sendResponse(res, 400, false, 'A chat message or image is required', null, {
                 code: 'VALIDATION_ERROR',
             });
         }
@@ -461,7 +482,7 @@ const chat = async (req, res, next) => {
             });
         }
 
-        const {contents, config} = buildConversationRequest({message, history, projectContext, localDestination});
+        const {contents, config} = buildConversationRequest({message: effectiveMessage, history, images, projectContext, localDestination});
         const answer = await skGemini(contents, {config});
 
         return sendResponse(res, 200, true, 'Chat response generated', {
@@ -478,10 +499,11 @@ const chat = async (req, res, next) => {
  * Sends token chunks immediately as they arrive from Google Gemini.
  */
 const chatStream = async (req, res) => {
-    const {message, history = [], projectContext, localDestination} = req.body || {};
+    const {message, history = [], images = [], projectContext, localDestination} = req.body || {};
+    const effectiveMessage = String(message || '').trim() || (Array.isArray(images) && images.length > 0 ? 'Please inspect and analyze the attached image.' : '');
 
-    if (typeof message !== 'string' || !message.trim()) {
-        return sendResponse(res, 400, false, 'A chat message is required', null, {
+    if (!effectiveMessage && (!images || images.length === 0)) {
+        return sendResponse(res, 400, false, 'A chat message or image is required', null, {
             code: 'VALIDATION_ERROR',
         });
     }
@@ -513,7 +535,7 @@ const chatStream = async (req, res) => {
             return res.end();
         }
 
-        const {contents, config} = buildConversationRequest({message, history, projectContext, localDestination});
+        const {contents, config} = buildConversationRequest({message: effectiveMessage, history, images, projectContext, localDestination});
 
         const sanitizer = createStreamingSanitizer((chunkText) => {
             res.write(`data: ${JSON.stringify({ event: 'chunk', text: chunkText, done: false })}\n\n`);

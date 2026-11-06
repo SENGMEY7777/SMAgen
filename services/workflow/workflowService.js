@@ -72,9 +72,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, projectContext, local
         }
     } else {
         if (typeof goalPrompt !== 'string' || !goalPrompt.trim()) {
-            const error = new Error('goalPrompt is required');
-            error.code = 'VALIDATION_ERROR';
-            throw error;
+            goalPrompt = 'Review project and execute requested workflow tasks';
         }
 
         if (workflowId) {

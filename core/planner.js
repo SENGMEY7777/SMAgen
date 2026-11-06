@@ -548,7 +548,7 @@ const inferNodeProjectSourceDirectory = (task, filePath) => {
             : singular.endsWith('y')
                 ? `${singular.slice(0, -1)}ies`
                 : `${singular}s`;
-        return `src/${directoryName}`;
+        return directoryName;
     }
 
     return null;
@@ -559,34 +559,6 @@ const normalizeNodeProjectFilePath = (filePath, task, projectRootPath) => {
     if (!canonicalPath) {
         return null;
     }
-
-    const rootPrefix = `${cleanRelativeDirectoryPath(projectRootPath)}/`;
-    const relativePath = canonicalPath.startsWith(rootPrefix)
-        ? canonicalPath.slice(rootPrefix.length)
-        : '';
-    if (!relativePath) {
-        return canonicalPath;
-    }
-
-    const relativeSegments = relativePath.split('/');
-    const inferredSourceDirectory = inferNodeProjectSourceDirectory(task, relativePath);
-    const relativeDirectory = inferredSourceDirectory?.split('/').pop();
-
-    // A planner may return `controllers/UserController.js` instead of the
-    // conventional `src/controllers/UserController.js`. Move it under src
-    // only when the path and the generated file name independently describe
-    // the same layer; arbitrary user folders remain unchanged.
-    if (relativeDirectory && relativeSegments[0].toLowerCase() === relativeDirectory.toLowerCase()) {
-        return `${cleanRelativeDirectoryPath(projectRootPath)}/src/${relativePath}`;
-    }
-
-    if (relativeSegments.length === 1) {
-        const sourceDirectory = inferNodeProjectSourceDirectory(task, relativePath);
-        if (sourceDirectory) {
-            return `${cleanRelativeDirectoryPath(projectRootPath)}/${sourceDirectory}/${relativePath}`;
-        }
-    }
-
     return canonicalPath;
 };
 
@@ -625,15 +597,6 @@ const normalizeNodeProjectDirectoryPath = (directoryPath, projectRootPath, sourc
     if (!canonicalPath) {
         return null;
     }
-
-    const rootPrefix = `${cleanRelativeDirectoryPath(projectRootPath)}/`;
-    const relativePath = canonicalPath.startsWith(rootPrefix)
-        ? canonicalPath.slice(rootPrefix.length)
-        : '';
-    if (sourceDirectories.has(relativePath.split('/')[0].toLowerCase())) {
-        return `${cleanRelativeDirectoryPath(projectRootPath)}/src/${relativePath}`;
-    }
-
     return canonicalPath;
 };
 
@@ -1852,7 +1815,7 @@ const ensureRequestedArchitectureDirectories = (tasks, goalPrompt) => {
     const architectureBase = taskDirectoryPaths.find((directoryPath) => (
         directoryPath === `${projectPath}/src`
         || directoryPath === `${projectPath}/app`
-    )) || `${projectPath}/src`;
+    )) || projectPath;
 
     // MVC + Service means the four conventional application boundaries. Only
     // add directories named by the requested architecture; feature files and
@@ -4217,8 +4180,8 @@ Rules:
 - Never use an absolute path or a path containing '..'. The executor enforces either the workspace boundary or the explicitly enabled local Desktop boundary.
 - For regular directory creation, prefer the fileManager tool with action 'createDirectory'.
 - When the user requests to create or add a folder or directory (e.g. "add folder validator", "create directory utils", "add folder components"), create that directory task using fileManager with action 'createDirectory' (or 'createDesktopDirectory' for local Desktop projects). Do NOT convert a folder creation request into a JavaScript/code file (such as folderValidator.js) unless the user explicitly requested code or a file.
-- In projects structured with a 'src' directory (standard Node.js, Express, TypeScript, Vue, React), all source code modules, directories, utilities, and helper folders MUST be rooted under 'src/' (e.g. <project>/src/validator/Helper or <project>/src/helpers). Never invent fabricated folder chains like 'src/desktops/' or nest the project name inside src. The main application entry point (index.js, app.js, or server.js) belongs at the project root or standard entry location.
-- When creating a folder, do not arbitrarily concatenate folder names from previous conversation turns. If the prompt says "I'll add folder name Helper", create that folder under the appropriate source location (e.g. src/helpers or src/<parent>/Helper if a parent was specified); never guess a root-level chain like validator/Helper.
+- CRITICAL PROJECT STRUCTURE RULE: If a project organizes its source code (e.g., controllers/, routes/, models/, services/, validation/) directly at the project root without a 'src/' folder, NEVER create, prefix, or invent a 'src/' directory. Create all new directories, schemas, validators, routes, and files directly at the project root or inside their existing parent root folders (e.g., <project>/validation/schema, <project>/routes, <project>/controllers). Only use 'src/' if the target project already contains an existing 'src/' folder (like in Vite or React projects).
+- When creating or adding a folder (e.g. "add folder schema", "add folder validation", "create directory utils"): Place the folder directly at the project root or inside the named parent folder. NEVER invent artificial folder chains like 'src/desktops/', and NEVER arbitrarily insert a 'src/' folder prefix.
 - When an active local project context is provided or implied, anchor all generated files, directories, and exports inside that active project folder. Never export or divert files to an arbitrary top-level folder like Desktop/view or Desktop/src.
 - For an explicit Desktop folder rename or move, create exactly one fileManager task with action 'renameDesktopPath', a relative source path, and a relative destination path. Preserve the source contents; never add a delete task or interpret words such as 'do not delete' as a removal request.
 - Never assign executeCommand to a directory or folder creation task. For a local Desktop project setup, it is valid to run the project scaffolding and dependency-install commands with a relative Desktop cwd after the directory task succeeds.

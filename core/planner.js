@@ -4819,6 +4819,11 @@ const planWorkflowRun = async ({
         const desktopInstruction = LOCAL_DESKTOP_OUTPUT_ENABLED
             ? `- Local file output is enabled for development. For a request to create a folder directly on the Mac Desktop, use fileManager with {"action":"createDesktopDirectory","path":"requested-folder"}. For a request to rename a Desktop folder, use exactly one fileManager task with {"action":"renameDesktopPath","path":"source-folder","destination":"target-folder","kind":"directory"}; preserve contents and never convert it into a delete task. For a project setup inside that folder, first create the folder with fileManager, then use executeCommand with a relative cwd and desktop:true for the approved package-manager command. To list local assets, use fileManager with {"action":"listDesktopDirectory","path":"requested-folder","imagesOnly":true}; to export a completed project for Finder, use fileManager with {"action":"exportWorkspaceToDesktop","path":"requested-folder"}. For a local Downloads request, use fileManager with {"action":"exportWorkspaceToDownloads","path":"requested-folder"}. If a file-producing workflow does not specify a destination, add exportWorkspaceToDownloads as the final task so the result is available under ~/Downloads/kairo-workflow. Never use executeCommand to create a Desktop directory or to access arbitrary absolute local paths.`
             : '- Host Desktop output is disabled. Use fileManager action createDirectory with a relative path inside the workflow workspace; never target a host Desktop.';
+        const explicitTreeFiles = extractProjectTreeLayout(planningGoalPrompt).files;
+        const largeTreeInstruction = isNodeProjectSetupRequest(planningGoalPrompt)
+            && explicitTreeFiles.length >= 12
+            ? '- For a large explicit project tree, keep the initial plan compact: create the requested directory tasks and at most three representative file tasks. Do not emit every source file in this initial response; a bounded completion stage will add complete content for every exact requested file path.'
+            : '';
         const systemPrompt = `
 You are KAIRO, an autonomous AI workflow planner.
 Decompose the user goal into a Directed Acyclic Graph (DAG) of executable subtasks.
@@ -4876,6 +4881,7 @@ Rules:
   - Inspect the project's layout and remove redundant or unneeded directories in-place using fileManager with action 'deleteDesktopPath' (e.g., {"action":"deleteDesktopPath","path":"<project>/src","kind":"directory"}).
   - NEVER export to Downloads or divert the project when the user asks to clean an existing local project.
 ${desktopInstruction}
+${largeTreeInstruction}
 - Output must strictly follow this JSON structure:
 {
   "workflowTitle": "string",

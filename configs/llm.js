@@ -6,7 +6,20 @@ const {
 const {parseJsonResponse} = require('../utils/jsonParser');
 require('./env');
 
-const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
+const RETIRED_MODEL_PATTERN = /^gemini-(?:1\.5|2\.5)-flash(?:-lite)?$/i;
+
+const normalizeModelCandidate = (value) => {
+    const candidate = String(value || '')
+        .trim()
+        .replace(/^models\//i, '');
+
+    if (!candidate || RETIRED_MODEL_PATTERN.test(candidate)) {
+        return null;
+    }
+
+    return candidate;
+};
 
 const getAiClient = () => {
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
@@ -122,16 +135,15 @@ const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
         model,
         process.env.GEMINI_MODEL,
         process.env.GEMINI_FALLBACK_MODEL,
-        'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
-        'gemini-1.5-flash',
+        'gemini-3.5-flash-lite',
         'gemini-3.5-flash',
         'gemini-3.1-flash-lite',
+        'gemini-3.8-flash',
         ...String(process.env.GEMINI_EXTRA_MODELS || '')
             .split(',')
             .map((candidate) => candidate.trim())
             .filter(Boolean),
-    ].filter(Boolean);
+    ].map(normalizeModelCandidate).filter(Boolean);
     return [...new Set(candidates)].slice(0, Math.max(maxAttempts, 4));
 };
 
@@ -152,7 +164,7 @@ const createLlmFailure = (lastError, operation = 'Gemini request') => {
     } else if (providerStatus === 404) {
         code = 'LLM_UNAVAILABLE';
         status = 503;
-        message = 'The configured Gemini model was not found. Check GEMINI_MODEL and GEMINI_FALLBACK_MODEL.';
+        message = 'No configured Gemini model is available. Use GEMINI_MODEL=gemini-3.5-flash-lite or another currently supported Gemini model.';
     } else if (providerStatus && providerStatus < 500) {
         code = 'LLM_ERROR';
         status = 503;
@@ -355,6 +367,7 @@ const generateStructureClient = async ({
     io = null,
     maxModelAttempts = MAX_MODEL_ATTEMPTS,
     timeoutMs = LLM_TIMEOUT_MS,
+    maxOutputTokens = null,
 }) => {
     try {
         let contentsPayload;
@@ -378,6 +391,7 @@ const generateStructureClient = async ({
             config: {
                 responseMimeType: 'application/json',
                 temperature: 0.2,
+                ...(Number.isInteger(maxOutputTokens) && maxOutputTokens > 0 ? {maxOutputTokens} : {}),
             },
             maxModelAttempts,
             timeoutMs,
@@ -442,6 +456,7 @@ const generateStructureClient = async ({
 };
 
 module.exports = {
+    getModelCandidates,
     parseImagePart,
     parseJsonResponse,
     skGemini,

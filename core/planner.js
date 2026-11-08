@@ -2324,7 +2324,11 @@ const getProjectFileEntries = (task) => {
     }
 
     return task.toolInput?.path
-        ? [{path: task.toolInput.path, content: task.toolInput.content}]
+        || task.toolInput?.fileName
+        ? [{
+            path: task.toolInput.path || task.toolInput.fileName,
+            content: task.toolInput.content,
+        }]
         : [];
 };
 
@@ -4459,10 +4463,10 @@ Escape literal backslashes correctly for JSON.
     let workingPlan = normalizePlan(basePlan, {goalPrompt});
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     let stalledBatches = 0;
-    const maxBatches = 16;
-    const batchSize = 3;
+    const maxBatches = 48;
 
     for (let batchNumber = 0; missingFiles.length > 0 && batchNumber < maxBatches; batchNumber += 1) {
+        const batchSize = stalledBatches > 0 ? 1 : 3;
         const batch = missingFiles.slice(0, batchSize);
         const completionPrompt = `Original user goal:\n${goalPrompt}\n\nGenerate complete file contents for ONLY these exact missing paths:\n${batch
             .map((filePath) => `- ${filePath}`)
@@ -4479,7 +4483,15 @@ Escape literal backslashes correctly for JSON.
 
         const candidateTasks = Array.isArray(completionResult.data?.tasks)
             ? completionResult.data.tasks
-            : [];
+            : completionResult.data?.files && typeof completionResult.data.files === 'object'
+                ? [{
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        action: 'createDesktopFiles',
+                        files: completionResult.data.files,
+                    },
+                }]
+                : [];
         const requestedBatch = new Set(batch.map((filePath) => filePath.toLowerCase()));
         const completionTasks = [];
         const addedCompletionPaths = new Set();
@@ -4537,7 +4549,7 @@ Escape literal backslashes correctly for JSON.
             stalledBatches = 0;
         }
 
-        if (stalledBatches >= 2) {
+        if (stalledBatches >= 3) {
             break;
         }
     }
@@ -4855,6 +4867,8 @@ ${desktopInstruction}
         const maxAttempts = 3;
         let currentPrompt = `Goal:\n"${planningGoalPrompt}"`;
         let lastPlannerError = null;
+        let explicitTreeCompletionAttempts = 0;
+        let explicitTreeCompletionError = null;
 
         while (attempts < maxAttempts) {
             attempts++;
@@ -4882,9 +4896,10 @@ ${desktopInstruction}
                     // Large tree-based project requests can exceed one model
                     // response. Complete the missing files in smaller dynamic
                     // batches before spending another full-plan retry.
-                    if (attempts === 1
+                    if (explicitTreeCompletionAttempts < 2
                         && /The plan is incomplete/i.test(parsed.error.message)
                         && isNodeProjectSetupRequest(planningGoalPrompt)) {
+                        explicitTreeCompletionAttempts += 1;
                         try {
                             const completedPlan = await completeExplicitProjectTreePlan({
                                 basePlan: rawResult.data,
@@ -4906,14 +4921,17 @@ ${desktopInstruction}
                             }
 
                             lastPlannerError = new Error(completedValidation.error.message);
+                            explicitTreeCompletionError = lastPlannerError;
                             console.warn('⚠️ [Planner] File completion validation failed:', completedValidation.error.message);
                         } catch (completionError) {
                             lastPlannerError = completionError;
+                            explicitTreeCompletionError = completionError;
                             console.warn('⚠️ [Planner] Explicit file completion failed:', completionError.message);
                         }
                     }
 
-                    currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${planningGoalPrompt}`;
+                    const recoveryMessage = explicitTreeCompletionError?.message || parsed.error.message;
+                    currentPrompt = `Previous output had validation errors: ${recoveryMessage}. Generate a corrected plan for this goal:\n${planningGoalPrompt}`;
                     continue;
                 }
 

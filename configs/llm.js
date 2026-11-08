@@ -144,7 +144,7 @@ const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
             .map((candidate) => candidate.trim())
             .filter(Boolean),
     ].map(normalizeModelCandidate).filter(Boolean);
-    return [...new Set(candidates)].slice(0, Math.max(maxAttempts, 4));
+    return [...new Set(candidates)].slice(0, Math.max(1, maxAttempts));
 };
 
 const createLlmFailure = (lastError, operation = 'Gemini request') => {
@@ -189,13 +189,17 @@ const generateContentWithRetry = async ({
     config,
     maxModelAttempts = MAX_MODEL_ATTEMPTS,
     timeoutMs = LLM_TIMEOUT_MS,
+    maxTransientRetries = GEMINI_TRANSIENT_RETRIES,
 }) => {
     const ai = getAiClient();
     const models = getModelCandidates(model, Math.max(1, maxModelAttempts));
+    const transientRetries = Number.isInteger(maxTransientRetries) && maxTransientRetries >= 0
+        ? Math.min(maxTransientRetries, GEMINI_TRANSIENT_RETRIES)
+        : GEMINI_TRANSIENT_RETRIES;
     let lastError;
 
     for (const currentModel of models) {
-        for (let transientAttempt = 0; transientAttempt <= GEMINI_TRANSIENT_RETRIES; transientAttempt += 1) {
+        for (let transientAttempt = 0; transientAttempt <= transientRetries; transientAttempt += 1) {
             try {
                 return await withTimeout(
                     ai.models.generateContent({
@@ -209,13 +213,13 @@ const generateContentWithRetry = async ({
                 lastError = error;
                 const code = getErrorCode(error);
                 const canRetrySameModel = isTransientProviderError(error)
-                    && transientAttempt < GEMINI_TRANSIENT_RETRIES;
+                    && transientAttempt < transientRetries;
 
                 if (canRetrySameModel) {
                     const delayMs = Math.min(1500, 250 * (2 ** transientAttempt));
                     console.warn(
                         `⚠️ Gemini model '${currentModel}' failed (${code || error.message}). `
-                        + `Retrying in ${delayMs}ms (${transientAttempt + 1}/${GEMINI_TRANSIENT_RETRIES})...`,
+                        + `Retrying in ${delayMs}ms (${transientAttempt + 1}/${transientRetries})...`,
                     );
                     await wait(delayMs);
                     continue;
@@ -367,6 +371,7 @@ const generateStructureClient = async ({
     io = null,
     maxModelAttempts = MAX_MODEL_ATTEMPTS,
     timeoutMs = LLM_TIMEOUT_MS,
+    maxTransientRetries = GEMINI_TRANSIENT_RETRIES,
     maxOutputTokens = null,
 }) => {
     try {
@@ -395,6 +400,7 @@ const generateStructureClient = async ({
             },
             maxModelAttempts,
             timeoutMs,
+            maxTransientRetries,
         });
 
         const rawText = getResponseText(response);

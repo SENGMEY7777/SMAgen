@@ -220,3 +220,71 @@ Folder structure:
     assert.equal(validatePlan(completedPlan, {goalPrompt}).success, true);
     assert.equal(calls.length, 1);
 });
+
+test('completes larger explicit trees in bounded concurrent batches', async () => {
+    const goalPrompt = `Create a Node.js project on my Desktop in a folder named "Concurrent-API".
+Folder structure:
+├── src/
+│   ├── app.js
+│   ├── server.js
+│   ├── config.js
+│   ├── routes.js
+│   ├── service.js
+│   ├── model.js
+│   └── validator.js`;
+    const calls = [];
+    let activeCalls = 0;
+    let maxActiveCalls = 0;
+    const basePlan = {
+        workflowTitle: 'Concurrent API',
+        summary: 'Create the project.',
+        tasks: [{
+            nodeKey: 'create_project',
+            title: 'Create project directory',
+            instruction: 'Create Concurrent-API.',
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: 'Concurrent-API',
+            },
+        }],
+    };
+
+    const completedPlan = await completeExplicitProjectTreePlan({
+        basePlan,
+        goalPrompt,
+        generateStructure: async ({userPrompt, maxTransientRetries, timeoutMs}) => {
+            assert.equal(maxTransientRetries, 0);
+            assert.equal(timeoutMs, 10000);
+            calls.push(userPrompt);
+            activeCalls += 1;
+            maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            const paths = [...userPrompt.matchAll(/^- (.+)$/gm)].map((match) => match[1]);
+            activeCalls -= 1;
+            return {
+                data: {
+                    workflowTitle: 'Concurrent API',
+                    summary: 'Create the project.',
+                    tasks: paths.map((filePath, index) => ({
+                        nodeKey: `generated_${index + 1}`,
+                        title: `Create ${filePath}`,
+                        instruction: `Create ${filePath}.`,
+                        dependencies: [],
+                        assignedTool: 'fileManager',
+                        toolInput: {
+                            action: 'createDesktopFile',
+                            path: filePath,
+                            content: '// generated content',
+                        },
+                    })),
+                },
+            };
+        },
+    });
+
+    assert.equal(validatePlan(completedPlan, {goalPrompt}).success, true);
+    assert.equal(calls.length, 3);
+    assert.equal(maxActiveCalls, 3);
+});

@@ -4437,6 +4437,7 @@ const completeExplicitProjectTreePlan = async ({
     goalPrompt,
     runId,
     io,
+    generateStructure = generateStructureClient,
 }) => {
     const projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
@@ -4458,8 +4459,8 @@ Escape literal backslashes correctly for JSON.
     let workingPlan = normalizePlan(basePlan, {goalPrompt});
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     let stalledBatches = 0;
-    const maxBatches = 10;
-    const batchSize = 6;
+    const maxBatches = 16;
+    const batchSize = 3;
 
     for (let batchNumber = 0; missingFiles.length > 0 && batchNumber < maxBatches; batchNumber += 1) {
         const batch = missingFiles.slice(0, batchSize);
@@ -4467,12 +4468,13 @@ Escape literal backslashes correctly for JSON.
             .map((filePath) => `- ${filePath}`)
             .join('\n')}\n\nReturn one fileManager task per path, or a createDesktopFiles task with one exact path/content entry per path. Do not omit any path in this batch.`;
 
-        const completionResult = await generateStructureClient({
+        const completionResult = await generateStructure({
             systemPrompt: completionSystemPrompt,
             userPrompt: completionPrompt,
             runId,
             io,
             maxModelAttempts: 1,
+            maxOutputTokens: 16000,
         });
 
         const candidateTasks = Array.isArray(completionResult.data?.tasks)
@@ -5041,6 +5043,7 @@ ${desktopInstruction}
 };
 
 module.exports = {
+    completeExplicitProjectTreePlan,
     validateAcyclicGraph,
     normalizePlan,
     validatePlan,

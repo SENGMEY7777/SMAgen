@@ -4432,6 +4432,125 @@ const validatePlan = (rawPlan, options = {}) => {
     };
 };
 
+const completeExplicitProjectTreePlan = async ({
+    basePlan,
+    goalPrompt,
+    runId,
+    io,
+}) => {
+    const projectRoot = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+    if (!projectRoot) {
+        throw new Error('Unable to determine the requested Desktop project directory for file completion.');
+    }
+
+    const completionSystemPrompt = `
+You are KAIRO's source-file completion planner.
+Generate complete production-quality source/configuration/documentation content for ONLY the exact file paths listed by the user.
+Return ONLY valid JSON with workflowTitle, summary, and tasks.
+Every task must use assignedTool "fileManager" and toolInput.action "createDesktopFile" with the exact requested path and a non-empty toolInput.content string.
+Do not return directory tasks, shell commands, placeholders, TODOs, or files that were not requested.
+Preserve the requested runtime, dependencies, security requirements, database behavior, and architecture.
+Escape literal backslashes correctly for JSON.
+`.trim();
+
+    let workingPlan = normalizePlan(basePlan, {goalPrompt});
+    let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
+    let stalledBatches = 0;
+    const maxBatches = 10;
+    const batchSize = 6;
+
+    for (let batchNumber = 0; missingFiles.length > 0 && batchNumber < maxBatches; batchNumber += 1) {
+        const batch = missingFiles.slice(0, batchSize);
+        const completionPrompt = `Original user goal:\n${goalPrompt}\n\nGenerate complete file contents for ONLY these exact missing paths:\n${batch
+            .map((filePath) => `- ${filePath}`)
+            .join('\n')}\n\nReturn one fileManager task per path, or a createDesktopFiles task with one exact path/content entry per path. Do not omit any path in this batch.`;
+
+        const completionResult = await generateStructureClient({
+            systemPrompt: completionSystemPrompt,
+            userPrompt: completionPrompt,
+            runId,
+            io,
+            maxModelAttempts: 1,
+        });
+
+        const candidateTasks = Array.isArray(completionResult.data?.tasks)
+            ? completionResult.data.tasks
+            : [];
+        const requestedBatch = new Set(batch.map((filePath) => filePath.toLowerCase()));
+        const completionTasks = [];
+        const addedCompletionPaths = new Set();
+        let addedFiles = 0;
+
+        for (const candidateTask of candidateTasks) {
+            for (const entry of getProjectFileEntries(candidateTask)) {
+                if (!hasGeneratedFileContent(entry.content)) {
+                    continue;
+                }
+
+                const canonicalPath = canonicalizeProjectPath(entry.path, projectRoot);
+                if (!canonicalPath
+                    || !requestedBatch.has(canonicalPath.toLowerCase())
+                    || addedCompletionPaths.has(canonicalPath.toLowerCase())) {
+                    continue;
+                }
+
+                addedCompletionPaths.add(canonicalPath.toLowerCase());
+
+                completionTasks.push({
+                    ...candidateTask,
+                    nodeKey: getUniqueNodeKey([
+                        ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                        ...completionTasks,
+                    ], `complete_${path.basename(canonicalPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                    title: `Create ${canonicalPath}`,
+                    instruction: `Create ${canonicalPath} with the complete implementation requested by the user.`,
+                    dependencies: [],
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        action: 'createDesktopFile',
+                        mode: 'create',
+                        path: canonicalPath,
+                        content: entry.content,
+                    },
+                });
+                addedFiles += 1;
+            }
+        }
+
+        const previousMissingCount = missingFiles.length;
+        workingPlan = normalizePlan({
+            ...workingPlan,
+            tasks: [
+                ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                ...completionTasks,
+            ],
+        }, {goalPrompt});
+        missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
+
+        if (!addedFiles || missingFiles.length >= previousMissingCount) {
+            stalledBatches += 1;
+        } else {
+            stalledBatches = 0;
+        }
+
+        if (stalledBatches >= 2) {
+            break;
+        }
+    }
+
+    if (missingFiles.length > 0) {
+        const listedFiles = missingFiles.slice(0, 20).join(', ');
+        const suffix = missingFiles.length > 20
+            ? `, and ${missingFiles.length - 20} more`
+            : '';
+        throw new Error(`Unable to complete the explicit project tree. Missing generated files: ${listedFiles}${suffix}`);
+    }
+
+    return workingPlan;
+};
+
 /**
  * Check for circular dependencies in a DAG using Kahn's algorithm.
  */
@@ -4757,6 +4876,41 @@ ${desktopInstruction}
                 if (!parsed.success) {
                     lastPlannerError = new Error(parsed.error.message);
                     console.warn('⚠️ [Planner] Plan validation failed:', parsed.error.message);
+
+                    // Large tree-based project requests can exceed one model
+                    // response. Complete the missing files in smaller dynamic
+                    // batches before spending another full-plan retry.
+                    if (attempts === 1
+                        && /The plan is incomplete/i.test(parsed.error.message)
+                        && isNodeProjectSetupRequest(planningGoalPrompt)) {
+                        try {
+                            const completedPlan = await completeExplicitProjectTreePlan({
+                                basePlan: rawResult.data,
+                                goalPrompt: planningGoalPrompt,
+                                runId,
+                                io,
+                            });
+                            const completedValidation = validatePlan(completedPlan, {
+                                goalPrompt: planningGoalPrompt,
+                                localDestination: effectiveDestination,
+                            });
+
+                            if (completedValidation.success) {
+                                validatedPlan = completedValidation.data;
+                                if (planCache.size < MAX_CACHE_SIZE) {
+                                    planCache.set(cacheKey, validatedPlan);
+                                }
+                                break;
+                            }
+
+                            lastPlannerError = new Error(completedValidation.error.message);
+                            console.warn('⚠️ [Planner] File completion validation failed:', completedValidation.error.message);
+                        } catch (completionError) {
+                            lastPlannerError = completionError;
+                            console.warn('⚠️ [Planner] Explicit file completion failed:', completionError.message);
+                        }
+                    }
+
                     currentPrompt = `Previous output had validation errors: ${parsed.error.message}. Generate a corrected plan for this goal:\n${planningGoalPrompt}`;
                     continue;
                 }

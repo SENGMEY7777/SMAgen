@@ -3,6 +3,7 @@ const {
     normalizeUsage,
     recordExecutionTelemetry,
 } = require('../core/telemetry');
+const {parseJsonResponse} = require('../utils/jsonParser');
 require('./env');
 
 const DEFAULT_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
@@ -250,149 +251,6 @@ const getResponseUsage = (response) => {
     return normalizeUsage(response?.usageMetadata || response?.usage_metadata || {});
 };
 
-const escapeJsonControlCharacters = (value) => {
-    let result = '';
-    let insideString = false;
-    let escaped = false;
-
-    for (const character of String(value || '')) {
-        const code = character.charCodeAt(0);
-
-        if (insideString) {
-            if (escaped) {
-                result += character;
-                escaped = false;
-                continue;
-            }
-
-            if (character === '\\') {
-                result += character;
-                escaped = true;
-                continue;
-            }
-
-            if (character === '"') {
-                result += character;
-                insideString = false;
-                continue;
-            }
-
-            if (code < 0x20) {
-                if (character === '\n') result += '\\n';
-                else if (character === '\r') result += '\\r';
-                else if (character === '\t') result += '\\t';
-                else result += '\\u' + code.toString(16).padStart(4, '0');
-                continue;
-            }
-        } else if (character === '"') {
-            insideString = true;
-        }
-
-        result += character;
-    }
-
-    return result;
-};
-
-const repairInvalidJsonEscapes = (value) => {
-    const text = String(value || '');
-    let result = '';
-    let insideString = false;
-
-    for (let index = 0; index < text.length; index += 1) {
-        const character = text[index];
-
-        if (!insideString) {
-            result += character;
-            if (character === '"') {
-                insideString = true;
-            }
-            continue;
-        }
-
-        if (character === '"') {
-            result += character;
-            insideString = false;
-            continue;
-        }
-
-        if (character !== '\\') {
-            result += character;
-            continue;
-        }
-
-        const nextCharacter = text[index + 1];
-        if (!nextCharacter) {
-            result += '\\\\';
-            continue;
-        }
-
-        // These are the only one-character escapes permitted by JSON.
-        if ('"\\/bfnrt'.includes(nextCharacter)) {
-            result += `\\${nextCharacter}`;
-            index += 1;
-            continue;
-        }
-
-        if (nextCharacter === 'u') {
-            const unicodeDigits = text.slice(index + 2, index + 6);
-            if (/^[0-9a-f]{4}$/i.test(unicodeDigits)) {
-                result += `\\u${unicodeDigits}`;
-                index += 5;
-                continue;
-            }
-        }
-
-        // Generated source often contains regexes (\\s, \\d, \\.) or
-        // Windows paths (C:\\Users). Preserve the literal backslash by
-        // escaping it for JSON instead of allowing JSON.parse to fail.
-        result += `\\\\${nextCharacter}`;
-        index += 1;
-    }
-
-    return result;
-};
-
-const parseJsonCandidate = (value) => {
-    try {
-        return JSON.parse(value);
-    } catch (error) {
-        try {
-            return JSON.parse(escapeJsonControlCharacters(value));
-        } catch (controlCharacterError) {
-            try {
-                return JSON.parse(repairInvalidJsonEscapes(escapeJsonControlCharacters(value)));
-            } catch (repairedError) {
-                repairedError.code = 'LLM_INVALID_JSON';
-                repairedError.message = `Gemini returned malformed JSON: ${repairedError.message}`;
-                repairedError.cause = error;
-                throw repairedError;
-            }
-        }
-    }
-};
-
-const parseJsonResponse = (rawText) => {
-    const text = String(rawText || '')
-        .trim()
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```$/i, '')
-        .trim();
-
-    try {
-        return parseJsonCandidate(text);
-    } catch (error) {
-        const start = text.indexOf('{');
-        const end = text.lastIndexOf('}');
-
-        if (start >= 0 && end > start) {
-            return parseJsonCandidate(text.slice(start, end + 1));
-        }
-
-        throw error;
-    }
-};
-
 const skGemini = async (contents, {model, config} = {}) => {
     try {
         const response = await generateContentWithRetry({
@@ -585,6 +443,7 @@ const generateStructureClient = async ({
 
 module.exports = {
     parseImagePart,
+    parseJsonResponse,
     skGemini,
     skGeminiStream,
     generateStructureClient,

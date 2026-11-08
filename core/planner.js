@@ -284,8 +284,11 @@ const INVALID_REMOVAL_TARGETS = new Set([
 ]);
 
 const isStructureCleanupRequest = (value) => {
-    const text = String(value || '');
-    return /\b(?:clean|cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
+    // "Clean layered architecture" is an architecture quality adjective, not
+    // a request to delete or reorganize an existing project structure.
+    const text = String(value || '')
+        .replace(/\bclean\s+(?:layered\s+)?architecture\b/gi, '');
+    return /\b(?:cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
         || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|src|redundant|empty|schema)\b/i.test(text));
 };
 
@@ -1425,6 +1428,68 @@ const extractDesktopFileNames = (goalPrompt) => {
         .filter((candidate, index, all) => all.indexOf(candidate) === index);
 };
 
+const extractProjectTreeLayout = (goalPrompt) => {
+    const directories = new Set();
+    const files = new Set();
+    const directoryStack = [];
+    const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+#.*)?$/;
+
+    for (const line of String(goalPrompt || '').split(/\r?\n/)) {
+        const match = line.match(treeEntryPattern);
+        if (!match) {
+            continue;
+        }
+
+        const depth = (match[1].match(/(?:│|\|)\s{3}| {4}/g) || []).length;
+        const rawName = match[2].replace(/[),;]+$/, '');
+        const isDirectory = /[\\/]$/.test(rawName);
+        const entryName = rawName.replace(/[\\/]+$/, '');
+
+        if (!entryName || entryName === '.' || entryName === '..') {
+            continue;
+        }
+
+        directoryStack.length = depth;
+        const relativePath = cleanRelativeFilePath([...directoryStack, entryName].join('/'));
+        if (!relativePath) {
+            continue;
+        }
+
+        if (isDirectory) {
+            directories.add(relativePath);
+            directoryStack[depth] = entryName;
+        } else {
+            files.add(relativePath);
+        }
+    }
+
+    // package.json and similar root files are often mentioned in prose rather
+    // than repeated in the tree. Add those explicit names without duplicating
+    // files already found at another tree depth.
+    const treeFileNames = new Set(
+        [...files].map((filePath) => path.basename(filePath).toLowerCase()),
+    );
+    for (const fileName of extractDesktopFileNames(goalPrompt)) {
+        if (!fileName.includes('/') && !treeFileNames.has(fileName.toLowerCase())) {
+            files.add(fileName);
+        }
+    }
+
+    // A file path implies every parent directory even if the prompt omitted an
+    // intermediate `foo/` line from its tree.
+    for (const filePath of files) {
+        const segments = filePath.split('/');
+        for (let index = 1; index < segments.length; index += 1) {
+            directories.add(segments.slice(0, index).join('/'));
+        }
+    }
+
+    return {
+        directories: [...directories],
+        files: [...files],
+    };
+};
+
 const extractRequestedHtmlFileName = (goalPrompt) => {
     return extractDesktopFileNames(goalPrompt)
         .find((fileName) => /\.html?$/i.test(fileName)) || null;
@@ -1507,6 +1572,13 @@ const ensureRequestedHtmlTask = (tasks, goalPrompt) => {
 
 const ensureDesktopPromptFileTasks = (tasks, goalPrompt) => {
     if (!isExplicitDesktopWriteRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    // An explicit project tree is handled after Node project paths have been
+    // canonicalized. Creating basename-only files here would lose paths such
+    // as src/controllers/authController.js.
+    if (extractProjectTreeLayout(goalPrompt).files.length > 0) {
         return tasks;
     }
 
@@ -2219,6 +2291,265 @@ const ensureNodeDesktopProjectTasks = (tasks, goalPrompt) => {
 
     return normalizeDynamicNodeDesktopTasks(tasks, goalPrompt, requestedDirectoryPath);
 
+};
+
+const getProjectFileEntries = (task) => {
+    const action = String(task.toolInput?.action || '').trim().toLowerCase();
+    const isFileAction = FILE_WRITE_ACTIONS.has(action)
+        || action === 'createdesktopfile'
+        || action === 'create_desktop_file'
+        || action === 'createdesktopfiles'
+        || action === 'create_desktop_files';
+
+    if (!isFileAction) {
+        return [];
+    }
+
+    if (Array.isArray(task.toolInput?.files)) {
+        return task.toolInput.files
+            .map((file, index) => ({
+                path: file?.path || file?.fileName,
+                content: file?.content,
+                index,
+            }))
+            .filter((file) => file.path);
+    }
+
+    if (task.toolInput?.files && typeof task.toolInput.files === 'object') {
+        return Object.entries(task.toolInput.files).map(([filePath, content], index) => ({
+            path: filePath,
+            content,
+            index,
+        }));
+    }
+
+    return task.toolInput?.path
+        ? [{path: task.toolInput.path, content: task.toolInput.content}]
+        : [];
+};
+
+const ensureExplicitProjectTreeDirectories = (tasks, goalPrompt) => {
+    if (!isNodeProjectSetupRequest(goalPrompt)) {
+        return tasks;
+    }
+
+    const layout = extractProjectTreeLayout(goalPrompt);
+    if (!layout.files.length && !layout.directories.length) {
+        return tasks;
+    }
+
+    const projectRoot = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+    if (!projectRoot) {
+        return tasks;
+    }
+
+    const isDirectoryAction = (action) => DIRECTORY_ACTIONS.has(action)
+        || action === 'createdesktopdirectory'
+        || action === 'create_desktop_directory';
+    const nextTasks = [...tasks];
+    const directoryTasks = new Map();
+
+    for (const task of nextTasks) {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (!isDirectoryAction(action)) {
+            continue;
+        }
+
+        const directoryPath = canonicalizeProjectPath(task.toolInput?.path, projectRoot)
+            || cleanRelativeDirectoryPath(task.toolInput?.path);
+        if (directoryPath) {
+            directoryTasks.set(directoryPath, task);
+        }
+    }
+
+    const addDirectoryTask = (directoryPath, parentTask) => {
+        const existingTask = directoryTasks.get(directoryPath);
+        if (existingTask) {
+            return existingTask;
+        }
+
+        const task = {
+            nodeKey: getUniqueNodeKey(nextTasks, `create_${directoryPath.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}_directory`),
+            title: `Create Desktop directory ${directoryPath}`,
+            instruction: `Create the requested directory ${directoryPath} on the local Desktop.`,
+            dependencies: parentTask ? [parentTask.nodeKey] : [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: directoryPath,
+            },
+        };
+
+        nextTasks.push(task);
+        directoryTasks.set(directoryPath, task);
+        return task;
+    };
+
+    const rootTask = addDirectoryTask(projectRoot, null);
+    const requestedDirectories = [...new Set(layout.directories)]
+        .map((relativePath) => `${projectRoot}/${relativePath}`)
+        .sort((left, right) => left.split('/').length - right.split('/').length);
+
+    for (const directoryPath of requestedDirectories) {
+        const parentPath = directoryPath.slice(0, directoryPath.lastIndexOf('/')) || projectRoot;
+        const parentTask = directoryTasks.get(parentPath) || rootTask;
+        addDirectoryTask(directoryPath, parentTask);
+    }
+
+    const requestedDirectoryPaths = new Set([
+        projectRoot,
+        ...requestedDirectories,
+    ].map((directoryPath) => directoryPath.toLowerCase()));
+    const requestedFilePaths = new Set(
+        layout.files.map((relativePath) => `${projectRoot}/${relativePath}`.toLowerCase()),
+    );
+    const requestedFileByBasename = new Map();
+    for (const filePath of requestedFilePaths) {
+        const fileName = path.basename(filePath);
+        if (requestedFileByBasename.has(fileName)) {
+            requestedFileByBasename.set(fileName, null);
+        } else {
+            requestedFileByBasename.set(fileName, filePath);
+        }
+    }
+
+    const removedDirectoryKeys = new Set();
+    const filteredTasks = nextTasks.filter((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (!isDirectoryAction(action)) {
+            return true;
+        }
+
+        const canonicalPath = canonicalizeProjectPath(task.toolInput?.path, projectRoot);
+        if (!canonicalPath || !canonicalPath.toLowerCase().startsWith(`${projectRoot.toLowerCase()}/`)) {
+            return true;
+        }
+
+        if (requestedDirectoryPaths.has(canonicalPath.toLowerCase())) {
+            return true;
+        }
+
+        removedDirectoryKeys.add(task.nodeKey);
+        return false;
+    });
+
+    const normalizedTasks = filteredTasks.map((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (isDirectoryAction(action)) {
+            const canonicalPath = canonicalizeProjectPath(task.toolInput?.path, projectRoot);
+            if (canonicalPath && requestedDirectoryPaths.has(canonicalPath.toLowerCase())) {
+                return {
+                    ...task,
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        ...task.toolInput,
+                        action: 'createDesktopDirectory',
+                        path: canonicalPath,
+                    },
+                };
+            }
+        }
+
+        const fileEntries = getProjectFileEntries(task);
+        if (!fileEntries.length) {
+            return task;
+        }
+
+        const remapFilePath = (filePath) => {
+            const canonicalPath = canonicalizeProjectPath(filePath, projectRoot);
+            if (!canonicalPath) {
+                return filePath;
+            }
+
+            const lowerPath = canonicalPath.toLowerCase();
+            if (requestedFilePaths.has(lowerPath)) {
+                return canonicalPath;
+            }
+
+            const basenameMatch = requestedFileByBasename.get(path.basename(lowerPath));
+            return basenameMatch || filePath;
+        };
+
+        if (Array.isArray(task.toolInput?.files)) {
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    files: task.toolInput.files.map((file) => ({
+                        ...file,
+                        path: remapFilePath(file?.path || file?.fileName),
+                    })),
+                },
+            };
+        }
+
+        if (task.toolInput?.files && typeof task.toolInput.files === 'object') {
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    files: Object.fromEntries(Object.entries(task.toolInput.files).map(([filePath, content]) => (
+                        [remapFilePath(filePath), content]
+                    ))),
+                },
+            };
+        }
+
+        return {
+            ...task,
+            toolInput: {
+                ...task.toolInput,
+                path: remapFilePath(task.toolInput.path),
+            },
+        };
+    });
+
+    const normalizedDirectoryTasks = new Map();
+    for (const task of normalizedTasks) {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (!isDirectoryAction(action)) {
+            continue;
+        }
+
+        const directoryPath = cleanRelativeDirectoryPath(task.toolInput?.path);
+        if (directoryPath) {
+            normalizedDirectoryTasks.set(directoryPath.toLowerCase(), task);
+        }
+    }
+
+    return normalizedTasks.map((task) => {
+        const fileEntries = getProjectFileEntries(task);
+        if (!fileEntries.length) {
+            return {
+                ...task,
+                dependencies: (task.dependencies || [])
+                    .filter((dependency) => !removedDirectoryKeys.has(dependency)),
+            };
+        }
+
+        const fileDependencies = fileEntries
+            .map((entry) => cleanRelativeFilePath(entry.path))
+            .filter(Boolean)
+            .map((filePath) => {
+                const canonicalPath = canonicalizeProjectPath(filePath, projectRoot);
+                if (!canonicalPath) {
+                    return null;
+                }
+
+                const parentPath = canonicalPath.slice(0, canonicalPath.lastIndexOf('/')) || projectRoot;
+                return normalizedDirectoryTasks.get(parentPath.toLowerCase())?.nodeKey || rootTask.nodeKey;
+            })
+            .filter(Boolean);
+
+        return {
+            ...task,
+            dependencies: [...new Set([...(task.dependencies || [])
+                .filter((dependency) => !removedDirectoryKeys.has(dependency)), ...fileDependencies])]
+                .filter((dependency) => dependency !== task.nodeKey),
+        };
+    });
 };
 
 const isVueScaffoldTask = (task) => {
@@ -3799,6 +4130,17 @@ const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
     ];
 };
 
+const clampPlannerText = (value, maxLength, fallback) => {
+    const text = String(value ?? '').trim();
+    let clamped = text.slice(0, maxLength);
+    const lastCodeUnit = clamped.charCodeAt(clamped.length - 1);
+    if (lastCodeUnit >= 0xD800 && lastCodeUnit <= 0xDBFF) {
+        clamped = clamped.slice(0, -1);
+    }
+    clamped = clamped.trim();
+    return clamped || fallback;
+};
+
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
@@ -3891,6 +4233,10 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // This prevents an LLM plan from creating only an empty src/node.js file and
         // guarantees an idempotent MVC + Service structure on the requested Desktop path.
         plan.tasks = ensureNodeDesktopProjectTasks(plan.tasks, goalPrompt);
+        // An explicit project tree is an acceptance contract. Preserve every
+        // requested path and create its directory tasks dynamically from the
+        // user's tree instead of relying on a fixed architecture template.
+        plan.tasks = ensureExplicitProjectTreeDirectories(plan.tasks, goalPrompt);
         // Pinia follow-up requests must execute inside the existing Desktop Vue project.
         // Normalize common misspellings such as "Pinai" to the real package and setup.
         plan.tasks = ensurePiniaDesktopProjectTasks(plan.tasks, goalPrompt);
@@ -3969,7 +4315,60 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         }
     }
 
+    // Keep planner-generated metadata within the same limits used by the
+    // workflow and task database columns. LLMs can echo the entire user goal
+    // into a title even though the plan schema requires a short label.
+    plan.workflowTitle = clampPlannerText(plan.workflowTitle, 255, 'Workflow Plan');
+    plan.summary = clampPlannerText(plan.summary, 5000, 'Execution plan');
+    plan.tasks = Array.isArray(plan.tasks)
+        ? plan.tasks.map((task, index) => ({
+            ...task,
+            title: clampPlannerText(task.title, 255, `Task ${index + 1}`),
+            instruction: clampPlannerText(
+                task.instruction || task.description || task.title,
+                10000,
+                `Execute task ${index + 1}.`,
+            ),
+        }))
+        : plan.tasks;
+
     return plan;
+};
+
+const getMissingProjectTreeFiles = (plan, goalPrompt) => {
+    if (!isNodeProjectSetupRequest(goalPrompt)) {
+        return [];
+    }
+
+    const layout = extractProjectTreeLayout(goalPrompt);
+    if (!layout.files.length) {
+        return [];
+    }
+
+    const projectRoot = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+    if (!projectRoot) {
+        return [];
+    }
+
+    const generatedFiles = new Map();
+    for (const task of Array.isArray(plan?.tasks) ? plan.tasks : []) {
+        for (const entry of getProjectFileEntries(task)) {
+            const canonicalPath = canonicalizeProjectPath(entry.path, projectRoot);
+            if (canonicalPath) {
+                const key = canonicalPath.toLowerCase();
+                generatedFiles.set(
+                    key,
+                    Boolean(generatedFiles.get(key) || hasGeneratedFileContent(entry.content)),
+                );
+            }
+        }
+    }
+
+    return layout.files
+        .map((relativePath) => `${projectRoot}/${relativePath}`)
+        .filter((filePath) => !generatedFiles.get(filePath.toLowerCase()));
 };
 
 const validatePlan = (rawPlan, options = {}) => {
@@ -4008,6 +4407,21 @@ const validatePlan = (rawPlan, options = {}) => {
             success: false,
             error: {
                 message: 'tasks must be a non-empty array',
+            },
+        };
+    }
+
+    const missingProjectFiles = getMissingProjectTreeFiles(plan, options.goalPrompt || '');
+    if (missingProjectFiles.length > 0) {
+        const listedFiles = missingProjectFiles.slice(0, 20).join(', ');
+        const suffix = missingProjectFiles.length > 20
+            ? `, and ${missingProjectFiles.length - 20} more`
+            : '';
+
+        return {
+            success: false,
+            error: {
+                message: `The plan is incomplete. Include every file from the user's explicit project tree with complete file content. Missing: ${listedFiles}${suffix}`,
             },
         };
     }
@@ -4280,6 +4694,7 @@ Rules:
 - If the goal asks for image links, image URLs, remote images, external images, or CDN images, set imageGenerator toolInput.outputMode to 'url'. When creating HTML, use the returned imageUrl directly in img src, CSS background-image, hero slides, product cards, and category cards.
 - For every requested HTML homepage, generate the complete document in fileManager toolInput.content from the exact user prompt. Do not use a fixed homepage template, fixed brand copy, fixed colors, fixed product names, or generic fallback content. Vary the layout, typography, content, color system, and components to match the requested subject and constraints.
 - For every project setup request, derive the project name, framework, runtime, dependencies, files, commands, and source content from the exact user prompt. Do not add a fixed demo project, fixed file names, fixed starter copy, or generic fallback source. If the user did not request a file, do not invent one.
+- When the user provides an explicit directory tree or file list, treat every listed directory and file as required acceptance criteria. Create every directory at the exact relative path and create every listed source/configuration/SQL file with complete content derived from the prompt. Use fileManager tasks with one exact path per file (or a createFiles batch containing exact paths); never return only the project directory, a services folder, or README.md for a tree-based project request.
 - For a local Desktop project setup, make the workflow resumable: use fileManager toolInput.ifExists='skip' for createDesktopFile/createDesktopFiles (and equivalent create-file actions) unless the user explicitly asks to overwrite, replace, update, modify, or rewrite existing files. Existing project folders are reused; existing files are preserved and reported as skipped rather than failing the whole workflow.
 - When the user explicitly asks to update, modify, edit, rewrite, refactor, replace, or overwrite an existing project, use update semantics for generated non-empty files: use fileManager action 'update', createDesktopFile mode 'update', or per-file mode 'update' in createFiles/createDesktopFiles. If generated content is empty, use ifExists='skip' so an existing file is never cleared accidentally. Do not use create mode for an explicitly authorized existing-project update.
 - Never infer a feature-specific starter such as login, health, users, or authentication from an architecture keyword alone. Generate only the files and behavior required by the current user prompt; preserve the model-generated source content during normalization.

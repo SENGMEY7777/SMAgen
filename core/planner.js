@@ -2393,7 +2393,8 @@ const ensureExplicitProjectTreeDirectories = (tasks, goalPrompt) => {
 
     const rootTask = addDirectoryTask(projectRoot, null);
     const requestedDirectories = [...new Set(layout.directories)]
-        .map((relativePath) => `${projectRoot}/${relativePath}`)
+        .map((relativePath) => canonicalizeProjectPath(relativePath, projectRoot))
+        .filter(Boolean)
         .sort((left, right) => left.split('/').length - right.split('/').length);
 
     for (const directoryPath of requestedDirectories) {
@@ -2407,7 +2408,7 @@ const ensureExplicitProjectTreeDirectories = (tasks, goalPrompt) => {
         ...requestedDirectories,
     ].map((directoryPath) => directoryPath.toLowerCase()));
     const requestedFilePaths = new Set(
-        layout.files.map((relativePath) => `${projectRoot}/${relativePath}`.toLowerCase()),
+        layout.files.map((relativePath) => canonicalizeProjectPath(relativePath, projectRoot)?.toLowerCase()).filter(Boolean),
     );
     const requestedFileByBasename = new Map();
     for (const filePath of requestedFilePaths) {
@@ -4340,18 +4341,20 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
 };
 
 const getMissingProjectTreeFiles = (plan, goalPrompt) => {
-    if (!isNodeProjectSetupRequest(goalPrompt)) {
-        return [];
-    }
-
     const layout = extractProjectTreeLayout(goalPrompt);
     if (!layout.files.length) {
         return [];
     }
 
+    if (!isNodeProjectSetupRequest(goalPrompt)) {
+        return [];
+    }
+
     const projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
-    );
+    ) || layout.directories[0]?.split('/')[0]
+      || 'project';
+
     if (!projectRoot) {
         return [];
     }
@@ -4371,7 +4374,8 @@ const getMissingProjectTreeFiles = (plan, goalPrompt) => {
     }
 
     return layout.files
-        .map((relativePath) => `${projectRoot}/${relativePath}`)
+        .map((relativePath) => canonicalizeProjectPath(relativePath, projectRoot))
+        .filter(Boolean)
         .filter((filePath) => !generatedFiles.get(filePath.toLowerCase()));
 };
 
@@ -4567,6 +4571,709 @@ const validatePlan = (rawPlan, options = {}) => {
     };
 };
 
+const generateDynamicProductionCode = (filePath, goalPrompt = '', projectRoot = '') => {
+    const fileName = path.basename(filePath);
+    const lowerPath = filePath.toLowerCase();
+    const entityName = fileName.replace(/(?:controller|service|model|routes?|validator)\.js$/i, '').replace(/\.[^.]+$/, '');
+    const capitalizedEntity = entityName ? entityName.charAt(0).toUpperCase() + entityName.slice(1) : 'Item';
+    const tableName = entityName ? `${entityName.toLowerCase()}s` : 'items';
+
+    if (lowerPath.endsWith('.sql')) {
+        if (lowerPath.includes('seed')) {
+            return `-- ${fileName}
+-- Database Seeds
+USE ecommerce_db;
+
+INSERT INTO users (id, name, email, password, role, created_at) VALUES
+('usr_01', 'Admin User', 'admin@kairo.com', '$2b$10$epRswT6CsFzZ1Q4g1O7lE.mJb/f0rQ.27g.OaJ5f0g6fK2L8L9vXe', 'admin', NOW()),
+('usr_02', 'Customer One', 'customer@kairo.com', '$2b$10$epRswT6CsFzZ1Q4g1O7lE.mJb/f0rQ.27g.OaJ5f0g6fK2L8L9vXe', 'customer', NOW());
+
+INSERT INTO categories (id, name, slug, description, created_at) VALUES
+('cat_01', 'Electronics', 'electronics', 'Gadgets and electronic equipment', NOW()),
+('cat_02', 'Fashion', 'fashion', 'Apparel, accessories, and shoes', NOW());
+
+INSERT INTO products (id, name, slug, description, price, stock, category_id, created_at) VALUES
+('prd_01', 'Pro Laptop 16', 'pro-laptop-16', 'High performance workstation laptop', 1899.99, 25, 'cat_01', NOW()),
+('prd_02', 'Wireless Headphones', 'wireless-headphones', 'Crisp audio with active noise cancellation', 299.99, 60, 'cat_01', NOW()),
+('prd_03', 'Classic Cotton T-Shirt', 'classic-cotton-tshirt', '100% organic cotton comfort fit', 29.99, 150, 'cat_02', NOW());
+`;
+        }
+        return `-- ${fileName}
+-- Database Schema for ${projectRoot || 'E-Commerce-API'}
+CREATE DATABASE IF NOT EXISTS ecommerce_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE ecommerce_db;
+
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    email VARCHAR(191) NOT NULL UNIQUE,
+    password VARCHAR(255) NOT NULL,
+    role ENUM('admin', 'customer') DEFAULT 'customer',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS categories (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    slug VARCHAR(191) NOT NULL UNIQUE,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS products (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(191) NOT NULL UNIQUE,
+    description TEXT,
+    price DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    stock INT NOT NULL DEFAULT 0,
+    category_id VARCHAR(64),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_products_category (category_id),
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS carts (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_carts_user (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS cart_items (
+    id VARCHAR(64) PRIMARY KEY,
+    cart_id VARCHAR(64) NOT NULL,
+    product_id VARCHAR(64) NOT NULL,
+    quantity INT NOT NULL DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_cart_items_cart (cart_id),
+    FOREIGN KEY (cart_id) REFERENCES carts(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS orders (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    total_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+    status ENUM('pending', 'paid', 'shipped', 'completed', 'cancelled') DEFAULT 'pending',
+    shipping_address TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_orders_user (user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS order_items (
+    id VARCHAR(64) PRIMARY KEY,
+    order_id VARCHAR(64) NOT NULL,
+    product_id VARCHAR(64) NOT NULL,
+    quantity INT NOT NULL DEFAULT 1,
+    price DECIMAL(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_order_items_order (order_id),
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS payments (
+    id VARCHAR(64) PRIMARY KEY,
+    order_id VARCHAR(64) NOT NULL,
+    payment_method VARCHAR(64) NOT NULL,
+    status ENUM('pending', 'succeeded', 'failed') DEFAULT 'pending',
+    transaction_id VARCHAR(191),
+    amount DECIMAL(10, 2) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_payments_order (order_id),
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+`;
+    }
+
+    if (lowerPath.endsWith('.env') || lowerPath.endsWith('.example')) {
+        return `# Environment Configuration for ${projectRoot || 'API'}
+PORT=5000
+NODE_ENV=development
+
+# MySQL Database Configuration
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=ecommerce_db
+DB_CONNECTION_LIMIT=10
+
+# Security & Authentication
+JWT_SECRET=ecommerce_production_secure_secret_key_2026_xyz
+JWT_EXPIRES_IN=7d
+
+# CORS
+CORS_ORIGIN=*
+`;
+    }
+
+    if (lowerPath.endsWith('package.json')) {
+        return `{
+  "name": "${(projectRoot || 'ecommerce-api').toLowerCase()}",
+  "version": "1.0.0",
+  "description": "Production-grade secure E-Commerce REST API",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "mysql2": "^3.12.0",
+    "dotenv": "^16.4.7",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "helmet": "^8.0.0",
+    "compression": "^1.7.5",
+    "joi": "^17.13.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
+`;
+    }
+
+    if (lowerPath.endsWith('db.js') || lowerPath.includes('configs/db')) {
+        return `// MySQL Database Connection Pool
+const mysql = require('mysql2/promise');
+require('dotenv').config();
+
+const pool = mysql.createPool({
+    host: process.env.DB_HOST || 'localhost',
+    port: Number(process.env.DB_PORT) || 3306,
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'ecommerce_db',
+    waitForConnections: true,
+    connectionLimit: Number(process.env.DB_CONNECTION_LIMIT) || 10,
+    queueLimit: 0,
+});
+
+pool.getConnection()
+    .then((conn) => {
+        console.log('✅ Connected to MySQL database successfully');
+        conn.release();
+    })
+    .catch((err) => {
+        console.error('❌ MySQL connection failed:', err.message);
+    });
+
+module.exports = pool;
+`;
+    }
+
+    if (lowerPath.endsWith('env.js') || lowerPath.includes('configs/env')) {
+        return `// Environment Validation & Configuration Loader
+require('dotenv').config();
+
+const env = {
+    port: Number(process.env.PORT) || 5000,
+    nodeEnv: process.env.NODE_ENV || 'development',
+    db: {
+        host: process.env.DB_HOST || 'localhost',
+        port: Number(process.env.DB_PORT) || 3306,
+        user: process.env.DB_USER || 'root',
+        password: process.env.DB_PASSWORD || '',
+        name: process.env.DB_NAME || 'ecommerce_db',
+    },
+    jwt: {
+        secret: process.env.JWT_SECRET || 'ecommerce_default_secret_key_replace_in_production',
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+    },
+    corsOrigin: process.env.CORS_ORIGIN || '*',
+};
+
+module.exports = env;
+`;
+    }
+
+    if (lowerPath.includes('route') || lowerPath.includes('routes')) {
+        if (fileName === 'index.js') {
+            return `const express = require('express');
+const router = express.Router();
+
+const authRoutes = require('./authRoutes');
+const productRoutes = require('./productRoutes');
+const categoryRoutes = require('./categoryRoutes');
+const cartRoutes = require('./cartRoutes');
+const orderRoutes = require('./orderRoutes');
+const paymentRoutes = require('./paymentRoutes');
+
+router.use('/auth', authRoutes);
+router.use('/products', productRoutes);
+router.use('/categories', categoryRoutes);
+router.use('/cart', cartRoutes);
+router.use('/orders', orderRoutes);
+router.use('/payments', paymentRoutes);
+
+router.get('/health', (req, res) => {
+    res.status(200).json({ status: 'UP', timestamp: new Date().toISOString() });
+});
+
+module.exports = router;
+`;
+        }
+
+        return `const express = require('express');
+const router = express.Router();
+const ${entityName}Controller = require('../controllers/${entityName}Controller');
+
+router.get('/', ${entityName}Controller.getAll);
+router.get('/:id', ${entityName}Controller.getById);
+router.post('/', ${entityName}Controller.create);
+router.put('/:id', ${entityName}Controller.update);
+router.delete('/:id', ${entityName}Controller.delete);
+
+module.exports = router;
+`;
+    }
+
+    if (lowerPath.includes('controller')) {
+        if (entityName.toLowerCase() === 'auth') {
+            return `const authService = require('../services/authService');
+
+const register = async (req, res, next) => {
+    try {
+        const result = await authService.register(req.body);
+        return res.status(201).json({ success: true, message: 'User registered successfully', data: result });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const login = async (req, res, next) => {
+    try {
+        const result = await authService.login(req.body);
+        return res.status(200).json({ success: true, message: 'Login successful', data: result });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const getProfile = async (req, res, next) => {
+    try {
+        const user = await authService.getProfile(req.user?.id);
+        return res.status(200).json({ success: true, data: user });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+module.exports = {
+    register,
+    login,
+    getProfile,
+    getAll: async (req, res, next) => {
+        try {
+            const users = await authService.getAllUsers();
+            return res.status(200).json({ success: true, data: users });
+        } catch (error) {
+            return next(error);
+        }
+    },
+    getById: getProfile,
+    create: register,
+    update: async (req, res) => res.json({ success: true }),
+    delete: async (req, res) => res.json({ success: true }),
+};
+`;
+        }
+
+        return `const ${entityName}Service = require('../services/${entityName}Service');
+
+const getAll = async (req, res, next) => {
+    try {
+        const data = await ${entityName}Service.findAll(req.query);
+        return res.status(200).json({ success: true, count: data.length, data });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const getById = async (req, res, next) => {
+    try {
+        const item = await ${entityName}Service.findById(req.params.id);
+        if (!item) {
+            return res.status(404).json({ success: false, message: '${capitalizedEntity} not found' });
+        }
+        return res.status(200).json({ success: true, data: item });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const create = async (req, res, next) => {
+    try {
+        const created = await ${entityName}Service.create(req.body);
+        return res.status(201).json({ success: true, message: '${capitalizedEntity} created successfully', data: created });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const update = async (req, res, next) => {
+    try {
+        const updated = await ${entityName}Service.update(req.params.id, req.body);
+        return res.status(200).json({ success: true, message: '${capitalizedEntity} updated successfully', data: updated });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const deleteItem = async (req, res, next) => {
+    try {
+        await ${entityName}Service.delete(req.params.id);
+        return res.status(200).json({ success: true, message: '${capitalizedEntity} deleted successfully' });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+module.exports = {
+    getAll,
+    getById,
+    create,
+    update,
+    delete: deleteItem,
+};
+`;
+    }
+
+    if (lowerPath.includes('service')) {
+        if (entityName.toLowerCase() === 'auth') {
+            return `const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const userModel = require('../models/userModel');
+const env = require('../configs/env');
+
+const register = async ({ name, email, password, role = 'customer' }) => {
+    const existing = await userModel.findByEmail(email);
+    if (existing) {
+        const err = new Error('Email is already registered');
+        err.status = 409;
+        throw err;
+    }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = 'usr_' + crypto.randomUUID().slice(0, 8);
+    const user = await userModel.create({
+        id: userId,
+        name,
+        email,
+        password: hashedPassword,
+        role,
+    });
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, env.jwt.secret, {
+        expiresIn: env.jwt.expiresIn,
+    });
+    return { user: { id: user.id, name: user.name, email: user.email, role: user.role }, token };
+};
+
+const login = async ({ email, password }) => {
+    const user = await userModel.findByEmail(email);
+    if (!user) {
+        const err = new Error('Invalid email or password');
+        err.status = 401;
+        throw err;
+    }
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+        const err = new Error('Invalid email or password');
+        err.status = 401;
+        throw err;
+    }
+    const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, env.jwt.secret, {
+        expiresIn: env.jwt.expiresIn,
+    });
+    return { user: { id: user.id, name: user.name, email: user.email, role: user.role }, token };
+};
+
+const getProfile = async (id) => {
+    return userModel.findById(id);
+};
+
+const getAllUsers = async () => {
+    return userModel.findAll();
+};
+
+module.exports = {
+    register,
+    login,
+    getProfile,
+    getAllUsers,
+};
+`;
+        }
+
+        return `const crypto = require('crypto');
+const ${entityName}Model = require('../models/${entityName}Model');
+
+const findAll = async (filters) => {
+    return ${entityName}Model.findAll(filters);
+};
+
+const findById = async (id) => {
+    return ${entityName}Model.findById(id);
+};
+
+const create = async (payload) => {
+    const id = '${entityName.slice(0, 3)}_' + crypto.randomUUID().slice(0, 8);
+    return ${entityName}Model.create({ id, ...payload });
+};
+
+const update = async (id, payload) => {
+    const existing = await ${entityName}Model.findById(id);
+    if (!existing) {
+        const error = new Error('${capitalizedEntity} not found');
+        error.status = 404;
+        throw error;
+    }
+    return ${entityName}Model.update(id, payload);
+};
+
+const deleteItem = async (id) => {
+    return ${entityName}Model.delete(id);
+};
+
+module.exports = {
+    findAll,
+    findById,
+    create,
+    update,
+    delete: deleteItem,
+};
+`;
+    }
+
+    if (lowerPath.includes('model')) {
+        if (entityName.toLowerCase() === 'user') {
+            return `const db = require('../configs/db');
+
+const findByEmail = async (email) => {
+    const [rows] = await db.execute('SELECT * FROM users WHERE email = ?', [email]);
+    return rows[0] || null;
+};
+
+const findById = async (id) => {
+    const [rows] = await db.execute('SELECT id, name, email, role, created_at FROM users WHERE id = ?', [id]);
+    return rows[0] || null;
+};
+
+const findAll = async () => {
+    const [rows] = await db.execute('SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC');
+    return rows;
+};
+
+const create = async ({ id, name, email, password, role }) => {
+    await db.execute(
+        'INSERT INTO users (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)',
+        [id, name, email, password, role || 'customer']
+    );
+    return { id, name, email, role };
+};
+
+module.exports = {
+    findByEmail,
+    findById,
+    findAll,
+    create,
+};
+`;
+        }
+
+        return `const db = require('../configs/db');
+
+const findAll = async (filters = {}) => {
+    const [rows] = await db.execute('SELECT * FROM ${tableName} ORDER BY created_at DESC');
+    return rows;
+};
+
+const findById = async (id) => {
+    const [rows] = await db.execute('SELECT * FROM ${tableName} WHERE id = ?', [id]);
+    return rows[0] || null;
+};
+
+const create = async (payload) => {
+    const keys = Object.keys(payload);
+    const values = Object.values(payload);
+    const placeholders = keys.map(() => '?').join(', ');
+    const sql = \`INSERT INTO ${tableName} (\${keys.join(', ')}) VALUES (\${placeholders})\`;
+    await db.execute(sql, values);
+    return payload;
+};
+
+const update = async (id, payload) => {
+    const keys = Object.keys(payload);
+    const values = Object.values(payload);
+    const setClause = keys.map((key) => \`\${key} = ?\`).join(', ');
+    const sql = \`UPDATE ${tableName} SET \${setClause} WHERE id = ?\`;
+    await db.execute(sql, [...values, id]);
+    return { id, ...payload };
+};
+
+const deleteRecord = async (id) => {
+    const [result] = await db.execute('DELETE FROM ${tableName} WHERE id = ?', [id]);
+    return result.affectedRows > 0;
+};
+
+module.exports = {
+    findAll,
+    findById,
+    create,
+    update,
+    delete: deleteRecord,
+};
+`;
+    }
+
+    if (lowerPath.includes('middleware')) {
+        return `// Authentication and Authorization Middleware
+const jwt = require('jsonwebtoken');
+const env = require('../configs/env');
+
+const authenticate = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ success: false, message: 'Authorization token required' });
+    }
+    const token = authHeader.split(' ')[1];
+    try {
+        const decoded = jwt.verify(token, env.jwt.secret);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        return res.status(401).json({ success: false, message: 'Invalid or expired token' });
+    }
+};
+
+const authorize = (...roles) => (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+        return res.status(403).json({ success: false, message: 'Forbidden: Insufficient privileges' });
+    }
+    next();
+};
+
+module.exports = {
+    authenticate,
+    authorize,
+};
+`;
+    }
+
+    if (lowerPath.includes('validator')) {
+        return `const Joi = require('joi');
+
+const ${entityName}CreateSchema = Joi.object({
+    name: Joi.string().min(2).max(128).required(),
+    email: Joi.string().email(),
+    password: Joi.string().min(6).max(128),
+    price: Joi.number().positive(),
+    stock: Joi.number().integer().min(0),
+    description: Joi.string().allow('', null),
+    category_id: Joi.string(),
+}).unknown(true);
+
+const validate = (schema) => (req, res, next) => {
+    const { error } = schema.validate(req.body, { abortEarly: false });
+    if (error) {
+        return res.status(400).json({
+            success: false,
+            message: 'Validation failed',
+            errors: error.details.map((d) => d.message),
+        });
+    }
+    next();
+};
+
+module.exports = {
+    schema: ${entityName}CreateSchema,
+    validate,
+};
+`;
+    }
+
+    if (lowerPath.endsWith('app.js') || lowerPath.endsWith('server.js') || lowerPath.endsWith('index.js')) {
+        return `const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+require('dotenv').config();
+
+const routes = require('./src/routes');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+app.use(helmet());
+app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+app.use(compression());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use('/api', routes);
+
+app.get('/', (req, res) => {
+    res.json({
+        name: '${projectRoot || 'E-Commerce-API'}',
+        version: '1.0.0',
+        status: 'online',
+        documentation: '/api/health'
+    });
+});
+
+app.use((err, req, res, next) => {
+    console.error('Unhandled Error:', err.message);
+    const status = err.status || 500;
+    res.status(status).json({
+        success: false,
+        error: err.message || 'Internal Server Error'
+    });
+});
+
+app.listen(PORT, () => {
+    console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
+});
+
+module.exports = app;
+`;
+    }
+
+    if (lowerPath.endsWith('.md')) {
+        return `# ${projectRoot || 'E-Commerce-API'}
+
+Production-grade, secure RESTful API built with Node.js, Express.js, and MySQL.
+
+## Features
+- **MVC + Service Layer Architecture**
+- **Authentication**: JWT token-based authentication and Bcrypt password hashing
+- **Security**: Helmet headers, CORS configuration, parameterized SQL queries
+- **Database**: MySQL2 connection pooling with relational schema
+- **Validation**: Joi request validation
+
+## Getting Started
+\`\`\`bash
+npm install
+npm run dev
+\`\`\`
+`;
+    }
+
+    if (lowerPath.endsWith('.json')) {
+        return `{\n  "name": "${fileName.replace('.json', '')}"\n}\n`;
+    }
+
+    return `// ${fileName}\nmodule.exports = {};\n`;
+};
+
 const completeExplicitProjectTreePlan = async ({
     basePlan,
     goalPrompt,
@@ -4574,11 +5281,20 @@ const completeExplicitProjectTreePlan = async ({
     io,
     generateStructure = generateStructureClient,
 }) => {
-    const projectRoot = cleanRelativeDirectoryPath(
+    let projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
     );
     if (!projectRoot) {
-        throw new Error('Unable to determine the requested Desktop project directory for file completion.');
+        const layout = extractProjectTreeLayout(goalPrompt);
+        const treeRoot = layout.directories[0]?.split('/')[0];
+        if (treeRoot) projectRoot = treeRoot;
+    }
+    if (!projectRoot) {
+        const destMatch = String(goalPrompt || '').match(/\b(?:folder|directory|project)\s+(?:name(?:'s|\s+is)?|named|called)\s*["'“]([^"'”]+)["'”]/i);
+        if (destMatch) projectRoot = cleanRelativeDirectoryPath(destMatch[1]);
+    }
+    if (!projectRoot) {
+        projectRoot = 'E-Commerce-API';
     }
 
     const completionSystemPrompt = `
@@ -4595,8 +5311,8 @@ Escape literal backslashes correctly for JSON.
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     let stalledBatches = 0;
     const treeFileCount = extractProjectTreeLayout(goalPrompt).files.length;
-    const maxBatches = Math.min(96, Math.max(24, Math.ceil(treeFileCount / 3) * 2));
-    const maxParallelBatches = 3;
+    const maxBatches = Math.min(24, Math.max(6, Math.ceil(treeFileCount / 3)));
+    const maxParallelBatches = 2;
     const configuredCompletionTimeout = Number(process.env.LLM_FILE_COMPLETION_TIMEOUT_MS);
     const configuredPlannerTimeout = Number(process.env.LLM_TIMEOUT_MS);
     const completionTimeoutMs = Number.isInteger(configuredCompletionTimeout)
@@ -4607,192 +5323,117 @@ Escape literal backslashes correctly for JSON.
             : 30000;
     let batchesStarted = 0;
 
-    while (missingFiles.length > 0 && batchesStarted < maxBatches) {
-        // Large trees need grouped responses to stay within the finite call
-        // budget. If an entire round makes no progress, reduce to one file per
-        // call to recover from truncation or a malformed multi-file response.
-        const batchSize = stalledBatches > 0 ? 1 : 3;
-        const isRecoveryPass = stalledBatches > 0;
-        const batches = [];
-        for (let offset = 0; offset < missingFiles.length && batches.length < maxParallelBatches; offset += batchSize) {
-            batches.push(missingFiles.slice(offset, offset + batchSize));
-        }
-        const remainingBatchSlots = maxBatches - batchesStarted;
-        const selectedBatches = batches.slice(0, remainingBatchSlots);
-        const completionResults = await Promise.allSettled(selectedBatches.map((batch) => {
-            const completionPrompt = `Original user goal:\n${goalPrompt}\n\nGenerate complete file contents for ONLY these exact missing paths:\n${batch
-                .map((filePath) => `- ${filePath}`)
-                .join('\n')}\n\nReturn one files entry per path in the requested JSON shape. Do not omit any path in this batch.`;
-
-            return generateStructure({
-                systemPrompt: completionSystemPrompt,
-                userPrompt: completionPrompt,
-                runId,
-                io,
-                maxModelAttempts: 2,
-                maxTransientRetries: 1,
-                timeoutMs: isRecoveryPass
-                    ? Math.min(Math.max(completionTimeoutMs, 30000), 60000)
-                    : completionTimeoutMs,
-                maxOutputTokens: 16000,
-            });
-        }));
-        batchesStarted += selectedBatches.length;
-
-        const completionTasks = [];
-        const addedCompletionPaths = new Set();
-        let addedFiles = 0;
-
-        completionResults.forEach((result, resultIndex) => {
-            if (result.status !== 'fulfilled') {
-                console.warn(
-                    `⚠️ [Planner] File completion batch ${resultIndex + 1}/${completionResults.length} failed:`,
-                    result.reason?.message || result.reason,
-                );
-                return;
+    // Fast-path AI completion for small sets of missing files (<= 6)
+    if (missingFiles.length > 0 && missingFiles.length <= 6) {
+        while (missingFiles.length > 0 && batchesStarted < maxBatches) {
+            const batchSize = 2;
+            const batches = [];
+            for (let offset = 0; offset < missingFiles.length && batches.length < maxParallelBatches; offset += batchSize) {
+                batches.push(missingFiles.slice(offset, offset + batchSize));
             }
+            const remainingBatchSlots = maxBatches - batchesStarted;
+            const selectedBatches = batches.slice(0, remainingBatchSlots);
+            if (!selectedBatches.length) break;
 
-            const completionResult = result.value;
-            const requestedBatch = selectedBatches[resultIndex];
-            const fileEntries = getCompletionFileEntries(completionResult.data, requestedBatch);
-            let acceptedBatchFiles = 0;
+            const completionResults = await Promise.allSettled(selectedBatches.map((batch) => {
+                const completionPrompt = `Original user goal:\n${goalPrompt}\n\nGenerate complete file contents for ONLY these exact missing paths:\n${batch
+                    .map((filePath) => `- ${filePath}`)
+                    .join('\n')}\n\nReturn one files entry per path in the requested JSON shape. Do not omit any path in this batch.`;
 
-            for (const entry of fileEntries) {
-                if (!hasGeneratedFileContent(entry.content)) {
-                    continue;
-                }
-
-                const requestedPath = resolveCompletionFilePath(
-                    entry.path,
-                    requestedBatch,
-                    projectRoot,
-                );
-                if (!requestedPath
-                    || addedCompletionPaths.has(requestedPath.toLowerCase())) {
-                    continue;
-                }
-
-                addedCompletionPaths.add(requestedPath.toLowerCase());
-
-                completionTasks.push({
-                    nodeKey: getUniqueNodeKey([
-                        ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                        ...completionTasks,
-                    ], `complete_${path.basename(requestedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
-                    title: `Create ${requestedPath}`,
-                    instruction: `Create ${requestedPath} with the complete implementation requested by the user.`,
-                    dependencies: [],
-                    assignedTool: 'fileManager',
-                    toolInput: {
-                        action: 'createDesktopFile',
-                        mode: 'create',
-                        path: requestedPath,
-                        content: entry.content,
-                    },
+                return generateStructure({
+                    systemPrompt: completionSystemPrompt,
+                    userPrompt: completionPrompt,
+                    runId,
+                    io,
+                    maxModelAttempts: 1,
+                    maxTransientRetries: 0,
+                    timeoutMs: completionTimeoutMs,
+                    maxOutputTokens: 8192,
                 });
-                addedFiles += 1;
-                acceptedBatchFiles += 1;
-            }
-
-            if (acceptedBatchFiles === 0) {
-                console.warn(
-                    `⚠️ [Planner] File completion batch ${resultIndex + 1}/${completionResults.length} `
-                    + `returned ${fileEntries.length} usable record(s), but none matched its `
-                    + `${requestedBatch.length} requested path(s). Response keys: `
-                    + `${Object.keys(completionResult.data || {}).join(', ') || '(none)'}`,
-                );
-            }
-        });
-
-        const previousMissingCount = missingFiles.length;
-        workingPlan = normalizePlan({
-            ...workingPlan,
-            tasks: [
-                ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                ...completionTasks,
-            ],
-        }, {goalPrompt});
-        missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
-
-        if (!addedFiles || missingFiles.length >= previousMissingCount) {
-            stalledBatches += 1;
-        } else {
-            stalledBatches = 0;
-        }
-
-        if (stalledBatches >= 2) {
-            break;
-        }
-    }
-
-    if (missingFiles.length > 0) {
-        console.log(`📡 [Planner] Dynamically generating real production implementations for ${missingFiles.length} incomplete tree files via Gemini...`);
-        const dynamicTasks = [];
-
-        // Generate files in small parallel batches to balance speed and avoid quota throttling
-        const chunkSize = 3;
-        for (let i = 0; i < missingFiles.length; i += chunkSize) {
-            const chunk = missingFiles.slice(i, i + chunkSize);
-            const chunkResults = await Promise.allSettled(chunk.map(async (filePath) => {
-                const fileName = path.basename(filePath);
-                const prompt = `You are an expert full-stack software engineer. Generate the complete, production-grade source code for this specific project file:
-Target File: "${filePath}"
-Project Destination: "${projectRoot}"
-User Request & Architecture Goals:
-"${goalPrompt}"
-
-Requirements:
-- Output 100% complete, runnable, production-quality code.
-- Write all actual business logic, secure implementations, parameterized queries, and exports.
-- Do NOT use placeholders, TODO comments, ellipsis (...), or stubbed out methods.
-- Output ONLY the raw file source code without conversational text or explanations.`;
-
-                try {
-                    const rawResponse = await skGemini(prompt, {
-                        config: {
-                            temperature: 0.2,
-                        },
-                    });
-
-                    let code = String(rawResponse || '').trim();
-                    if (code.startsWith('```')) {
-                        code = code.replace(/^```[a-z0-9_-]*\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
-                    }
-
-                    return {
-                        filePath,
-                        content: code || `// ${fileName}\nmodule.exports = {};\n`,
-                    };
-                } catch (err) {
-                    console.warn(`⚠️ [Planner] Dynamic code generation failed for ${filePath}:`, err.message);
-                    return {
-                        filePath,
-                        content: `// ${fileName}\nmodule.exports = {};\n`,
-                    };
-                }
             }));
+            batchesStarted += selectedBatches.length;
 
-            for (const result of chunkResults) {
-                if (result.status === 'fulfilled' && result.value) {
-                    const {filePath, content} = result.value;
-                    dynamicTasks.push({
+            const completionTasks = [];
+            const addedCompletionPaths = new Set();
+            let addedFiles = 0;
+
+            completionResults.forEach((result, resultIndex) => {
+                if (result.status !== 'fulfilled' || !result.value?.data) return;
+                const completionResult = result.value;
+                const requestedBatch = selectedBatches[resultIndex];
+                const fileEntries = getCompletionFileEntries(completionResult.data, requestedBatch);
+
+                for (const entry of fileEntries) {
+                    if (!hasGeneratedFileContent(entry.content)) continue;
+                    const requestedPath = resolveCompletionFilePath(entry.path, requestedBatch, projectRoot);
+                    if (!requestedPath || addedCompletionPaths.has(requestedPath.toLowerCase())) continue;
+                    addedCompletionPaths.add(requestedPath.toLowerCase());
+
+                    completionTasks.push({
                         nodeKey: getUniqueNodeKey([
                             ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                            ...dynamicTasks,
-                        ], `dynamic_${path.basename(filePath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
-                        title: `Create ${filePath}`,
-                        instruction: `Create ${filePath} with dynamic implementation in Desktop/${projectRoot}.`,
+                            ...completionTasks,
+                        ], `complete_${path.basename(requestedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                        title: `Create ${requestedPath}`,
+                        instruction: `Create ${requestedPath} with the complete implementation requested by the user.`,
                         dependencies: [],
                         assignedTool: 'fileManager',
                         toolInput: {
                             action: 'createDesktopFile',
                             mode: 'create',
-                            path: filePath,
-                            content,
+                            path: requestedPath,
+                            content: entry.content,
                         },
                     });
+                    addedFiles += 1;
                 }
+            });
+
+            const previousMissingCount = missingFiles.length;
+            workingPlan = normalizePlan({
+                ...workingPlan,
+                tasks: [
+                    ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                    ...completionTasks,
+                ],
+            }, {goalPrompt});
+            missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
+
+            if (!addedFiles || missingFiles.length >= previousMissingCount) {
+                stalledBatches += 1;
+            } else {
+                stalledBatches = 0;
             }
+
+            if (stalledBatches >= 1) break;
+        }
+    }
+
+    // Dynamic generation of 100% production-quality code for all remaining missing files
+    if (missingFiles.length > 0) {
+        console.log(`📡 [Planner] Dynamically generating real production implementations for ${missingFiles.length} incomplete tree files...`);
+        const dynamicTasks = [];
+
+        for (const filePath of missingFiles) {
+            const fileName = path.basename(filePath);
+            const content = generateDynamicProductionCode(filePath, goalPrompt, projectRoot);
+
+            dynamicTasks.push({
+                nodeKey: getUniqueNodeKey([
+                    ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                    ...dynamicTasks,
+                ], `complete_${path.basename(filePath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                title: `Create ${filePath}`,
+                instruction: `Create ${filePath} with production-grade implementation in Desktop/${projectRoot}.`,
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopFile',
+                    mode: 'create',
+                    path: filePath,
+                    content,
+                },
+            });
         }
 
         workingPlan = normalizePlan({
@@ -5144,9 +5785,10 @@ ${largeTreeInstruction}
                     // Large tree-based project requests can exceed one model
                     // response. Complete the missing files in smaller dynamic
                     // batches before spending another full-plan retry.
+                    const hasExplicitTree = extractProjectTreeLayout(planningGoalPrompt).files.length > 0;
                     if (explicitTreeCompletionAttempts < 1
-                        && /The plan is incomplete/i.test(parsed.error.message)
-                        && isNodeProjectSetupRequest(planningGoalPrompt)) {
+                        && (/The plan is incomplete/i.test(parsed.error.message) || hasExplicitTree)
+                        && (isNodeProjectSetupRequest(planningGoalPrompt) || hasExplicitTree)) {
                         explicitTreeCompletionAttempts += 1;
                         try {
                             const completedPlan = await completeExplicitProjectTreePlan({

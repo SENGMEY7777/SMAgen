@@ -4375,6 +4375,32 @@ const getMissingProjectTreeFiles = (plan, goalPrompt) => {
         .filter((filePath) => !generatedFiles.get(filePath.toLowerCase()));
 };
 
+const resolveCompletionFilePath = (value, requestedPaths, projectRoot) => {
+    const rawPath = cleanRelativeFilePath(value);
+    if (!rawPath) {
+        return null;
+    }
+
+    const canonicalPath = canonicalizeProjectPath(rawPath, projectRoot) || rawPath;
+    const candidatePath = canonicalPath.toLowerCase();
+    const exactMatch = requestedPaths.find((filePath) => filePath.toLowerCase() === candidatePath);
+    if (exactMatch) {
+        return exactMatch;
+    }
+
+    // Some models return only `fileName` (or a path relative to the project
+    // root) even when the prompt contains a nested path. Resolve that output
+    // only when it maps to one requested file; ambiguous basenames remain
+    // rejected so content cannot be written to the wrong file.
+    const suffixMatches = requestedPaths.filter((filePath) => {
+        const requestedPath = filePath.toLowerCase();
+        return requestedPath.endsWith(`/${candidatePath}`)
+            || path.basename(requestedPath) === path.basename(candidatePath);
+    });
+
+    return suffixMatches.length === 1 ? suffixMatches[0] : null;
+};
+
 const validatePlan = (rawPlan, options = {}) => {
     const normalized = normalizePlan(rawPlan, options);
 
@@ -4464,16 +4490,24 @@ Escape literal backslashes correctly for JSON.
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     let stalledBatches = 0;
     const maxBatches = 24;
-    const batchSize = 3;
-    const maxParallelBatches = 6;
+    const maxParallelBatches = 3;
     const configuredCompletionTimeout = Number(process.env.LLM_FILE_COMPLETION_TIMEOUT_MS);
+    const configuredPlannerTimeout = Number(process.env.LLM_TIMEOUT_MS);
     const completionTimeoutMs = Number.isInteger(configuredCompletionTimeout)
-        && configuredCompletionTimeout >= 3000
-        ? Math.min(configuredCompletionTimeout, 15000)
-        : 10000;
+        && configuredCompletionTimeout >= 5000
+        ? Math.min(configuredCompletionTimeout, 60000)
+        : Number.isInteger(configuredPlannerTimeout) && configuredPlannerTimeout >= 5000
+            ? Math.min(configuredPlannerTimeout, 60000)
+            : 30000;
     let batchesStarted = 0;
 
     while (missingFiles.length > 0 && batchesStarted < maxBatches) {
+        // A failed multi-file response is often caused by output truncation
+        // or provider throttling. Retry the same work as one-file requests so
+        // a single large source file cannot invalidate the entire tree.
+        const explicitTreeFileCount = extractProjectTreeLayout(goalPrompt).files.length;
+        const batchSize = stalledBatches > 0 || explicitTreeFileCount >= 12 ? 1 : 3;
+        const isRecoveryPass = stalledBatches > 0;
         const batches = [];
         for (let offset = 0; offset < missingFiles.length && batches.length < maxParallelBatches; offset += batchSize) {
             batches.push(missingFiles.slice(offset, offset + batchSize));
@@ -4490,10 +4524,12 @@ Escape literal backslashes correctly for JSON.
                 userPrompt: completionPrompt,
                 runId,
                 io,
-                maxModelAttempts: 1,
-                maxTransientRetries: 0,
-                timeoutMs: completionTimeoutMs,
-                maxOutputTokens: 12000,
+                maxModelAttempts: 2,
+                maxTransientRetries: 1,
+                timeoutMs: isRecoveryPass
+                    ? Math.min(Math.max(completionTimeoutMs, 30000), 60000)
+                    : completionTimeoutMs,
+                maxOutputTokens: batchSize === 1 ? 16000 : 12000,
             });
         }));
         batchesStarted += selectedBatches.length;
@@ -4523,7 +4559,7 @@ Escape literal backslashes correctly for JSON.
                         },
                     }]
                     : [];
-            const requestedBatch = new Set(selectedBatches[resultIndex].map((filePath) => filePath.toLowerCase()));
+            const requestedBatch = selectedBatches[resultIndex];
 
             for (const candidateTask of candidateTasks) {
                 for (const entry of getProjectFileEntries(candidateTask)) {
@@ -4531,29 +4567,32 @@ Escape literal backslashes correctly for JSON.
                         continue;
                     }
 
-                    const canonicalPath = canonicalizeProjectPath(entry.path, projectRoot);
-                    if (!canonicalPath
-                        || !requestedBatch.has(canonicalPath.toLowerCase())
-                        || addedCompletionPaths.has(canonicalPath.toLowerCase())) {
+                    const requestedPath = resolveCompletionFilePath(
+                        entry.path,
+                        requestedBatch,
+                        projectRoot,
+                    );
+                    if (!requestedPath
+                        || addedCompletionPaths.has(requestedPath.toLowerCase())) {
                         continue;
                     }
 
-                    addedCompletionPaths.add(canonicalPath.toLowerCase());
+                    addedCompletionPaths.add(requestedPath.toLowerCase());
 
                     completionTasks.push({
                         ...candidateTask,
                         nodeKey: getUniqueNodeKey([
                             ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
                             ...completionTasks,
-                        ], `complete_${path.basename(canonicalPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
-                        title: `Create ${canonicalPath}`,
-                        instruction: `Create ${canonicalPath} with the complete implementation requested by the user.`,
+                        ], `complete_${path.basename(requestedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                        title: `Create ${requestedPath}`,
+                        instruction: `Create ${requestedPath} with the complete implementation requested by the user.`,
                         dependencies: [],
                         assignedTool: 'fileManager',
                         toolInput: {
                             action: 'createDesktopFile',
                             mode: 'create',
-                            path: canonicalPath,
+                            path: requestedPath,
                             content: entry.content,
                         },
                     });

@@ -16,7 +16,7 @@ const workflowCreateSchema = Joi.object({
 
 const runWorkflowSchema = Joi.object({
     workflowId: uuid().allow(null),
-    goalPrompt: secureText({min: 1, max: 20000}).allow('', null).default('Review project and execute requested workflow tasks'),
+    goalPrompt: Joi.string().trim().max(20000).allow('', null).empty('').default('Review project and execute requested workflow tasks'),
     projectContext: Joi.object().unknown(true).allow(null),
     localDestination: Joi.string().allow('', null),
     projectName: Joi.string().allow('', null),
@@ -39,7 +39,7 @@ const taskNodeSchema = Joi.object({
         .unique()
         .default([]),
     assignedTool: Joi.string().trim().pattern(TOOL_NAME_REGEX).required(),
-    toolInput: secureObject({max: 50}).default({}),
+    toolInput: Joi.object().max(50).default({}),
 }).unknown(false);
 
 const dagPlanSchema = Joi.object({

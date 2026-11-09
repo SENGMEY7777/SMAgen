@@ -254,9 +254,10 @@ Folder structure:
     const completedPlan = await completeExplicitProjectTreePlan({
         basePlan,
         goalPrompt,
-        generateStructure: async ({userPrompt, maxTransientRetries, timeoutMs}) => {
-            assert.equal(maxTransientRetries, 0);
-            assert.equal(timeoutMs, 10000);
+        generateStructure: async ({userPrompt, maxModelAttempts, maxTransientRetries, timeoutMs}) => {
+            assert.equal(maxModelAttempts, 2);
+            assert.equal(maxTransientRetries, 1);
+            assert.equal(timeoutMs, 60000);
             calls.push(userPrompt);
             activeCalls += 1;
             maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
@@ -287,4 +288,64 @@ Folder structure:
     assert.equal(validatePlan(completedPlan, {goalPrompt}).success, true);
     assert.equal(calls.length, 3);
     assert.equal(maxActiveCalls, 3);
+});
+
+test('falls back to single-file completion and resolves basename-only model paths', async () => {
+    const goalPrompt = `Create a Node.js project on my Desktop in a folder named "Recovery-API".
+Folder structure:
+├── database/
+│   ├── schema.sql
+│   └── seed.sql
+└── src/
+    └── server.js`;
+    const calls = [];
+    const basePlan = {
+        workflowTitle: 'Recovery API',
+        summary: 'Create the project.',
+        tasks: [{
+            nodeKey: 'create_project',
+            title: 'Create project directory',
+            instruction: 'Create Recovery-API.',
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: 'Recovery-API',
+            },
+        }],
+    };
+
+    const completedPlan = await completeExplicitProjectTreePlan({
+        basePlan,
+        goalPrompt,
+        generateStructure: async ({userPrompt}) => {
+            const paths = [...userPrompt.matchAll(/^- (.+)$/gm)].map((match) => match[1]);
+            calls.push(paths);
+
+            // Simulate a truncated multi-file response. The recovery pass
+            // should retry these paths individually.
+            if (paths.length > 1) {
+                return {data: {workflowTitle: 'Recovery API', summary: 'Create the project.', tasks: []}};
+            }
+
+            return {
+                data: {
+                    workflowTitle: 'Recovery API',
+                    summary: 'Create the project.',
+                    tasks: [{
+                        assignedTool: 'fileManager',
+                        toolInput: {
+                            action: 'createDesktopFile',
+                            fileName: paths[0].split('/').pop(),
+                            content: '// generated content',
+                        },
+                    }],
+                },
+            };
+        },
+    });
+
+    assert.equal(validatePlan(completedPlan, {goalPrompt}).success, true);
+    assert.equal(calls.some((paths) => paths.length === 3), true);
+    assert.equal(calls.filter((paths) => paths.length === 1).length, 3);
 });

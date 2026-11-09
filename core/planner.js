@@ -4574,12 +4574,37 @@ const validatePlan = (rawPlan, options = {}) => {
 const generateDynamicProductionCode = (filePath, goalPrompt = '', projectRoot = '') => {
     const fileName = path.basename(filePath);
     const lowerPath = filePath.toLowerCase();
+    const isCoffee = lowerPath.includes('coffee') || (projectRoot && projectRoot.toLowerCase().includes('coffee')) || (goalPrompt && goalPrompt.toLowerCase().includes('coffee'));
     const entityName = fileName.replace(/(?:controller|service|model|routes?|validator)\.js$/i, '').replace(/\.[^.]+$/, '');
     const capitalizedEntity = entityName ? entityName.charAt(0).toUpperCase() + entityName.slice(1) : 'Item';
     const tableName = entityName ? `${entityName.toLowerCase()}s` : 'items';
 
     if (lowerPath.endsWith('.sql')) {
         if (lowerPath.includes('seed')) {
+            if (isCoffee) {
+                return `-- ${fileName}
+-- Coffee Shop & POS Database Seeds
+USE coffee_shop_db;
+
+INSERT INTO users (name, email, password, role, status) VALUES
+('System Admin', 'admin@coffeeshop.com', '$2a$10$X7vQe9ZgQe9ZgQe9ZgQe9uY1234567890abcdefghijklmnopqrstu', 'admin', 'active'),
+('Head Barista', 'barista@coffeeshop.com', '$2a$10$X7vQe9ZgQe9ZgQe9ZgQe9uY1234567890abcdefghijklmnopqrstu', 'barista', 'active'),
+('John Doe', 'customer@gmail.com', '$2a$10$X7vQe9ZgQe9ZgQe9ZgQe9uY1234567890abcdefghijklmnopqrstu', 'customer', 'active');
+
+INSERT INTO categories (name, slug, description) VALUES
+('Espresso Drinks', 'espresso-drinks', 'Rich and bold espresso based coffees'),
+('Teas & Others', 'teas-others', 'Refreshing teas and non-coffee beverages');
+
+INSERT INTO coffee_items (name, slug, category_id, base_price, size_options, sweetness_levels, ice_levels, is_available) VALUES
+('Caffe Latte', 'caffe-latte', 1, 3.50, '["Small", "Medium", "Large"]', '["0%", "50%", "100%"]', '["Normal", "Less Ice", "No Ice"]', TRUE),
+('Cappuccino', 'cappuccino', 1, 3.75, '["Small", "Medium"]', '["0%", "50%", "100%"]', '["Normal", "Less Ice"]', TRUE);
+
+INSERT INTO inventory (ingredient_name, current_stock, unit, alert_threshold) VALUES
+('Coffee Beans', 5000.00, 'grams', 500.00),
+('Milk', 20000.00, 'ml', 2000.00),
+('Sugar Syrup', 5000.00, 'ml', 500.00);
+`;
+            }
             return `-- ${fileName}
 -- Database Seeds
 USE ecommerce_db;
@@ -4598,8 +4623,102 @@ INSERT INTO products (id, name, slug, description, price, stock, category_id, cr
 ('prd_03', 'Classic Cotton T-Shirt', 'classic-cotton-tshirt', '100% organic cotton comfort fit', 29.99, 150, 'cat_02', NOW());
 `;
         }
-        return `-- ${fileName}
--- Database Schema for ${projectRoot || 'E-Commerce-API'}
+        if (isCoffee) {
+            return `-- ${fileName}
+-- Database Schema for ${projectRoot || 'Coffee-Shop-API'}
+CREATE DATABASE IF NOT EXISTS coffee_shop_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE coffee_shop_db;
+
+DROP TABLE IF EXISTS payments;
+DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS inventory;
+DROP TABLE IF EXISTS coffee_items;
+DROP TABLE IF EXISTS categories;
+DROP TABLE IF EXISTS users;
+
+CREATE TABLE users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(150) NOT NULL UNIQUE,
+  password VARCHAR(255) NOT NULL,
+  role ENUM('admin', 'barista', 'customer') DEFAULT 'customer',
+  status ENUM('active', 'inactive', 'suspended') DEFAULT 'active',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE categories (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  slug VARCHAR(100) NOT NULL UNIQUE,
+  description TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE coffee_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(150) NOT NULL,
+  slug VARCHAR(150) NOT NULL UNIQUE,
+  category_id INT NOT NULL,
+  base_price DECIMAL(10,2) NOT NULL,
+  size_options JSON NOT NULL,
+  sweetness_levels JSON NOT NULL,
+  ice_levels JSON NOT NULL,
+  is_available BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE inventory (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  ingredient_name VARCHAR(100) NOT NULL UNIQUE,
+  current_stock DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  unit VARCHAR(50) NOT NULL,
+  alert_threshold DECIMAL(10,2) NOT NULL DEFAULT 10.00,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB;
+
+CREATE TABLE orders (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_number VARCHAR(50) NOT NULL UNIQUE,
+  user_id INT NOT NULL,
+  barista_id INT DEFAULT NULL,
+  total_amount DECIMAL(10,2) NOT NULL,
+  discount_amount DECIMAL(10,2) DEFAULT 0.00,
+  status ENUM('pending', 'brewing', 'ready', 'completed', 'cancelled') DEFAULT 'pending',
+  payment_status ENUM('unpaid', 'paid', 'refunded') DEFAULT 'unpaid',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (barista_id) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE order_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  coffee_id INT NOT NULL,
+  quantity INT NOT NULL,
+  unit_price DECIMAL(10,2) NOT NULL,
+  customization_json JSON,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  FOREIGN KEY (coffee_id) REFERENCES coffee_items(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE payments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL UNIQUE,
+  payment_method ENUM('cash', 'card', 'khqr') NOT NULL,
+  transaction_ref VARCHAR(150) DEFAULT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  status ENUM('pending', 'successful', 'failed') DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+`;
+        }
+        return `-- \${fileName}
+-- Database Schema for \${projectRoot || 'E-Commerce-API'}
 CREATE DATABASE IF NOT EXISTS ecommerce_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE ecommerce_db;
 
@@ -4949,6 +5068,108 @@ module.exports = {
     }
 
     if (lowerPath.includes('service')) {
+        if (isCoffee && entityName.toLowerCase() === 'order') {
+            return `const db = require('../configs/db');
+const coffeeModel = require('../models/coffeeModel');
+const orderModel = require('../models/orderModel');
+
+const createOrder = async (userId, orderData) => {
+  const { items, discount_amount = 0 } = orderData;
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+
+    let calculatedTotal = 0;
+    const verifiedItems = [];
+
+    for (const item of items) {
+      const coffee = await coffeeModel.findById(item.coffee_id);
+      if (!coffee || !coffee.is_available) {
+        const err = new Error(\`Coffee item ID \${item.coffee_id} not available\`);
+        err.statusCode = 400;
+        throw err;
+      }
+      const unitPrice = parseFloat(coffee.base_price);
+      calculatedTotal += unitPrice * item.quantity;
+      verifiedItems.push({
+        coffee_id: coffee.id,
+        quantity: item.quantity,
+        unit_price: unitPrice,
+        customization: item.customization || {}
+      });
+    }
+
+    const finalAmount = Math.max(0, calculatedTotal - discount_amount);
+    const orderNumber = \`ORD-\${Date.now()}-\${Math.floor(Math.random() * 1000)}\`;
+
+    const orderId = await orderModel.createOrderTx(connection, {
+      order_number: orderNumber,
+      user_id: userId,
+      total_amount: finalAmount,
+      discount_amount
+    }, verifiedItems);
+
+    await connection.commit();
+    return { orderId, orderNumber, total_amount: finalAmount, items: verifiedItems };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+const getOrderById = async (id) => {
+  return await orderModel.findById(id);
+};
+
+const updateOrderStatus = async (id, status, baristaId) => {
+  return await orderModel.updateStatus(id, status, baristaId);
+};
+
+module.exports = { createOrder, getOrderById, updateOrderStatus };
+`;
+        }
+
+        if (isCoffee && entityName.toLowerCase() === 'inventory') {
+            return `const inventoryModel = require('../models/inventoryModel');
+
+const getInventory = async () => {
+  return await inventoryModel.findAll();
+};
+
+const updateStock = async (id, currentStock) => {
+  return await inventoryModel.updateStockDirect(id, currentStock);
+};
+
+module.exports = { getInventory, updateStock };
+`;
+        }
+
+        if (isCoffee && entityName.toLowerCase() === 'payment') {
+            return `const db = require('../configs/db');
+const paymentModel = require('../models/paymentModel');
+
+const processPayment = async (paymentData) => {
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    const paymentId = await paymentModel.createPaymentTx(connection, paymentData);
+    await connection.commit();
+    return { paymentId, status: paymentData.status };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+module.exports = { processPayment };
+`;
+        }
+
         if (entityName.toLowerCase() === 'auth') {
             return `const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');

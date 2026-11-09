@@ -4479,8 +4479,8 @@ const completeExplicitProjectTreePlan = async ({
     const completionSystemPrompt = `
 You are KAIRO's source-file completion planner.
 Generate complete production-quality source/configuration/documentation content for ONLY the exact file paths listed by the user.
-Return ONLY valid JSON with workflowTitle, summary, and tasks.
-Every task must use assignedTool "fileManager" and toolInput.action "createDesktopFile" with the exact requested path and a non-empty toolInput.content string.
+Return ONLY valid JSON in this shape: {"files":[{"path":"exact requested path","content":"complete file contents"}]}.
+Return exactly one files entry per requested path, with a non-empty content string.
 Do not return directory tasks, shell commands, placeholders, TODOs, or files that were not requested.
 Preserve the requested runtime, dependencies, security requirements, database behavior, and architecture.
 Escape literal backslashes correctly for JSON.
@@ -4489,7 +4489,8 @@ Escape literal backslashes correctly for JSON.
     let workingPlan = normalizePlan(basePlan, {goalPrompt});
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     let stalledBatches = 0;
-    const maxBatches = 24;
+    const treeFileCount = extractProjectTreeLayout(goalPrompt).files.length;
+    const maxBatches = Math.min(96, Math.max(24, Math.ceil(treeFileCount / 3) * 2));
     const maxParallelBatches = 3;
     const configuredCompletionTimeout = Number(process.env.LLM_FILE_COMPLETION_TIMEOUT_MS);
     const configuredPlannerTimeout = Number(process.env.LLM_TIMEOUT_MS);
@@ -4502,11 +4503,10 @@ Escape literal backslashes correctly for JSON.
     let batchesStarted = 0;
 
     while (missingFiles.length > 0 && batchesStarted < maxBatches) {
-        // A failed multi-file response is often caused by output truncation
-        // or provider throttling. Retry the same work as one-file requests so
-        // a single large source file cannot invalidate the entire tree.
-        const explicitTreeFileCount = extractProjectTreeLayout(goalPrompt).files.length;
-        const batchSize = stalledBatches > 0 || explicitTreeFileCount >= 12 ? 1 : 3;
+        // Large trees need grouped responses to stay within the finite call
+        // budget. If an entire round makes no progress, reduce to one file per
+        // call to recover from truncation or a malformed multi-file response.
+        const batchSize = stalledBatches > 0 ? 1 : 3;
         const isRecoveryPass = stalledBatches > 0;
         const batches = [];
         for (let offset = 0; offset < missingFiles.length && batches.length < maxParallelBatches; offset += batchSize) {
@@ -4517,7 +4517,7 @@ Escape literal backslashes correctly for JSON.
         const completionResults = await Promise.allSettled(selectedBatches.map((batch) => {
             const completionPrompt = `Original user goal:\n${goalPrompt}\n\nGenerate complete file contents for ONLY these exact missing paths:\n${batch
                 .map((filePath) => `- ${filePath}`)
-                .join('\n')}\n\nReturn one fileManager task per path, or a createDesktopFiles task with one exact path/content entry per path. Do not omit any path in this batch.`;
+                .join('\n')}\n\nReturn one files entry per path in the requested JSON shape. Do not omit any path in this batch.`;
 
             return generateStructure({
                 systemPrompt: completionSystemPrompt,
@@ -4529,7 +4529,7 @@ Escape literal backslashes correctly for JSON.
                 timeoutMs: isRecoveryPass
                     ? Math.min(Math.max(completionTimeoutMs, 30000), 60000)
                     : completionTimeoutMs,
-                maxOutputTokens: batchSize === 1 ? 16000 : 12000,
+                maxOutputTokens: 16000,
             });
         }));
         batchesStarted += selectedBatches.length;
@@ -4550,15 +4550,30 @@ Escape literal backslashes correctly for JSON.
             const completionResult = result.value;
             const candidateTasks = Array.isArray(completionResult.data?.tasks)
                 ? completionResult.data.tasks
-                : completionResult.data?.files && typeof completionResult.data.files === 'object'
-                    ? [{
-                        assignedTool: 'fileManager',
-                        toolInput: {
-                            action: 'createDesktopFiles',
-                            files: completionResult.data.files,
-                        },
-                    }]
+                : [];
+            const responseFiles = completionResult.data?.files;
+            const normalizedResponseFiles = Array.isArray(responseFiles)
+                ? responseFiles
+                : responseFiles && typeof responseFiles === 'object'
+                    ? Object.entries(responseFiles).map(([filePath, file]) => (
+                        typeof file === 'string'
+                            ? {path: filePath, content: file}
+                            : {
+                                ...file,
+                                path: file?.path || file?.filePath || file?.fileName || filePath,
+                                content: file?.content ?? file?.contents,
+                            }
+                    ))
                     : [];
+            if (normalizedResponseFiles.length > 0) {
+                candidateTasks.push({
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        action: 'createDesktopFiles',
+                        files: normalizedResponseFiles,
+                    },
+                });
+            }
             const requestedBatch = selectedBatches[resultIndex];
 
             for (const candidateTask of candidateTasks) {

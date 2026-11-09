@@ -4376,12 +4376,43 @@ const getMissingProjectTreeFiles = (plan, goalPrompt) => {
 };
 
 const resolveCompletionFilePath = (value, requestedPaths, projectRoot) => {
-    const rawPath = cleanRelativeFilePath(value);
-    if (!rawPath) {
+    const rawValue = typeof value === 'string'
+        ? value.trim().replace(/^['"`]|['"`]$/g, '').replace(/\\/g, '/')
+        : '';
+    const cleanRoot = cleanRelativeDirectoryPath(projectRoot);
+    if (!rawValue || !cleanRoot) {
         return null;
     }
 
-    const canonicalPath = canonicalizeProjectPath(rawPath, projectRoot) || rawPath;
+    const rootSegments = cleanRoot.split('/').filter(Boolean);
+    const rawSegments = rawValue.split('/').filter(Boolean);
+    const desktopIndex = rawSegments.findIndex((segment) => segment.toLowerCase() === 'desktop');
+    let canonicalPath = null;
+
+    // Models sometimes echo the user's absolute Desktop path. Accept it only
+    // when it contains this exact requested project root, then discard the
+    // host-specific prefix before matching against the requested file list.
+    if (desktopIndex >= 0) {
+        const returnedRoot = rawSegments.slice(desktopIndex + 1, desktopIndex + 1 + rootSegments.length);
+        const rootMatches = returnedRoot.length === rootSegments.length
+            && rootSegments.every((segment, index) => segment.toLowerCase() === returnedRoot[index].toLowerCase());
+        if (!rootMatches) {
+            return null;
+        }
+
+        const suffix = rawSegments.slice(desktopIndex + 1 + rootSegments.length);
+        if (!suffix.length) {
+            return null;
+        }
+        canonicalPath = [...rootSegments, ...suffix].join('/');
+    } else {
+        const rawPath = cleanRelativeFilePath(rawValue);
+        if (!rawPath) {
+            return null;
+        }
+        canonicalPath = canonicalizeProjectPath(rawPath, cleanRoot) || rawPath;
+    }
+
     const candidatePath = canonicalPath.toLowerCase();
     const exactMatch = requestedPaths.find((filePath) => filePath.toLowerCase() === candidatePath);
     if (exactMatch) {
@@ -4399,6 +4430,80 @@ const resolveCompletionFilePath = (value, requestedPaths, projectRoot) => {
     });
 
     return suffixMatches.length === 1 ? suffixMatches[0] : null;
+};
+
+const normalizeCompletionFileRecord = (record, fallbackPath = null) => {
+    if (typeof record === 'string') {
+        return typeof fallbackPath === 'string' && record.trim()
+            ? {path: fallbackPath, content: record}
+            : null;
+    }
+    if (!record || typeof record !== 'object' || Array.isArray(record)) {
+        return null;
+    }
+
+    const filePath = record.path
+        || record.filePath
+        || record.fileName
+        || record.filename
+        || record.name
+        || fallbackPath;
+    const content = record.content
+        ?? record.contents
+        ?? record.fileContent
+        ?? record.code
+        ?? record.source
+        ?? record.body;
+
+    return typeof filePath === 'string' && typeof content === 'string' && content.trim()
+        ? {path: filePath, content}
+        : null;
+};
+
+const getCompletionFileEntries = (data, requestedBatch) => {
+    const fallbackPath = requestedBatch.length === 1 ? requestedBatch[0] : null;
+    const entries = [];
+    const addCollection = (collection) => {
+        if (Array.isArray(collection)) {
+            for (const record of collection) {
+                const entry = normalizeCompletionFileRecord(record, fallbackPath);
+                if (entry) entries.push(entry);
+            }
+            return;
+        }
+
+        if (collection && typeof collection === 'object') {
+            for (const [filePath, record] of Object.entries(collection)) {
+                const entry = normalizeCompletionFileRecord(record, filePath || fallbackPath);
+                if (entry) entries.push(entry);
+            }
+        }
+    };
+
+    if (Array.isArray(data)) {
+        addCollection(data);
+    } else if (data && typeof data === 'object') {
+        for (const key of ['files', 'generatedFiles', 'fileContents', 'outputs']) {
+            if (data[key] !== undefined) {
+                addCollection(data[key]);
+            }
+        }
+
+        for (const task of Array.isArray(data.tasks) ? data.tasks : []) {
+            const input = task?.toolInput || task?.input || task || {};
+            const collections = ['files', 'generatedFiles', 'fileContents']
+                .filter((key) => input[key] !== undefined);
+            if (collections.length > 0) {
+                for (const key of collections) addCollection(input[key]);
+            } else {
+                const entry = normalizeCompletionFileRecord(input, fallbackPath)
+                    || normalizeCompletionFileRecord(task, fallbackPath);
+                if (entry) entries.push(entry);
+            }
+        }
+    }
+
+    return entries;
 };
 
 const validatePlan = (rawPlan, options = {}) => {
@@ -4548,71 +4653,54 @@ Escape literal backslashes correctly for JSON.
             }
 
             const completionResult = result.value;
-            const candidateTasks = Array.isArray(completionResult.data?.tasks)
-                ? completionResult.data.tasks
-                : [];
-            const responseFiles = completionResult.data?.files;
-            const normalizedResponseFiles = Array.isArray(responseFiles)
-                ? responseFiles
-                : responseFiles && typeof responseFiles === 'object'
-                    ? Object.entries(responseFiles).map(([filePath, file]) => (
-                        typeof file === 'string'
-                            ? {path: filePath, content: file}
-                            : {
-                                ...file,
-                                path: file?.path || file?.filePath || file?.fileName || filePath,
-                                content: file?.content ?? file?.contents,
-                            }
-                    ))
-                    : [];
-            if (normalizedResponseFiles.length > 0) {
-                candidateTasks.push({
+            const requestedBatch = selectedBatches[resultIndex];
+            const fileEntries = getCompletionFileEntries(completionResult.data, requestedBatch);
+            let acceptedBatchFiles = 0;
+
+            for (const entry of fileEntries) {
+                if (!hasGeneratedFileContent(entry.content)) {
+                    continue;
+                }
+
+                const requestedPath = resolveCompletionFilePath(
+                    entry.path,
+                    requestedBatch,
+                    projectRoot,
+                );
+                if (!requestedPath
+                    || addedCompletionPaths.has(requestedPath.toLowerCase())) {
+                    continue;
+                }
+
+                addedCompletionPaths.add(requestedPath.toLowerCase());
+
+                completionTasks.push({
+                    nodeKey: getUniqueNodeKey([
+                        ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                        ...completionTasks,
+                    ], `complete_${path.basename(requestedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                    title: `Create ${requestedPath}`,
+                    instruction: `Create ${requestedPath} with the complete implementation requested by the user.`,
+                    dependencies: [],
                     assignedTool: 'fileManager',
                     toolInput: {
-                        action: 'createDesktopFiles',
-                        files: normalizedResponseFiles,
+                        action: 'createDesktopFile',
+                        mode: 'create',
+                        path: requestedPath,
+                        content: entry.content,
                     },
                 });
+                addedFiles += 1;
+                acceptedBatchFiles += 1;
             }
-            const requestedBatch = selectedBatches[resultIndex];
 
-            for (const candidateTask of candidateTasks) {
-                for (const entry of getProjectFileEntries(candidateTask)) {
-                    if (!hasGeneratedFileContent(entry.content)) {
-                        continue;
-                    }
-
-                    const requestedPath = resolveCompletionFilePath(
-                        entry.path,
-                        requestedBatch,
-                        projectRoot,
-                    );
-                    if (!requestedPath
-                        || addedCompletionPaths.has(requestedPath.toLowerCase())) {
-                        continue;
-                    }
-
-                    addedCompletionPaths.add(requestedPath.toLowerCase());
-
-                    completionTasks.push({
-                        ...candidateTask,
-                        nodeKey: getUniqueNodeKey([
-                            ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                            ...completionTasks,
-                        ], `complete_${path.basename(requestedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
-                        title: `Create ${requestedPath}`,
-                        instruction: `Create ${requestedPath} with the complete implementation requested by the user.`,
-                        dependencies: [],
-                        assignedTool: 'fileManager',
-                        toolInput: {
-                            action: 'createDesktopFile',
-                            mode: 'create',
-                            path: requestedPath,
-                            content: entry.content,
-                        },
-                    });
-                    addedFiles += 1;
-                }
+            if (acceptedBatchFiles === 0) {
+                console.warn(
+                    `⚠️ [Planner] File completion batch ${resultIndex + 1}/${completionResults.length} `
+                    + `returned ${fileEntries.length} usable record(s), but none matched its `
+                    + `${requestedBatch.length} requested path(s). Response keys: `
+                    + `${Object.keys(completionResult.data || {}).join(', ') || '(none)'}`,
+                );
             }
         });
 

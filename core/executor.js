@@ -726,6 +726,20 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 throw typeError;
             }
 
+            if (isDirectoryTarget && (input.emptyOnly === true || input.onlyIfEmpty === true)) {
+                const entries = await fs.readdir(desktopPath);
+                if (entries.length > 0) {
+                    return {
+                        action,
+                        path: path.relative(desktopRoot, desktopPath),
+                        location: 'local Desktop',
+                        deleted: false,
+                        skipped: true,
+                        reason: 'Directory is not empty',
+                    };
+                }
+            }
+
             // Direct match found on disk
             if (!deleteAllMatches) {
                 await fs.rm(desktopPath, {recursive: stats.isDirectory(), force: true});

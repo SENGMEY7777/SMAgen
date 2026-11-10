@@ -8,7 +8,12 @@ const chatMessageSchema = Joi.object({
 const chatSchema = Joi.object({
     message: Joi.string().trim().max(50000).allow('', null).default('Please analyze the attached image.'),
     history: Joi.array().items(chatMessageSchema).max(20).default([]),
-    images: Joi.array().items(Joi.string().max(25000000)).max(5).default([]),
+    images: Joi.array().items(
+        Joi.alternatives().try(
+            Joi.string().max(25000000),
+            Joi.object().unknown(true),
+        ),
+    ).max(10).default([]),
     projectContext: Joi.object().unknown(true).allow(null),
     localDestination: Joi.string().allow('', null),
 }).unknown(true);

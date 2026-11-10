@@ -251,12 +251,30 @@ const isRemovalRequest = (value) => {
         return false;
     }
 
+    // Explicit project tree layout or creative project setup requests are not deletion requests
+    if (/[├└│─]/.test(text)
+        || /\b(?:explicit\s+project\s+tree|tree\s+layout)\b/i.test(text)
+        || /\b(?:create|build|generate|setup|scaffold|develop|implement)\s+[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(text)) {
+        return false;
+    }
+
     // A negated instruction such as "do not overwrite or delete anything"
     // describes protection requirements, not a deletion request.
     const hasNegatedDestructiveWord = /\b(?:do\s+not|don't|dont|never|not)\b[\s\S]{0,32}\b(?:remove|delete|erase|destroy|overwrite)\b/i.test(text);
 
+    // Strip out SQL constraints (ON DELETE CASCADE), CRUD specifications, and bug fixes
+    const cleanedText = text
+        .replace(/\bon\s+delete\s+(?:cascade|set\s+null|restrict|no\s+action)\b/gi, '')
+        .replace(/\b(?:crud|delete\s+(?:endpoint|route|method|record|item|row|entry)|http\s+delete)\b/gi, '')
+        .replace(/\b(?:remove|eliminate)\s+(?:bugs?|errors?|vulnerabilit(?:y|ies)|risks?)\b/gi, '');
+
+    // Must have a removal verb in the cleaned text targeting a file/directory or as a direct command
+    const hasExplicitRemovalTarget = /\b(?:remove|delete|erase|destroy|trash|drop|rm|strip)\b[\s\S]{0,40}\b(?:file|folder|directory|project|path|\.gitkeep)\b/i.test(cleanedText)
+        || /^(?:please\s+)?(?:remove|delete|erase|destroy|clean\s*up|clear|strip|trash|drop)\b/i.test(cleanedText.trim());
+
     return !hasNegatedDestructiveWord
-        && /\b(?:remove|delete|erase|destroy|clean\s*up|clear|strip)\b/i.test(text);
+        && hasExplicitRemovalTarget
+        && /\b(?:remove|delete|erase|destroy|clean\s*up|clear|strip)\b/i.test(cleanedText);
 };
 
 const getUserGoalText = (value) => String(value || '')
@@ -294,6 +312,11 @@ const isStructureCleanupRequest = (value) => {
 
 const extractRemovalTarget = (value) => {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (/[├└│─]/.test(text)
+        || /\b(?:explicit\s+project\s+tree|tree\s+layout)\b/i.test(text)
+        || /\b(?:create|build|generate|setup|scaffold|develop|implement)\s+[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(text)) {
+        return null;
+    }
     const quotedMatch = text.match(
         /\b(?:file|folder|directory|project|path)\b[\s\S]{0,40}["'`]([^"'`]+)["'`]/i,
     );
@@ -414,7 +437,9 @@ const normalizeStructureCleanupTasks = (tasks, goalPrompt, localDestination = ''
 const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
     const userGoal = getUserGoalText(goalPrompt);
 
-    if (!isRemovalRequest(userGoal)) {
+    if (/[├└│─]/.test(goalPrompt)
+        || /\b(?:explicit\s+project\s+tree|tree\s+layout)\b/i.test(goalPrompt)
+        || !isRemovalRequest(userGoal)) {
         return tasks;
     }
 
@@ -4149,14 +4174,43 @@ const clampPlannerText = (value, maxLength, fallback) => {
 const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) => {
     if (!rawPlan || typeof rawPlan !== 'object') return rawPlan;
 
-    const plan = { ...rawPlan };
-    plan.workflowTitle = String(plan.workflowTitle || plan.title || 'Workflow Plan').trim();
     const normalizedGoal = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
-    plan.summary = String(
-        plan.summary
-        || plan.description
-        || (normalizedGoal ? `Plan for: ${normalizedGoal}` : 'Execution plan'),
-    ).trim();
+    let initialTasks = Array.isArray(rawPlan.tasks) ? [...rawPlan.tasks] : [];
+    if (!initialTasks.length && Array.isArray(rawPlan.files)) {
+        initialTasks = rawPlan.files.map((file, idx) => ({
+            nodeKey: `file_task_${idx + 1}`,
+            title: `Create ${file?.path || file?.fileName || file?.name || `file_${idx + 1}`}`,
+            instruction: `Create ${file?.path || file?.fileName || file?.name} with complete implementation.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'create',
+                path: file?.path || file?.fileName || file?.name,
+                content: file?.content || file?.code || file?.body || '',
+            },
+        }));
+    } else if (!initialTasks.length && Array.isArray(rawPlan.steps)) {
+        initialTasks = rawPlan.steps.map((step, idx) => ({
+            nodeKey: String(step?.nodeKey || step?.id || `task_${idx + 1}`),
+            title: String(step?.title || step?.name || `Task ${idx + 1}`),
+            instruction: String(step?.instruction || step?.description || step?.title || ''),
+            dependencies: Array.isArray(step?.dependencies) ? step.dependencies : [],
+            assignedTool: String(step?.assignedTool || step?.tool || 'executeCommand'),
+            toolInput: step?.toolInput || step?.input || {},
+        }));
+    }
+
+    const plan = {
+        workflowTitle: String(rawPlan.workflowTitle || rawPlan.title || rawPlan.project_name || 'Workflow Plan').trim(),
+        summary: String(
+            rawPlan.summary
+            || rawPlan.description
+            || rawPlan.task
+            || (normalizedGoal ? `Plan for: ${normalizedGoal}` : 'Execution plan'),
+        ).trim(),
+        tasks: initialTasks,
+    };
 
     if (Array.isArray(plan.tasks)) {
         const keyMap = new Map();
@@ -4323,21 +4377,24 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
     // Keep planner-generated metadata within the same limits used by the
     // workflow and task database columns. LLMs can echo the entire user goal
     // into a title even though the plan schema requires a short label.
-    plan.workflowTitle = clampPlannerText(plan.workflowTitle, 255, 'Workflow Plan');
-    plan.summary = clampPlannerText(plan.summary, 5000, 'Execution plan');
-    plan.tasks = Array.isArray(plan.tasks)
-        ? plan.tasks.map((task, index) => ({
-            ...task,
-            title: clampPlannerText(task.title, 255, `Task ${index + 1}`),
-            instruction: clampPlannerText(
-                task.instruction || task.description || task.title,
-                10000,
-                `Execute task ${index + 1}.`,
-            ),
-        }))
-        : plan.tasks;
-
-    return plan;
+    return {
+        workflowTitle: clampPlannerText(plan.workflowTitle, 255, 'Workflow Plan'),
+        summary: clampPlannerText(plan.summary, 5000, 'Execution plan'),
+        tasks: Array.isArray(plan.tasks)
+            ? plan.tasks.map((task, index) => ({
+                nodeKey: task.nodeKey,
+                title: clampPlannerText(task.title, 255, `Task ${index + 1}`),
+                instruction: clampPlannerText(
+                    task.instruction || task.description || task.title,
+                    10000,
+                    `Execute task ${index + 1}.`,
+                ),
+                dependencies: Array.isArray(task.dependencies) ? task.dependencies : [],
+                assignedTool: task.assignedTool || 'executeCommand',
+                toolInput: (task.toolInput && typeof task.toolInput === 'object' && !Array.isArray(task.toolInput)) ? task.toolInput : {},
+            }))
+            : [],
+    };
 };
 
 const getMissingProjectTreeFiles = (plan, goalPrompt) => {
@@ -6078,12 +6135,13 @@ ${largeTreeInstruction}
                     // response. Complete the missing files in smaller dynamic
                     // batches before spending another full-plan retry.
                     const hasExplicitTree = extractProjectTreeLayout(planningGoalPrompt).files.length > 0;
+                    let completedPlan = null;
                     if (explicitTreeCompletionAttempts < 1
                         && (/The plan is incomplete/i.test(parsed.error.message) || hasExplicitTree)
                         && (isNodeProjectSetupRequest(planningGoalPrompt) || hasExplicitTree)) {
                         explicitTreeCompletionAttempts += 1;
                         try {
-                            const completedPlan = await completeExplicitProjectTreePlan({
+                            completedPlan = await completeExplicitProjectTreePlan({
                                 basePlan: rawResult.data,
                                 goalPrompt: planningGoalPrompt,
                                 runId,

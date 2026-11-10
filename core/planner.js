@@ -5715,7 +5715,7 @@ Escape literal backslashes correctly for JSON.
                 nodeKey: getUniqueNodeKey([
                     ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
                     ...guaranteeTasks,
-                ], `complete_${path.basename(canonicalPath).replace(/[^A-Za-z0-9]+/g, _).toLowerCase()}`),
+                ], `complete_${path.basename(canonicalPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
                 title: `Create ${canonicalPath}`,
                 instruction: `Create ${canonicalPath} with complete implementation in Desktop/${projectRoot}.`,
                 dependencies: [],

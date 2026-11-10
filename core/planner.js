@@ -306,6 +306,9 @@ const isStructureCleanupRequest = (value) => {
     // a request to delete or reorganize an existing project structure.
     const text = String(value || '')
         .replace(/\bclean\s+(?:layered\s+)?architecture\b/gi, '');
+    if (/\b(?:create|build|generate|setup|set\s*up|scaffold|implement|develop)\s+[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(text)) {
+        return false;
+    }
     return /\b(?:cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
         || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|src|redundant|empty|schema)\b/i.test(text));
 };
@@ -411,7 +414,16 @@ const normalizeStructureCleanupTasks = (tasks, goalPrompt, localDestination = ''
         return action === 'deletedesktoppath';
     });
 
-    if (!hasRemovalTask && targetProject) {
+    const hasFilesInsideSrc = filteredTasks.some((task) => {
+        const action = String(task.toolInput?.action || '').toLowerCase();
+        if (action.includes('delete') || action.includes('remove')) return false;
+        const p = String(
+            task.toolInput?.path || task.toolInput?.destination || task.toolInput?.filePath || ''
+        ).toLowerCase();
+        return p.includes('/src/') || p.endsWith('/src') || p.startsWith('src/') || p === 'src';
+    });
+
+    if (!hasRemovalTask && targetProject && !hasFilesInsideSrc) {
         const projectRoot = targetProject.replace(/^[~\/]*desktops?[\/]+/i, '');
         const srcPath = `${projectRoot}/src`;
         const nodeKey = 'cleanup_redundant_src';
@@ -426,6 +438,7 @@ const normalizeStructureCleanupTasks = (tasks, goalPrompt, localDestination = ''
                 action: 'deleteDesktopPath',
                 path: srcPath,
                 kind: 'directory',
+                emptyOnly: true,
                 ignoreMissing: true,
             },
         });

@@ -340,8 +340,19 @@ const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
     throw createLlmFailure(lastError, 'Gemini stream');
 };
 
-const parseImagePart = (imageString) => {
+const parseImagePart = (imageInput) => {
+    if (!imageInput) return null;
+    if (typeof imageInput === 'object' && imageInput.inlineData?.data && imageInput.inlineData?.mimeType) {
+        return imageInput;
+    }
+
+    const mimeTypeHint = typeof imageInput === 'object' ? (imageInput.mimeType || imageInput.type || 'image/png') : 'image/png';
+    const imageString = typeof imageInput === 'string'
+        ? imageInput
+        : (imageInput.dataUrl || imageInput.url || imageInput.data || imageInput.base64 || '');
+
     if (typeof imageString !== 'string') return null;
+
     const match = imageString.match(/^data:([^;]+);base64,(.+)$/s);
     if (match) {
         return {
@@ -351,14 +362,17 @@ const parseImagePart = (imageString) => {
             },
         };
     }
-    if (/^[A-Za-z0-9+/=]+$/.test(imageString.trim()) && imageString.length > 50) {
+
+    const cleanBase64 = imageString.trim();
+    if (/^[A-Za-z0-9+/=\s]+$/.test(cleanBase64) && cleanBase64.replace(/\s+/g, '').length > 50) {
         return {
             inlineData: {
-                mimeType: 'image/png',
-                data: imageString.trim(),
+                mimeType: mimeTypeHint,
+                data: cleanBase64.replace(/\s+/g, ''),
             },
         };
     }
+
     return null;
 };
 

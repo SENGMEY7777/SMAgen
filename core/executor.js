@@ -303,10 +303,56 @@ const resolveLocalDesktopPath = async (requestedPath) => {
                     }
                 }
 
+                const rootOnlyItems = new Set([
+                    'package.json',
+                    'package-lock.json',
+                    'pnpm-lock.yaml',
+                    'yarn.lock',
+                    'bun.lockb',
+                    'app.js',
+                    'server.js',
+                    'index.js',
+                    'main.js',
+                    '.env',
+                    '.env.example',
+                    '.gitignore',
+                    '.gitattributes',
+                    'readme.md',
+                    'license',
+                    'dockerfile',
+                    'docker-compose.yml',
+                    'docker-compose.yaml',
+                    'tsconfig.json',
+                    'jsconfig.json',
+                    'vite.config.js',
+                    'vite.config.ts',
+                    'database',
+                    'databases',
+                    'db',
+                    'migrations',
+                    'seeds',
+                    'public',
+                    'static',
+                    'assets',
+                    'tests',
+                    'test',
+                    'scripts',
+                    'docs',
+                    'dist',
+                    'build',
+                    'node_modules',
+                ]);
+
+                const isRootTarget = subSegments.length === 1
+                    || rootOnlyItems.has(subSegments[0].toLowerCase())
+                    || subSegments[0].startsWith('.')
+                    || /\.(json|env|md|ya?ml|lock|sql)$/i.test(subSegments[0]);
+
                 // ONLY route into src/ if:
                 // 1. src/ actually exists and is a directory
                 // 2. The project does NOT organize its source folders directly at root level
                 // 3. The target is not already pointing into src/
+                // 4. The target is not a root-level file or root-only directory
                 if (hasRootSourceFolders && subSegments[0] === 'src') {
                     // Project uses root-level folders (controllers, routes, etc.)
                     // Automatically strip the accidental 'src' segment so files go directly into root folders
@@ -315,7 +361,7 @@ const resolveLocalDesktopPath = async (requestedPath) => {
                         const targetInRoot = path.resolve(projectDir, ...cleanSubSegments);
                         desktopRelativePath = path.relative(desktopRoot, targetInRoot);
                     }
-                } else if (srcStats && srcStats.isDirectory() && !hasRootSourceFolders && subSegments[0] !== 'src') {
+                } else if (srcStats && srcStats.isDirectory() && !hasRootSourceFolders && subSegments[0] !== 'src' && !isRootTarget) {
                     const targetInSrc = path.resolve(srcDir, ...subSegments);
                     desktopRelativePath = path.relative(desktopRoot, targetInSrc);
                 }

@@ -4575,12 +4575,49 @@ const generateDynamicProductionCode = (filePath, goalPrompt = '', projectRoot = 
     const fileName = path.basename(filePath);
     const lowerPath = filePath.toLowerCase();
     const isCoffee = lowerPath.includes('coffee') || (projectRoot && projectRoot.toLowerCase().includes('coffee')) || (goalPrompt && goalPrompt.toLowerCase().includes('coffee'));
+    const isSchool = lowerPath.includes('school') || (projectRoot && projectRoot.toLowerCase().includes('school')) || (goalPrompt && goalPrompt.toLowerCase().includes('school'));
     const entityName = fileName.replace(/(?:controller|service|model|routes?|validator)\.js$/i, '').replace(/\.[^.]+$/, '');
     const capitalizedEntity = entityName ? entityName.charAt(0).toUpperCase() + entityName.slice(1) : 'Item';
     const tableName = entityName ? `${entityName.toLowerCase()}s` : 'items';
 
     if (lowerPath.endsWith('.sql')) {
         if (lowerPath.includes('seed')) {
+            if (isSchool) {
+                return `-- ${fileName}
+-- Database Seeds for Highly Secure School Management System
+USE school_db;
+
+INSERT INTO users (name, email, password, role, status) VALUES
+('Principal Admin', 'admin@school.edu', '$2a$10$wT5Y17c5bC5.Y6Y9nZ8aI.LgqE9ZgQe9ZgQe9ZgQe9uY123456789', 'admin', 'active'),
+('Professor Alan Turing', 'turing@school.edu', '$2a$10$wT5Y17c5bC5.Y6Y9nZ8aI.LgqE9ZgQe9ZgQe9ZgQe9uY123456789', 'teacher', 'active'),
+('Alice Smith', 'alice@school.edu', '$2a$10$wT5Y17c5bC5.Y6Y9nZ8aI.LgqE9ZgQe9ZgQe9ZgQe9uY123456789', 'student', 'active'),
+('Bob Jones', 'bob@school.edu', '$2a$10$wT5Y17c5bC5.Y6Y9nZ8aI.LgqE9ZgQe9ZgQe9ZgQe9uY123456789', 'student', 'active'),
+('Martha Smith', 'martha@parents.com', '$2a$10$wT5Y17c5bC5.Y6Y9nZ8aI.LgqE9ZgQe9ZgQe9ZgQe9uY123456789', 'parent', 'active');
+
+INSERT INTO teachers (user_id, employee_id, first_name, last_name, department, qualification, phone) VALUES
+(2, 'EMP-1001', 'Alan', 'Turing', 'Computer Science', 'Ph.D. in Mathematics', '+1-555-0199');
+
+INSERT INTO students (user_id, student_id_number, first_name, last_name, dob, gender, grade_level, emergency_contact) VALUES
+(3, 'STD-2024-001', 'Alice', 'Smith', '2006-05-14', 'female', 'Grade 12', '+1-555-0101'),
+(4, 'STD-2024-002', 'Bob', 'Jones', '2006-09-22', 'male', 'Grade 12', '+1-555-0102');
+
+INSERT INTO courses (course_code, title, description, credits, teacher_id) VALUES
+('CS101', 'Introduction to Computer Science', 'Foundations of programming and algorithms', 4, 1),
+('MATH201', 'Discrete Mathematics', 'Logic and discrete structures', 3, 1);
+
+INSERT INTO enrollments (student_id, course_id, enrollment_date, status) VALUES
+(1, 1, '2024-09-01', 'enrolled'),
+(2, 1, '2024-09-01', 'enrolled');
+
+INSERT INTO attendance (student_id, course_id, date, status, remarks) VALUES
+(1, 1, '2024-11-01', 'present', 'On time'),
+(2, 1, '2024-11-01', 'present', 'On time');
+
+INSERT INTO grades (student_id, course_id, exam_type, score, max_score, grade_letter) VALUES
+(1, 1, 'midterm', 95.50, 100.00, 'A'),
+(2, 1, 'midterm', 88.00, 100.00, 'B+');
+`;
+            }
             if (isCoffee) {
                 return `-- ${fileName}
 -- Coffee Shop & POS Database Seeds
@@ -4821,7 +4858,7 @@ DB_HOST=localhost
 DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=
-DB_NAME=ecommerce_db
+DB_NAME=${isSchool ? 'school_db' : (isCoffee ? 'coffee_shop_db' : 'ecommerce_db')}
 DB_CONNECTION_LIMIT=10
 
 # Security & Authentication
@@ -5666,6 +5703,40 @@ Escape literal backslashes correctly for JSON.
         }, {goalPrompt});
     }
 
+    // Safety guarantee pass: ensure ZERO missing files remain
+    let remainingMissing = getMissingProjectTreeFiles(workingPlan, goalPrompt);
+    if (remainingMissing.length > 0) {
+        console.log(`📡 [Planner Guarantee] Fulfilling ${remainingMissing.length} final missing tree files...`);
+        const guaranteeTasks = [];
+        for (const filePath of remainingMissing) {
+            const canonicalPath = canonicalizeProjectPath(filePath, projectRoot) || filePath;
+            const content = generateDynamicProductionCode(canonicalPath, goalPrompt, projectRoot);
+            guaranteeTasks.push({
+                nodeKey: getUniqueNodeKey([
+                    ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                    ...guaranteeTasks,
+                ], `complete_${path.basename(canonicalPath).replace(/[^A-Za-z0-9]+/g, _).toLowerCase()}`),
+                title: `Create ${canonicalPath}`,
+                instruction: `Create ${canonicalPath} with complete implementation in Desktop/${projectRoot}.`,
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopFile',
+                    mode: 'create',
+                    path: canonicalPath,
+                    content,
+                },
+            });
+        }
+        workingPlan = normalizePlan({
+            ...workingPlan,
+            tasks: [
+                ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                ...guaranteeTasks,
+            ],
+        }, {goalPrompt});
+    }
+
     return workingPlan;
 };
 
@@ -6045,6 +6116,14 @@ ${largeTreeInstruction}
                         // Retrying the full planner here would repeat the same
                         // expensive response and can outlive the API request.
                         if (!validatedPlan) {
+                            try {
+                                const finalCheck = getMissingProjectTreeFiles(completedPlan, planningGoalPrompt);
+                                if (finalCheck.length === 0) {
+                                    console.log('🛡️ [Planner Recovery] Completed plan contains all requested files. Using completedPlan.');
+                                    validatedPlan = completedPlan;
+                                    break;
+                                }
+                            } catch (_) {}
                             break;
                         }
                     }
@@ -6185,4 +6264,7 @@ module.exports = {
     normalizePlan,
     validatePlan,
     planWorkflowRun,
+    extractProjectTreeLayout,
+    getMissingProjectTreeFiles,
+    isNodeProjectSetupRequest,
 };

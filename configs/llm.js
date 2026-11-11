@@ -104,13 +104,13 @@ const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS)
 const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)
     && configuredMaxModelAttempts >= 1
     ? Math.min(configuredMaxModelAttempts, 5)
-    : 2;
+    : 3;
 
 const configuredTransientRetries = Number(process.env.GEMINI_TRANSIENT_RETRIES);
 const GEMINI_TRANSIENT_RETRIES = Number.isInteger(configuredTransientRetries)
     && configuredTransientRetries >= 0
-    ? Math.min(configuredTransientRetries, 3)
-    : 2;
+    ? Math.min(configuredTransientRetries, 5)
+    : 3;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     let timeoutId;
@@ -216,7 +216,7 @@ const generateContentWithRetry = async ({
                     && transientAttempt < transientRetries;
 
                 if (canRetrySameModel) {
-                    const delayMs = Math.min(1500, 250 * (2 ** transientAttempt));
+                    const delayMs = Math.min(3500, (600 * (1.8 ** transientAttempt)) + Math.floor(Math.random() * 300));
                     console.warn(
                         `⚠️ Gemini model '${currentModel}' failed (${code || error.message}). `
                         + `Retrying in ${delayMs}ms (${transientAttempt + 1}/${transientRetries})...`,

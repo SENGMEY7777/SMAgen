@@ -67,90 +67,6 @@ const FILE_WRITE_ACTIONS = new Set([
     'updatefile',
     'appendfile',
 ]);
-
-const COMMON_SUBFOLDERS = new Set([
-    'data',
-    'src',
-    'app',
-    'server',
-    'client',
-    'frontend',
-    'backend',
-    'public',
-    'config',
-    'configs',
-    'configuration',
-    'model',
-    'models',
-    'view',
-    'views',
-    'controller',
-    'controllers',
-    'route',
-    'routes',
-    'router',
-    'routers',
-    'middleware',
-    'middlewares',
-    'service',
-    'services',
-    'validator',
-    'validators',
-    'validation',
-    'validations',
-    'schema',
-    'schemas',
-    'database',
-    'databases',
-    'db',
-    'migration',
-    'migrations',
-    'seed',
-    'seeds',
-    'test',
-    'tests',
-    'spec',
-    'specs',
-    '__tests__',
-    'lib',
-    'libs',
-    'util',
-    'utils',
-    'helper',
-    'helpers',
-    'dist',
-    'build',
-    'bin',
-    'script',
-    'scripts',
-    'doc',
-    'docs',
-    'documentation',
-    'asset',
-    'assets',
-    'image',
-    'images',
-    'img',
-    'style',
-    'styles',
-    'css',
-    'node_modules',
-    'static',
-    'template',
-    'templates',
-    'component',
-    'components',
-    'page',
-    'pages',
-    'layout',
-    'layouts',
-    'api',
-    'core',
-    'store',
-    'stores',
-    'plugin',
-    'plugins',
-]);
 const IMAGE_GENERATOR_TOOL = 'imageGenerator';
 const extractHomepageTopic = (goalPrompt) => {
     const text = String(goalPrompt || '').replace(/\s+/g, ' ').trim();
@@ -241,7 +157,7 @@ const cleanRelativeDirectoryPath = (value) => {
 const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     const directPath = cleanRelativeDirectoryPath(toolInput.path);
 
-    if (directPath && !COMMON_SUBFOLDERS.has(directPath.toLowerCase())) {
+    if (directPath) {
         return directPath;
     }
 
@@ -254,23 +170,30 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
         for (let index = commandArguments.length - 1; index >= 0; index -= 1) {
             const commandPath = cleanRelativeDirectoryPath(commandArguments[index]);
 
-            if (commandPath && !COMMON_SUBFOLDERS.has(commandPath.toLowerCase())) {
+            if (commandPath) {
                 return commandPath;
             }
         }
     }
 
     const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+    const localDestinationMatch = taskText.match(LOCAL_DESTINATION_PATH_PATTERN);
+
+    if (localDestinationMatch) {
+        return cleanRelativeDirectoryPath(localDestinationMatch[1].replace(/[.,;!?]+$/, ''));
+    }
+
+    const desktopPathMatch = taskText.match(DESKTOP_PATH_PATTERN);
+    if (desktopPathMatch) {
+        return cleanRelativeDirectoryPath(desktopPathMatch[1].replace(/[.,;!?]+$/, ''));
+    }
 
     const quotedName = taskText.match(
         /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name(?:\s+is)?(?:['’]s)?)\s*["']([^"']+)["']/i,
     );
 
     if (quotedName) {
-        const candidate = cleanRelativeDirectoryPath(quotedName[1]);
-        if (candidate && !COMMON_SUBFOLDERS.has(candidate.toLowerCase())) {
-            return candidate;
-        }
+        return cleanRelativeDirectoryPath(quotedName[1]);
     }
 
     const nameSuffix = taskText.match(
@@ -278,38 +201,7 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     );
 
     if (nameSuffix) {
-        const candidate = cleanRelativeDirectoryPath(nameSuffix[1]);
-        if (candidate && !COMMON_SUBFOLDERS.has(candidate.toLowerCase())) {
-            return candidate;
-        }
-    }
-
-    const plainName = taskText.match(
-        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and|i\s+want)\b|[.,;!?]|$)/i,
-    );
-
-    if (plainName) {
-        const candidate = cleanRelativeDirectoryPath(plainName[1]);
-        if (candidate && !COMMON_SUBFOLDERS.has(candidate.toLowerCase())) {
-            return candidate;
-        }
-    }
-
-    const localDestinationMatch = taskText.match(LOCAL_DESTINATION_PATH_PATTERN);
-
-    if (localDestinationMatch) {
-        const candidate = cleanRelativeDirectoryPath(localDestinationMatch[1].replace(/[.,;!?]+$/, ''));
-        if (candidate && !COMMON_SUBFOLDERS.has(candidate.toLowerCase())) {
-            return candidate;
-        }
-    }
-
-    const desktopPathMatch = taskText.match(DESKTOP_PATH_PATTERN);
-    if (desktopPathMatch) {
-        const candidate = cleanRelativeDirectoryPath(desktopPathMatch[1].replace(/[.,;!?]+$/, ''));
-        if (candidate && !COMMON_SUBFOLDERS.has(candidate.toLowerCase())) {
-            return candidate;
-        }
+        return cleanRelativeDirectoryPath(nameSuffix[1]);
     }
 
     const desktopFolderName = taskText.match(
@@ -317,13 +209,14 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     );
 
     if (desktopFolderName) {
-        const candidate = cleanRelativeDirectoryPath(desktopFolderName[1]);
-        if (candidate && !COMMON_SUBFOLDERS.has(candidate.toLowerCase())) {
-            return candidate;
-        }
+        return cleanRelativeDirectoryPath(desktopFolderName[1]);
     }
 
-    return null;
+    const plainName = taskText.match(
+        /\b(?:directory|folder|project)\b[\s\S]{0,80}\b(?:named|called|name)\b(?:\s+is)?\s+([A-Za-z0-9_-]+)(?=\s+(?:on|in|inside|with|and|i\s+want)\b|[.,;!?]|$)/i,
+    );
+
+    return cleanRelativeDirectoryPath(plainName?.[1]);
 };
 
 const isDirectoryCreationTask = (task, toolInput) => {
@@ -409,19 +302,12 @@ const INVALID_REMOVAL_TARGETS = new Set([
 ]);
 
 const isStructureCleanupRequest = (value) => {
-    const raw = String(value || '');
-    if (/[├└│─]/.test(raw)
-        || /\b(?:explicit\s+project\s+tree|tree\s+layout|folder\s+structure)\b/i.test(raw)
-        || /\b(?:create|build|generate|setup|scaffold|develop|implement)\s+[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(raw)) {
-        return false;
-    }
     // "Clean layered architecture" is an architecture quality adjective, not
     // a request to delete or reorganize an existing project structure.
-    const text = raw
-        .replace(/\b(?:crud|delete\s+(?:endpoint|route|method|record|item|row|entry)|http\s+delete|delete\s+\/api[^\s]*)\b/gi, '')
+    const text = String(value || '')
         .replace(/\bclean\s+(?:layered\s+)?architecture\b/gi, '');
     return /\b(?:cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
-        || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|redundant|empty)\b/i.test(text));
+        || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|src|redundant|empty|schema)\b/i.test(text));
 };
 
 const extractRemovalTarget = (value) => {
@@ -1572,43 +1458,14 @@ const extractProjectTreeLayout = (goalPrompt) => {
     const files = new Set();
     const directoryStack = [];
     const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+#.*)?$/;
-    const lines = String(goalPrompt || '').split(/\r?\n/);
 
-    let rootDirectory = null;
-    const firstTreeIndex = lines.findIndex((line) => treeEntryPattern.test(line));
-    if (firstTreeIndex > 0) {
-        for (let i = firstTreeIndex - 1; i >= 0; i -= 1) {
-            const trimmed = lines[i].trim();
-            if (!trimmed) continue;
-            const headerMatch = trimmed.match(/^[*_`#\s-]*([A-Za-z0-9_-]{2,})[\\/]?[:*_\s`]*$/);
-            if (headerMatch) {
-                const candidate = headerMatch[1].trim();
-                const lower = candidate.toLowerCase();
-                const isGenericHeader = /^(?:folder|directory|project|tree|structure|layout|files|endpoints|requirements|tech|stack|techstack|architecture)$/i.test(lower);
-                if (!isGenericHeader && !COMMON_SUBFOLDERS.has(lower)) {
-                    rootDirectory = candidate;
-                }
-            }
-            break;
-        }
-    }
-
-    if (rootDirectory) {
-        directories.add(rootDirectory);
-        directoryStack[0] = rootDirectory;
-    }
-
-    const depthOffset = rootDirectory ? 1 : 0;
-
-    for (let i = 0; i < lines.length; i += 1) {
-        const line = lines[i];
+    for (const line of String(goalPrompt || '').split(/\r?\n/)) {
         const match = line.match(treeEntryPattern);
         if (!match) {
             continue;
         }
 
-        const rawDepth = (match[1].match(/(?:│|\|)\s{3}| {4}/g) || []).length;
-        const depth = rawDepth + depthOffset;
+        const depth = (match[1].match(/(?:│|\|)\s{3}| {4}/g) || []).length;
         const rawName = match[2].replace(/[),;]+$/, '');
         const isDirectory = /[\\/]$/.test(rawName);
         const entryName = rawName.replace(/[\\/]+$/, '');
@@ -1639,7 +1496,7 @@ const extractProjectTreeLayout = (goalPrompt) => {
     );
     for (const fileName of extractDesktopFileNames(goalPrompt)) {
         if (!fileName.includes('/') && !treeFileNames.has(fileName.toLowerCase())) {
-            files.add(rootDirectory ? `${rootDirectory}/${fileName}` : fileName);
+            files.add(fileName);
         }
     }
 
@@ -1653,7 +1510,6 @@ const extractProjectTreeLayout = (goalPrompt) => {
     }
 
     return {
-        rootDirectory,
         directories: [...directories],
         files: [...files],
     };
@@ -4572,25 +4428,10 @@ const getMissingProjectTreeFiles = (plan, goalPrompt) => {
         return [];
     }
 
-    let projectRoot = cleanRelativeDirectoryPath(
+    const projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
-    );
-    if (!projectRoot || COMMON_SUBFOLDERS.has(projectRoot.toLowerCase())) {
-        const treeRoot = layout.rootDirectory || layout.directories[0]?.split('/')[0];
-        if (treeRoot && !COMMON_SUBFOLDERS.has(treeRoot.toLowerCase())) {
-            projectRoot = treeRoot;
-        }
-    }
-    if (!projectRoot || COMMON_SUBFOLDERS.has(projectRoot.toLowerCase())) {
-        const destMatch = String(goalPrompt || '').match(/\b(?:folder|directory|project)\s+(?:name(?:'s|\s+is)?|named|called)\s*["'“]([^"'”]+)["'”]/i)
-            || String(goalPrompt || '').match(/\b(?:called|named)\s+["'“]([^"'”]+)["'”]/i);
-        if (destMatch && !COMMON_SUBFOLDERS.has(destMatch[1].toLowerCase())) {
-            projectRoot = cleanRelativeDirectoryPath(destMatch[1]);
-        }
-    }
-    if (!projectRoot || COMMON_SUBFOLDERS.has(projectRoot.toLowerCase())) {
-        projectRoot = 'project';
-    }
+    ) || layout.directories[0]?.split('/')[0]
+      || 'project';
 
     if (!projectRoot) {
         return [];
@@ -5779,18 +5620,17 @@ const completeExplicitProjectTreePlan = async ({
     let projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
     );
-    if (!projectRoot || COMMON_SUBFOLDERS.has(projectRoot.toLowerCase())) {
+    if (!projectRoot) {
         const layout = extractProjectTreeLayout(goalPrompt);
-        const treeRoot = layout.rootDirectory || layout.directories[0]?.split('/')[0];
-        if (treeRoot && !COMMON_SUBFOLDERS.has(treeRoot.toLowerCase())) projectRoot = treeRoot;
+        const treeRoot = layout.directories[0]?.split('/')[0];
+        if (treeRoot) projectRoot = treeRoot;
     }
-    if (!projectRoot || COMMON_SUBFOLDERS.has(projectRoot.toLowerCase())) {
-        const destMatch = String(goalPrompt || '').match(/\b(?:folder|directory|project)\s+(?:name(?:'s|\s+is)?|named|called)\s*["'“]([^"'”]+)["'”]/i)
-            || String(goalPrompt || '').match(/\b(?:called|named)\s+["'“]([^"'”]+)["'”]/i);
-        if (destMatch && !COMMON_SUBFOLDERS.has(destMatch[1].toLowerCase())) projectRoot = cleanRelativeDirectoryPath(destMatch[1]);
+    if (!projectRoot) {
+        const destMatch = String(goalPrompt || '').match(/\b(?:folder|directory|project)\s+(?:name(?:'s|\s+is)?|named|called)\s*["'“]([^"'”]+)["'”]/i);
+        if (destMatch) projectRoot = cleanRelativeDirectoryPath(destMatch[1]);
     }
-    if (!projectRoot || COMMON_SUBFOLDERS.has(projectRoot.toLowerCase())) {
-        projectRoot = 'Student-Backend';
+    if (!projectRoot) {
+        projectRoot = 'E-Commerce-API';
     }
 
     const completionSystemPrompt = `
@@ -6259,21 +6099,12 @@ const planWorkflowRun = async ({
     } else {
         // Check if goalPrompt explicitly specifies a project name or project tree layout
         const explicitTree = extractProjectTreeLayout(goalPrompt);
-        const rawTreeRoot = explicitTree.rootDirectory
-            || explicitTree.directories[0]?.split('/')[0]
+        const treeRoot = explicitTree.directories[0]?.split('/')[0]
             || (explicitTree.files[0]?.includes('/') ? explicitTree.files[0].split('/')[0] : null);
-        const treeRoot = (rawTreeRoot && !COMMON_SUBFOLDERS.has(rawTreeRoot.toLowerCase())) ? rawTreeRoot : null;
         const treeProjectName = (treeRoot && treeRoot.length >= 2 && !treeRoot.includes('.')) ? treeRoot : null;
-
-        const calledFolderMatch = String(goalPrompt || '').match(/\b(?:folder|directory|project)\s+(?:named|called|name(?:'s|\s+is)?)\s*[*"'“`]?([a-zA-Z0-9_-]{2,})[*"'”`]?/i)
-            || String(goalPrompt || '').match(/\b(?:in|into|inside)\s+(?:a\s+)?(?:folder|directory)\s+[*"'“`]?([a-zA-Z0-9_-]{2,})[*"'”`]?/i)
-            || String(goalPrompt || '').match(/\b(?:called|named)\s+[*"'“`]?([a-zA-Z0-9_-]{2,})[*"'”`]?/i);
-        const calledName = calledFolderMatch && !['the', 'this', 'a', 'an', 'new', 'for', 'our', 'all', 'any'].includes(calledFolderMatch[1].toLowerCase())
-            && !COMMON_SUBFOLDERS.has(calledFolderMatch[1].toLowerCase())
-            ? calledFolderMatch[1]
-            : null;
-
-        const explicitProjectName = calledName || treeProjectName;
+        const calledMatch = String(goalPrompt || '').match(/\b(?:called|named|project)\s+[*"`']*([a-zA-Z0-9_-]{2,})[*"`']*/i);
+        const explicitProjectName = treeProjectName
+            || (calledMatch && !['the', 'this', 'a', 'an', 'new', 'for', 'our', 'all', 'any'].includes(calledMatch[1].toLowerCase()) ? calledMatch[1] : null);
 
         if (explicitProjectName) {
             const explicitNorm = explicitProjectName.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -6490,15 +6321,18 @@ ${largeTreeInstruction}
                 console.error(`❌ [Planner Attempt Error]:`, error.message);
                 const errorCode = Number(error.code);
                 const shouldStopPlannerRetries = [
-                    'LLM_UNAVAILABLE',
                     'LLM_ERROR',
-                    'LLM_TIMEOUT',
                 ].includes(error.code)
-                    || [400, 401, 403, 404, 503].includes(errorCode)
-                    || [400, 401, 403, 404, 503].includes(Number(error.status));
+                    || [400, 401, 403].includes(errorCode)
+                    || [400, 401, 403].includes(Number(error.status));
 
                 if (shouldStopPlannerRetries) {
                     break;
+                }
+                if (attempts < maxAttempts) {
+                    const retryDelayMs = Math.min(3000, 1000 * attempts);
+                    console.warn(`⏳ [Planner Recovery] Waiting ${retryDelayMs}ms before attempt ${attempts + 1}/${maxAttempts}...`);
+                    await new Promise((r) => setTimeout(r, retryDelayMs));
                 }
                 currentPrompt = `An error occurred: ${error.message}. Generate valid DAG JSON for this goal:\n${planningGoalPrompt}`;
             }

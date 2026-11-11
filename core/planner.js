@@ -306,9 +306,6 @@ const isStructureCleanupRequest = (value) => {
     // a request to delete or reorganize an existing project structure.
     const text = String(value || '')
         .replace(/\bclean\s+(?:layered\s+)?architecture\b/gi, '');
-    if (/\b(?:create|build|generate|setup|set\s*up|scaffold|implement|develop)\s+[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(text)) {
-        return false;
-    }
     return /\b(?:cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
         || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|src|redundant|empty|schema)\b/i.test(text));
 };
@@ -414,16 +411,7 @@ const normalizeStructureCleanupTasks = (tasks, goalPrompt, localDestination = ''
         return action === 'deletedesktoppath';
     });
 
-    const hasFilesInsideSrc = filteredTasks.some((task) => {
-        const action = String(task.toolInput?.action || '').toLowerCase();
-        if (action.includes('delete') || action.includes('remove')) return false;
-        const p = String(
-            task.toolInput?.path || task.toolInput?.destination || task.toolInput?.filePath || ''
-        ).toLowerCase();
-        return p.includes('/src/') || p.endsWith('/src') || p.startsWith('src/') || p === 'src';
-    });
-
-    if (!hasRemovalTask && targetProject && !hasFilesInsideSrc) {
+    if (!hasRemovalTask && targetProject) {
         const projectRoot = targetProject.replace(/^[~\/]*desktops?[\/]+/i, '');
         const srcPath = `${projectRoot}/src`;
         const nodeKey = 'cleanup_redundant_src';
@@ -438,7 +426,6 @@ const normalizeStructureCleanupTasks = (tasks, goalPrompt, localDestination = ''
                 action: 'deleteDesktopPath',
                 path: srcPath,
                 kind: 'directory',
-                emptyOnly: true,
                 ignoreMissing: true,
             },
         });
@@ -3718,12 +3705,26 @@ const normalizeGitBranchTasks = (tasks) => {
 };
 
 const generateDynamicCommitMessage = (goalPrompt = '', tasks = []) => {
-    const text = String(goalPrompt || '').trim();
+    const sanitizeMsg = (msg) => {
+        return String(msg || '')
+            .replace(/\[(?:Follow-up|Execution Context)[\s\S]*?\]/gi, '')
+            .replace(/https?:\/\/[^\s]+/gi, '')
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/["'`$\\;&|<>]/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 70);
+    };
+
+    const text = String(goalPrompt || '')
+        .replace(/\[(?:Follow-up|Execution Context)[\s\S]*?\]/gi, '')
+        .replace(/[\r\n\t]+/g, ' ')
+        .trim();
 
     // 1. Explicit commit message in user prompt
     const quotedMatch = text.match(/(?:commit\s+(?:with\s+)?(?:message|msg|-m)?\s*["'“]([^"'”]+)["'”])/i);
     if (quotedMatch && quotedMatch[1]?.trim()) {
-        return quotedMatch[1].trim();
+        return sanitizeMsg(quotedMatch[1].trim());
     }
 
     // 2. Identify modified or created files from tasks
@@ -3744,7 +3745,7 @@ const generateDynamicCommitMessage = (goalPrompt = '', tasks = []) => {
 
     // 3. Dynamic semantic intent inference
     if (/\b(?:cannot\s+get|404|route|not\s+found)\b/i.test(text)) {
-        return `fix${fileScope}: add root route handler to resolve 404 Cannot GET /`;
+        return sanitizeMsg(`fix${fileScope}: add root route handler to resolve 404 Cannot GET /`);
     }
     if (/\b(?:fix|repair|bug|error|issue|problem|broken|crash)\b/i.test(text)) {
         const cleanGoal = text
@@ -3753,27 +3754,27 @@ const generateDynamicCommitMessage = (goalPrompt = '', tasks = []) => {
             .replace(/\b(?:review and |please )\b/i, '')
             .replace(/https?:\/\/[^\s]+/i, '')
             .trim();
-        return `fix${fileScope}: ${cleanGoal ? cleanGoal.slice(0, 68) : 'resolve server runtime issues'}`;
+        return sanitizeMsg(`fix${fileScope}: ${cleanGoal ? cleanGoal : 'resolve server runtime issues'}`);
     }
     if (/\b(?:add|create|new|implement|feature)\b/i.test(text)) {
         const cleanGoal = text
             .replace(/^please\s+/i, '')
             .replace(/^i want (?:to )?/i, '')
             .trim();
-        return `feat${fileScope}: ${cleanGoal ? cleanGoal.slice(0, 68) : 'add requested application features'}`;
+        return sanitizeMsg(`feat${fileScope}: ${cleanGoal ? cleanGoal : 'add requested application features'}`);
     }
     if (/\b(?:refactor|clean|structure|mvc|service)\b/i.test(text)) {
-        return `refactor${fileScope}: reorganize project architecture and modularize code`;
+        return sanitizeMsg(`refactor${fileScope}: reorganize project architecture and modularize code`);
     }
     if (/\b(?:docs?|readme)\b/i.test(text)) {
-        return `docs: update documentation and project specifications`;
+        return sanitizeMsg(`docs: update documentation and project specifications`);
     }
     if (/\b(?:push|deploy|publish|release)\b/i.test(text)) {
-        return `chore: prepare changes and deploy to production`;
+        return sanitizeMsg(`chore: prepare changes and deploy to production`);
     }
 
     const cleanText = text.replace(/^please\s+/i, '').replace(/^i want (?:to )?/i, '').trim();
-    return `chore: ${cleanText ? cleanText.slice(0, 68) : 'update project files and configurations'}`;
+    return sanitizeMsg(`chore: ${cleanText ? cleanText : 'update project files and configurations'}`);
 };
 
 const normalizeGitCommitTasks = (tasks, goalPrompt) => {
@@ -4328,6 +4329,20 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
         plan.tasks = normalizeChainedCommandTasks(plan.tasks);
+
+        // Strip illegal newlines from all command tasks to prevent safety policy rejection
+        plan.tasks = (plan.tasks || []).map((t) => {
+            if (t.assignedTool === 'executeCommand' && typeof t.toolInput?.command === 'string' && /[\r\n]/.test(t.toolInput.command)) {
+                return {
+                    ...t,
+                    toolInput: {
+                        ...t.toolInput,
+                        command: t.toolInput.command.replace(/[\r\n]+/g, ' ').trim(),
+                    },
+                };
+            }
+            return t;
+        });
 
         if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
             const renamePaths = extractRenamePaths(goalPrompt);
@@ -6271,6 +6286,18 @@ ${largeTreeInstruction}
             }
             if (fallbackTasks && fallbackTasks.length > 0) {
                 console.log(`🛡️ [Planner Resilience] Using deterministic plan for ${goalPrompt}`);
+                fallbackTasks = fallbackTasks.map((t) => {
+                    if (t.assignedTool === 'executeCommand' && typeof t.toolInput?.command === 'string' && /[\r\n]/.test(t.toolInput.command)) {
+                        return {
+                            ...t,
+                            toolInput: {
+                                ...t.toolInput,
+                                command: t.toolInput.command.replace(/[\r\n]+/g, ' ').trim(),
+                            },
+                        };
+                    }
+                    return t;
+                });
                 validatedPlan = {
                     workflowTitle: `Deploy to GitHub for ${effectiveDestination || 'Project'}`,
                     summary: `Autonomously stage, commit, set branch to main, and push to GitHub.`,

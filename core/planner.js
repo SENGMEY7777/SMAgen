@@ -1843,15 +1843,15 @@ const isExplicitExistingProjectUpdateRequest = (goalPrompt) => {
         return true;
     }
 
-    const hasUpdateIntent = /\b(?:update|modify|edit|rewrite|refactor|replace|overwrite)\b/i.test(text);
+    const hasUpdateIntent = /\b(?:update|modify|edit|rewrite|refactor|replace|overwrite|fix|repair)\b/i.test(text);
     const targetsExistingWork = /\b(?:existing|current|already[-\s]?created|present)\b[\s\S]{0,80}\b(?:project|app(?:lication)?|file|component|codebase|source)\b/i.test(text)
         || /\b(?:project|app(?:lication)?|file|component|codebase|source)\b[\s\S]{0,80}\b(?:existing|current|already[-\s]?created|present)\b/i.test(text);
-    const hasProjectTarget = /\b(?:project|app(?:lication)?|file|files|component|components|codebase|source)\b/i.test(text);
+    const hasProjectTarget = /\b(?:project|app(?:lication)?|file|files|component|components|codebase|source|bug|issue|site|url)\b/i.test(text);
     const negatesUpdate = /\b(?:do\s+not|don't|dont|never|without)\b[\s\S]{0,32}\b(?:overwrite|replace|update|modify|edit|rewrite)\b/i.test(text);
 
     return hasUpdateIntent
         && hasProjectTarget
-        && (targetsExistingWork || /\b(?:update|modify|edit|rewrite|refactor)\b[\s\S]{0,60}\b(?:project|app(?:lication)?|file|component|codebase|source)\b/i.test(text))
+        && (targetsExistingWork || /\b(?:update|modify|edit|rewrite|refactor|fix|repair)\b[\s\S]{0,60}\b(?:project|app(?:lication)?|file|component|codebase|source|bug|issue|site|url)\b/i.test(text))
         && !negatesUpdate;
 };
 
@@ -3966,19 +3966,36 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
 
     let prevDep = 'inspect_server_entry';
 
-    // If deploying to Vercel, configure vercel.json routing
+    // If deploying to Vercel, configure api/index.js and vercel.json serverless routing
     if (/vercel\.app/i.test(targetUrl)) {
+        newTasks.push({
+            nodeKey: 'create_vercel_api_entry',
+            title: 'Create Vercel serverless API entry',
+            instruction: `Create api/index.js in ${cleanRelativePath} to wrap Express app as a Vercel serverless function.`,
+            dependencies: [prevDep],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'update',
+                path: `${cleanRelativePath}/api/index.js`,
+                content: "const app = require('../app.js');\n\nmodule.exports = app;\n",
+                desktop: true,
+                overwrite: true,
+            },
+        });
+        prevDep = 'create_vercel_api_entry';
+
         newTasks.push({
             nodeKey: 'configure_vercel_routing',
             title: 'Configure Vercel serverless routing',
-            instruction: `Create vercel.json in ${cleanRelativePath} to route all incoming requests to Express app.`,
+            instruction: `Create vercel.json in ${cleanRelativePath} to route all incoming requests to the api/index.js serverless function.`,
             dependencies: [prevDep],
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: `${cleanRelativePath}/vercel.json`,
-                content: '{\n  "version": 2,\n  "rewrites": [\n    {\n      "source": "/(.*)",\n      "destination": "/app.js"\n    }\n  ]\n}\n',
+                content: '{\n  "version": 2,\n  "rewrites": [\n    {\n      "source": "/(.*)",\n      "destination": "/api/index.js"\n    }\n  ]\n}\n',
                 desktop: true,
                 overwrite: true,
             },

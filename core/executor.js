@@ -1280,9 +1280,19 @@ const fileManager = async (input, workspacePath, task = {}) => {
         };
     }
 
+    const shouldOverwrite = input.overwrite === true
+        || input.overwrite === 'true'
+        || String(input.ifExists || '').trim().toLowerCase() === 'overwrite'
+        || input.mode === 'update'
+        || input.mode === 'write';
+
+    if (shouldOverwrite) {
+        input.overwrite = true;
+    }
+
     const writeAction = (action === 'update' || input.mode === 'update')
         ? 'update'
-        : (action === 'write' || input.mode === 'write')
+        : (action === 'write' || input.mode === 'write' || (action === 'createDesktopFile' && shouldOverwrite))
             ? 'write'
         : (action === 'append' || input.mode === 'append')
             ? 'append'
@@ -1317,7 +1327,7 @@ const fileManager = async (input, workspacePath, task = {}) => {
     if (writeAction === 'create') {
         await fs.writeFile(filePath, content, {
             encoding: 'utf8',
-            flag: input.overwrite === true ? 'w' : 'wx',
+            flag: shouldOverwrite ? 'w' : 'wx',
         });
     } else if (writeAction === 'write' || writeAction === 'update') {
         await fs.writeFile(filePath, content, 'utf8');

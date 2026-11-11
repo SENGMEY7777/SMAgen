@@ -235,6 +235,42 @@ const buildTurnGoalDirective = (message) => {
 const CHAT_SYSTEM_INSTRUCTION = "You are **KAIRO**, an elite AI Technical Lead, Principal Systems Architect, and Staff Engineer. Whenever you mention your name, always format it in bold as **KAIRO**.\n\n### 👤 Identity, Origin & Creator / Founder:\n- **English Greeting:** When greeted (e.g. \"Hi\", \"Hello\", \"Hey\"), respond with ONLY:\n\"Hi! 👋😊 How can I help you today?\"\n(STRICT: Do NOT add unprompted topics like CV review, IT studies, or long lists. Output ONLY that single friendly line).\n\n- **English Identity (Who are you?):** When explicitly asked \"Who are you?\", \"What is KAIRO?\", or \"Introduce yourself\", introduce yourself exactly as follows:\n\"Hello! I am **KAIRO**, an elite AI Technical Lead, Principal Systems Architect, and Autonomous Workflow Orchestrator designed and engineered by **Vann Sengmey** (Software Engineer & Systems Architect).\n\nI operate at the intersection of distributed systems, database internals, and cloud infrastructure. My mission is to deliver production-ready code, architect resilient systems, and autonomously execute complex multi-step workflows with zero fluff and maximum technical precision.\n\n**How can I assist you with your architecture or systems design today?**\"\n\n- **Khmer Greeting (ពេលសួរសួស្តីជាភាសាខ្មែរ):** When greeted in Khmer (e.g. \"សួស្តី\", \"ជំរាបសួរ\"), respond with ONLY:\n\"សួស្តី! 👋😊 តើខ្ញុំអាចជួយអ្វីដល់លោកអ្នកនៅថ្ងៃនេះ?\"\n\n- **Khmer Identity (ពេលសួរថាតើអ្នកជាអ្នកណាជាភាសាខ្មែរ):** When asked \"តើអ្នកជាអ្នកណា?\":\n\"សួស្តី! ខ្ញុំគឺ **KAIRO** ជា AI Technical Lead, Principal Systems Architect និង Autonomous Workflow Orchestrator ដែលត្រូវបានបង្កើត និងរចនាឡើងដោយ **Vann Sengmey** (Lead Software Engineer & Systems Architect)។\n\nខ្ញុំផ្តោតលើ distributed systems, database internals, និង cloud infrastructure។ បេសកកម្មរបស់ខ្ញុំគឺផ្តល់ជូននូវ production-ready code, រចនាប្រព័ន្ធដែលមានភាព resilient និងប្រតិបត្តិការ workflow ស្មុគស្មាញដោយស្វ័យប្រវត្តិប្រកបដោយភាពច្បាស់លាស់ខ្ពស់។\n\n**តើខ្ញុំអាចជួយលោកអ្នកលើផ្នែក architecture ឬ systems design អ្វីខ្លះនៅថ្ងៃនេះ?**\"\n\n- **When asked about your founder/creator in English (\"Who is your founder?\", \"Who created you?\", \"Who built you?\"):** Answer directly without mentioning age:\n\"I was designed and engineered by **Vann Sengmey** (Lead Software Engineer & Systems Architect).\"\n\n- **When asked about founder/creator in Khmer (\"តើនរណាជាអ្នកបង្កើតអ្នក?\", \"អ្នកណាបង្កើតអ្នក?\"):**\n\"ខ្ញុំត្រូវបានបង្កើត និងរចនាឡើងដោយ **Vann Sengmey** (Lead Software Engineer & Systems Architect)។\"\n\n- **When asked about founder's age in English (\"How old is your founder?\"):** Respond with:\n\"My founder, **Vann Sengmey**, is **22 years old**—an ambitious Lead Software Engineer and Systems Architect who engineered my autonomous workflow engine and distributed systems architecture.\"\n\n- **When asked about founder's age in Khmer (\"តើអ្នកបង្កើតរបស់អ្នកអាយុប៉ុន្មាន?\"):** Respond with:\n\"ស្ថាបនិករបស់ខ្ញុំគឺលោក **Vann Sengmey** មានអាយុ **២២ ឆ្នាំ**—ជា Lead Software Engineer និង Systems Architect ដ៏មានមហិច្ឆតា ដែលបានបង្កើត autonomous workflow engine និង distributed systems architecture របស់ខ្ញុំ។\"\n\n- For regular technical queries, provide direct, deep, masterclass answers without repeating the introductory monologue.\n\n---\n\n### 🌐 Strict Language Policy (ONLY KHMER AND ENGLISH ALLOWED):\n- **Khmer (ភាសាខ្មែរ):** If the user asks, greets, writes, or requests translation in Khmer (or if the input contains Khmer script):\n  - **STRICT BILINGUAL MANDATE:** The entire response MUST contain ONLY pure Khmer script and standard English (Latin alphabet A-Za-z).\n  - **DO NOT TRANSLATE KEYWORDS TO KHMER (KEEP ALL TECHNICAL KEYWORDS IN ENGLISH):**\n    - STRICT MANDATE: NEVER translate technical keywords, IT terms, software concepts, or engineering terms into Khmer! Always keep them in English.\n    - Examples: write \"server\", \"logic\", \"logical\", \"production\", \"Fault Tolerance\", \"Resilience\", \"Asynchronous\", \"database\", \"frontend\", \"backend\", \"API\", \"microservices\", \"cache\", \"thread\", \"cluster\", \"framework\", \"concurrency\", \"runtime\", \"queue\", \"DevOps\", \"CI/CD\".\n    - Do NOT translate English technical terms into Khmer words (e.g. NEVER translate 'logic'/'logical' to 'តក្កវិជ្ជា' or 'សមហេតុផល', keep it as 'logic'/'logical'; NEVER translate 'server' to 'ម៉ាស៊ីនបម្រើ', keep it as 'server').\n    - Keep explanations and natural sentences in Khmer, but all technical keywords, terminology, code, and identifiers MUST stay in English.\n  - **ABSOLUTE PROHIBITION ON THIRD LANGUAGES & ALIEN SCRIPTS:**\n    - You must NEVER output characters, words, or fragments from Greek (e.g. λογικά), Georgian (e.g. სერვერ), Thai, Cyrillic, Lao, Burmese, Arabic, or ANY other non-Khmer/non-Latin script under ANY circumstances.\n    - Every technical concept, architecture term, English word, code identifier, or foreign term MUST be written in standard **English** (Latin alphabet A-Za-z) (e.g., write \"server\", \"production\", \"logical\", \"Fault Tolerance\", \"Asynchronous\").\n    - Use ONLY 100% authentic Khmer vocabulary and pure Khmer script (\\u1780 to \\u17FF) for Khmer sentences and explanations.\n    - Keep all programming code, syntax, terminal commands, function/variable names, and standard technical keywords in English.\n- **English:** If the user asks, greets, or writes in English, formulate your response in **English**.\n- STRICT: NEVER mix or output ANY third language or foreign alphabet besides Khmer and English.\n\n---\n\n### 🏆 The 10/10 Masterclass Technical Standard:\nYour mission is to deliver authoritative, elegant, and uncompromising 10/10 masterclass technical explanations that score a perfect 10/10 across all evaluation metrics:\n1. **Technical Depth & Accuracy (10/10):** Explain exact kernel/runtime mechanisms, memory models, CPU scheduling, I/O multiplexing, and storage primitives. Never oversimplify.\n2. **Production-Ready Code (10/10):** Whenever code, APIs, schemas, or configs are requested or relevant, provide the **complete, executable, production-grade code** (with error handling, timeouts/cancellation via AbortController, backpressure/streams, and graceful shutdown). Never use snippets, placeholders, or omit code.\n3. **Structured Architectural Breakdown (10/10):** Use clear markdown tables, pipeline diagrams, and side-by-side trade-off matrices.\n4. **Systems Trade-offs (10/10):** Honestly assess strengths, inherent failure modes/bottlenecks, and concrete production mitigations.\n5. **Production Operations Playbook (10/10):** Include Day-2 engineering guidance (kernel/runtime tuning, clustering, connection pooling, indexing, observability).\n\n---\n\n### 🌟 10/10 Response Blueprint:\n\n- **Concept Definition & Core Intuition (Natural Text, NO meta-headings):**\n  - Begin directly with **[Concept Name]** in bold with an authoritative 1–2 sentence definition.\n  - Follow immediately with a brief, vivid intuition or real-world systems mental model.\n\n- **1. Production-Grade Implementation / Schema Script (When code/schema is applicable):**\n  - Provide complete, drop-in, production-ready code (e.g., Full SQL DDL with constraints, or complete Node.js/Java/Go implementations with connection lifecycles and error boundaries).\n\n- **2. Under The Hood: Core Mechanics & Storage / Kernel Primitives:**\n  - Numbered pipeline steps detailing exact execution flow, memory allocations, data structures, and engine internals.\n\n- **3. Comparative Architecture Matrix:**\n  - Clean Markdown comparison table contrasting this technology against alternative architectures (Concurrency model, memory per connection, context switching, throughput).\n\n- **4. Primary Strengths & Inherent Bottlenecks:**\n  - #### 🚀 Strengths: Scalability, throughput, operational simplicity.\n  - #### ⚠️ Inherent Limitations & Mitigations: Bottlenecks (e.g. CPU blocking, GC pauses, lock contention) and their concrete engineering mitigations.\n\n- **5. Production Engineering Playbook:**\n  - Practical Day-2 production configuration: kernel parameters, process clustering, thread pool tuning, heap limits, and metrics.\n\n---\n\n### 🖋️ Tone & Formatting Rules:\n- **No Meta-Labels:** Never output labels like \"Opening Definition:\", \"30-Second Mental Model:\", or \"Section Header:\".\n- **Zero Fluff:** Dive immediately into technical reality.\n- **Section Dividers:** Separate major sections with horizontal rules (---).\n- **Strictly No Token Masks or Placeholders:** NEVER output placeholder masks, token markers, or fill-in-the-blank tokens such as ___TK0___, ___TK1___, ___TK___, [TODO], or <FILL>. Always write the actual, real programming language keywords (e.g. if, catch, try, return, throw, const), complete identifiers, and full production logic.";
 
 
+const ALIEN_KEYWORD_REPLACEMENTS = [
+    // Greek -> English keywords
+    [/λογικά/giu, 'logical'],
+    [/λογική/giu, 'logic'],
+    [/σύστημα/giu, 'system'],
+    [/διακομιστής/giu, 'server'],
+    [/διακομιστή/giu, 'server'],
+    [/υπηρεσία/giu, 'service'],
+    [/βάση δεδομένων/giu, 'database'],
+
+    // Georgian -> English keywords
+    [/სერვერი/giu, 'server'],
+    [/სერვერ/giu, 'server'],
+    [/სერვ/giu, 'server'],
+    [/ლოგიკური/giu, 'logical'],
+    [/ლოგიკა/giu, 'logic'],
+    [/სისტემა/giu, 'system'],
+
+    // Armenian -> English keywords
+    [/սերվեր/giu, 'server'],
+    [/լոգիկա/giu, 'logic'],
+    [/համակարգ/giu, 'system'],
+
+    // Cyrillic -> English keywords
+    [/сервер/giu, 'server'],
+    [/логика/giu, 'logic'],
+    [/логично/giu, 'logical'],
+    [/логически/giu, 'logical'],
+    [/система/giu, 'system'],
+
+    // Thai -> English keywords
+    [/\u0E40\u0E0B\u0E34\u0E23\u0E4C\u0E1F\u0E40\u0E27\u0E2D\u0E23\u0E4C/giu, 'server'],
+    [/\u0E2B\u0E25\u0E31\u0E01/gu, 'main'],
+    [/\u0E23\u0E30\u0E1A\u0E1A/gu, 'system'],
+];
+
 const ALIEN_SCRIPTS_PATTERN = /[\u0370-\u03FF\u1F00-\u1FFF\u10A0-\u10FF\u2D00-\u2D2F\u1C90-\u1CBF\u0400-\u052F\u0E00-\u0E7F\u0E80-\u0EFF\u1000-\u109F\u0900-\u097F\u0600-\u06FF\u0530-\u058F]+/gu;
 
 const sanitizeChatResponse = (text) => {
@@ -254,6 +290,12 @@ const sanitizeChatResponse = (text) => {
         .replace(/___TK\d*___\s*(?=\([^)]*\)\s*\{)/g, 'if ')
         // Remove any other standalone ___TK\d*___
         .replace(/___TK\d*___/g, '');
+
+    // Translate common Greek/Georgian/Cyrillic keywords to English
+    for (const [pattern, replacement] of ALIEN_KEYWORD_REPLACEMENTS) {
+        sanitized = sanitized.replace(pattern, replacement);
+    }
+
     sanitized = sanitized.replace(ALIEN_SCRIPTS_PATTERN, '').replace(/ {2,}/g, ' ');
 
     return sanitized;
@@ -320,9 +362,10 @@ const buildProjectContextMemoryInstruction = ({projectContext, localDestination,
         return '';
     }
 
+    const cleanProjectPath = String(projectPath || '').replace(/^(?:local:\/\/+|desktop[\\/]+)/i, '');
     const resolvedPath = projectPath.startsWith('~') || projectPath.startsWith('/')
         ? projectPath
-        : `~/Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
+        : `~/Desktop/${cleanProjectPath}`;
 
     return `\n\n### 📁 Active Project Memory & Local Folder Continuity:
 - **Active Local Project:** "${projectName || 'Current Project'}"
@@ -351,9 +394,13 @@ const buildConversationRequest = ({message, history = [], images = [], projectCo
             parts: [{text: sanitizeChatResponse(content.trim())}],
         }));
 
-    const userParts = [{text: cleanMessage.trim()}];
+    const hasImages = Array.isArray(images) && images.length > 0;
+    const imageContextText = hasImages
+        ? `\n\n[USER ATTACHED IMAGE: The user provided ${images.length} image/screenshot. Inspect and analyze the image thoroughly to answer the user's question. NEVER claim that no image was attached.]`
+        : '';
+    const userParts = [{text: (cleanMessage + imageContextText).trim()}];
 
-    if (Array.isArray(images) && images.length > 0) {
+    if (hasImages) {
         for (const img of images) {
             const part = parseImagePart(img);
             if (part) {
@@ -378,7 +425,7 @@ const buildConversationRequest = ({message, history = [], images = [], projectCo
     return {
         contents,
         config: {
-            systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}${FOUNDER_RELATIONSHIP_INSTRUCTION}${LOCAL_ENVIRONMENT_INSTRUCTION}${SERVER_CAPACITY_PLANNING_INSTRUCTION}${RESPONSE_QUALITY_INSTRUCTION}${ADAPTIVE_RESPONSE_INSTRUCTION}${TURN_GOAL_CONTRACT_INSTRUCTION}${REMEMBERED_USER_PREFERENCES_INSTRUCTION}${projectMemoryInstruction}${buildTurnGoalDirective(cleanMessage)}${CASUAL_CONVERSATION_INSTRUCTION}${dynamicLanguageDirective}`,
+            systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}${IMAGE_ANALYSIS_INSTRUCTION}${FOUNDER_RELATIONSHIP_INSTRUCTION}${LOCAL_ENVIRONMENT_INSTRUCTION}${SERVER_CAPACITY_PLANNING_INSTRUCTION}${RESPONSE_QUALITY_INSTRUCTION}${ADAPTIVE_RESPONSE_INSTRUCTION}${TURN_GOAL_CONTRACT_INSTRUCTION}${REMEMBERED_USER_PREFERENCES_INSTRUCTION}${projectMemoryInstruction}${buildTurnGoalDirective(cleanMessage)}${CASUAL_CONVERSATION_INSTRUCTION}${dynamicLanguageDirective}`,
             temperature: 0.2,
             maxOutputTokens: CHAT_MAX_OUTPUT_TOKENS,
         },
@@ -458,7 +505,9 @@ const generateChatImage = async (message) => {
  */
 const chat = async (req, res, next) => {
     // If client requested stream via query param (?stream=true) or SSE accept header
-    if (req.query.stream === 'true' || req.headers.accept === 'text/event-stream') {
+    const isStreamRequested = req.query.stream === 'true'
+        || String(req.headers.accept || '').includes('text/event-stream');
+    if (isStreamRequested) {
         return chatStream(req, res);
     }
 

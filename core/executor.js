@@ -726,20 +726,6 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 throw typeError;
             }
 
-            if (isDirectoryTarget && (input.emptyOnly === true || input.onlyIfEmpty === true)) {
-                const entries = await fs.readdir(desktopPath);
-                if (entries.length > 0) {
-                    return {
-                        action,
-                        path: path.relative(desktopRoot, desktopPath),
-                        location: 'local Desktop',
-                        deleted: false,
-                        skipped: true,
-                        reason: 'Directory is not empty',
-                    };
-                }
-            }
-
             // Direct match found on disk
             if (!deleteAllMatches) {
                 await fs.rm(desktopPath, {recursive: stats.isDirectory(), force: true});
@@ -1969,6 +1955,11 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         .replace(/\s*\|\|\s*(?:true|:|exit\s+0)\s*$/i, '')
         .replace(/\s*2>\s*\/dev\/null\s*$/i, '')
         .trim();
+
+    // If git commit contains internal newlines inside quotes, flatten them safely into spaces
+    if (/^git\s+commit\s+-m\s+["'][\s\S]*["']$/i.test(command)) {
+        command = command.replace(/[\r\n]+/g, ' ').trim();
+    }
 
     if (/[;&|`]|\$\(|>|<|\n/.test(command)) {
         throw new Error('Shell operators and command chaining are not allowed; run each command as a separate workflow task');

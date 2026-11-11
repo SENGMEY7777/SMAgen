@@ -1782,7 +1782,7 @@ const isIdempotentDesktopSetupRequest = (goalPrompt) => {
     }
 
     const text = String(goalPrompt || '');
-    const mentionsDesktop = /\bdesk(?:top|spto|stop)\b/i.test(text);
+    const mentionsDesktop = /\bdesk(?:top|spto|stop)\b/i.test(text) || LOCAL_DESKTOP_OUTPUT_ENABLED;
     const requestsSetup = /\b(?:setup|set\s+up|scaffold|initialize|init|create|generate|build|install)\b/i.test(text);
     const mentionsProject = /\b(?:project|app|application|system|service|api|backend|frontend|website)\b/i.test(text);
     const explicitlyChangesExistingFiles = /\b(?:overwrite|replace|update|modify|edit|rewrite)\b/i.test(text);
@@ -5920,7 +5920,7 @@ const findMatchingDesktopProject = async (goalPrompt) => {
     const text = String(goalPrompt || '').trim();
     if (!text) return null;
 
-    // 1. Extract potential project names from URLs in the prompt (e.g. sample-res-tful-api, rent-room-self)
+    // 1. Extract high-confidence candidates (URLs, repo links, or explicit folder declarations)
     const urlMatches = text.match(/https?:\/\/([a-z0-9_-]+)(?:\.[a-z0-9_-]+)*\.[a-z]{2,}/gi) || [];
     const candidates = [];
 
@@ -5934,8 +5934,28 @@ const findMatchingDesktopProject = async (goalPrompt) => {
         } catch (_) {}
     }
 
-    const words = text.match(/[a-zA-Z0-9_-]{3,}/g) || [];
-    candidates.push(...words);
+    const repoMatches = text.match(/(?:github\.com|gitlab\.com)[/:]([a-zA-Z0-9_.-]+)/gi) || [];
+    for (const repoStr of repoMatches) {
+        const parts = repoStr.split(/[/:/]/);
+        const lastPart = parts[parts.length - 1]?.replace(/\.git$/i, '');
+        if (lastPart) candidates.push(lastPart);
+    }
+
+    const explicitMatches = text.match(/\b(?:project|repo|repository|folder|directory)\s*[:=]\s*["'`]?([a-zA-Z0-9_.-]+)["'`]?/gi) || [];
+    for (const m of explicitMatches) {
+        const matchPart = m.replace(/^.*[:=]\s*["'`]?/, '').replace(/["'`]$/, '');
+        if (matchPart) candidates.push(matchPart);
+    }
+
+    // Only if prompt is short (e.g. "fix Coffee-Shop-API" or "debug RentRoom-Backend"), extract project-like identifiers
+    if (text.length <= 100) {
+        const shortMatches = text.match(/\b[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+\b/g) || [];
+        candidates.push(...shortMatches);
+    }
+
+    if (candidates.length === 0) {
+        return null;
+    }
 
     const normalize = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const cleanSuffix = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(?:self|app|api|backend|frontend|web|live|prod|production|stage|staging|client|server)$/g, '');
@@ -6014,16 +6034,17 @@ const findMatchingDesktopProject = async (goalPrompt) => {
             }
         }
 
-        // Pass 3: Substring match with strict minimum lengths (>= 4 chars each to prevent short false positives)
+        // Pass 3: High-confidence prefix/suffix match (>= 5 chars each to prevent generic false positives)
+        const GENERIC_EXCLUSIONS = new Set(['shop', 'coffee', 'user', 'test', 'demo', 'code', 'data', 'store', 'cart', 'sale', 'node', 'react', 'view', 'apps', 'main', 'core']);
         for (const candidate of candidates) {
             const candClean = cleanSuffix(candidate);
-            if (!candClean || candClean.length < 4) continue;
+            if (!candClean || candClean.length < 5 || GENERIC_EXCLUSIONS.has(candClean)) continue;
 
             for (const dir of directories) {
                 const dirClean = cleanSuffix(dir.name);
-                if (!dirClean || dirClean.length < 4) continue;
+                if (!dirClean || dirClean.length < 5 || GENERIC_EXCLUSIONS.has(dirClean)) continue;
 
-                if (dirClean.includes(candClean) || candClean.includes(dirClean)) {
+                if (dirClean.startsWith(candClean) || candClean.startsWith(dirClean) || dirClean.endsWith(candClean) || candClean.endsWith(dirClean)) {
                     return `Desktop/${dir.relativePath}`;
                 }
             }
@@ -6075,8 +6096,26 @@ const planWorkflowRun = async ({
                 effectiveDestination = matchedProject;
             }
         }
-    } else if (!effectiveDestination) {
-        effectiveDestination = await findMatchingDesktopProject(goalPrompt);
+    } else {
+        // Check if goalPrompt explicitly specifies a project name or project tree layout
+        const explicitTree = extractProjectTreeLayout(goalPrompt);
+        const treeRoot = explicitTree.directories[0]?.split('/')[0]
+            || (explicitTree.files[0]?.includes('/') ? explicitTree.files[0].split('/')[0] : null);
+        const treeProjectName = (treeRoot && treeRoot.length >= 2 && !treeRoot.includes('.')) ? treeRoot : null;
+        const calledMatch = String(goalPrompt || '').match(/\b(?:called|named|project)\s+[*"`']*([a-zA-Z0-9_-]{2,})[*"`']*/i);
+        const explicitProjectName = treeProjectName
+            || (calledMatch && !['the', 'this', 'a', 'an', 'new', 'for', 'our', 'all', 'any'].includes(calledMatch[1].toLowerCase()) ? calledMatch[1] : null);
+
+        if (explicitProjectName) {
+            const explicitNorm = explicitProjectName.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const destNorm = String(effectiveDestination || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            // If current effectiveDestination belongs to an entirely different project (e.g. Coffee-Shop-API vs SmartPOS), override it!
+            if (!destNorm || (!destNorm.includes(explicitNorm) && !explicitNorm.includes(destNorm))) {
+                effectiveDestination = `Desktop/${explicitProjectName}`;
+            }
+        } else if (!effectiveDestination) {
+            effectiveDestination = await findMatchingDesktopProject(goalPrompt);
+        }
     }
     const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
     const cacheKey = getCacheKey(planningGoalPrompt);

@@ -3813,11 +3813,15 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
 
     let projectPath = null;
     const urlDomain = (targetUrl.match(/https?:\/\/([a-z0-9_-]+)/i)?.[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanSuffix = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(?:self|app|api|backend|frontend|web|live|prod|production|stage|staging|client|server)$/g, '');
+    const cleanUrl = cleanSuffix(urlDomain);
+
     const dest = normalizeLocalDestination(localDestination);
     const destNorm = String(dest?.relativePath || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanDest = cleanSuffix(destNorm);
 
-    // Only accept localDestination if it actually matches the URL domain!
-    if (dest?.relativePath && urlDomain && (destNorm.includes(urlDomain) || urlDomain.includes(destNorm))) {
+    // Accept localDestination if it actually matches the URL domain directly or via cleaned suffix
+    if (dest?.relativePath && cleanUrl && cleanDest && (cleanUrl === cleanDest || (cleanUrl.length >= 4 && cleanDest.includes(cleanUrl)) || (cleanDest.length >= 4 && cleanUrl.includes(cleanDest)))) {
         projectPath = dest.relativePath;
     } else {
         for (const t of tasks) {
@@ -3949,76 +3953,47 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     newTasks.push({
         nodeKey: 'inspect_server_entry',
         title: 'Inspect server entry file',
-        instruction: `Read index.js in ${cleanRelativePath} to inspect existing routes and middleware.`,
+        instruction: `Read package.json in ${cleanRelativePath} to inspect existing routes and configuration.`,
         dependencies: ['test_live_endpoint'],
         assignedTool: 'fileManager',
         toolInput: {
             action: 'readDesktopFile',
-            path: `${cleanRelativePath}/index.js`,
+            path: `${cleanRelativePath}/package.json`,
             desktop: true,
         },
     });
 
-    newTasks.push({
-        nodeKey: 'fix_missing_root_route',
-        title: 'Add root GET route to server',
-        instruction: `Update app.js and index.js in ${cleanRelativePath} to add root GET route (app.get('/', ...)) resolving Express Cannot GET / 404 error.`,
-        dependencies: ['inspect_server_entry'],
-        assignedTool: 'fileManager',
-        toolInput: {
-            action: 'createDesktopFile',
-            mode: 'update',
-            path: `${cleanRelativePath}/app.js`,
-            content: `const express = require('express');\nconst app = express();\nlet userRoute;\ntry { userRoute = require('./routes/userRoutes'); } catch (_) {}\n\napp.use(express.json());\n\napp.get('/', (req, res) => {\n  res.status(200).json({\n    status: 'success',\n    message: 'Sample RESTful API is running successfully'\n  });\n});\n\nif (userRoute) app.use(userRoute);\n\nconst PORT = process.env.PORT || 3000;\nif (require.main === module) {\n  app.listen(PORT, () => {\n    console.log(\`Server running on port \${PORT}\`);\n  });\n}\n\nmodule.exports = app;\n`,
-            desktop: true,
-            overwrite: true,
-        },
-    });
+    let prevDep = 'inspect_server_entry';
 
-    newTasks.push({
-        nodeKey: 'ensure_index_export',
-        title: 'Ensure index entry exports app',
-        instruction: `Update index.js in ${cleanRelativePath} to export app for Vercel deployment.`,
-        dependencies: ['fix_missing_root_route'],
-        assignedTool: 'fileManager',
-        toolInput: {
-            action: 'createDesktopFile',
-            mode: 'update',
-            path: `${cleanRelativePath}/index.js`,
-            content: `const app = require('./app');\n\nmodule.exports = app;\n`,
-            desktop: true,
-            overwrite: true,
-        },
-    });
-
+    // If deploying to Vercel, configure vercel.json routing
     if (/vercel\.app/i.test(targetUrl)) {
         newTasks.push({
             nodeKey: 'configure_vercel_routing',
             title: 'Configure Vercel serverless routing',
             instruction: `Create vercel.json in ${cleanRelativePath} to route all incoming requests to Express app.`,
-            dependencies: ['ensure_index_export'],
+            dependencies: [prevDep],
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: `${cleanRelativePath}/vercel.json`,
-                content: `{\n  "version": 2,\n  "rewrites": [\n    {\n      "source": "/(.*)",\n      "destination": "/app.js"\n    }\n  ]\n}\n`,
+                content: '{\n  "version": 2,\n  "rewrites": [\n    {\n      "source": "/(.*)",\n      "destination": "/app.js"\n    }\n  ]\n}\n',
                 desktop: true,
                 overwrite: true,
             },
         });
+        prevDep = 'configure_vercel_routing';
     }
 
-    const syntaxDep = /vercel\.app/i.test(targetUrl) ? 'configure_vercel_routing' : 'ensure_index_export';
-
+    // Verify syntax with a SINGLE safe command (no chaining with &&)
     newTasks.push({
         nodeKey: 'verify_server_syntax',
         title: 'Verify server syntax',
-        instruction: 'Verify JavaScript syntax of updated app.js and index.js using node -c.',
-        dependencies: [syntaxDep],
+        instruction: 'Verify JavaScript syntax of app.js using node -c.',
+        dependencies: [prevDep],
         assignedTool: 'executeCommand',
         toolInput: {
-            command: 'node -c app.js && node -c index.js',
+            command: 'node -c app.js',
             cwd: desktopProjectPath,
             desktop: true,
         },
@@ -4352,6 +4327,7 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
         plan.tasks = normalizeGitCommitTasks(plan.tasks, goalPrompt);
         // Ensure Git pushes always rename default branch to main
         plan.tasks = normalizeGitBranchTasks(plan.tasks);
+        plan.tasks = normalizeChainedCommandTasks(plan.tasks);
 
         if (isRenameRequest(goalPrompt) && plan.tasks.length === 1) {
             const renamePaths = extractRenamePaths(goalPrompt);
@@ -5912,7 +5888,7 @@ const findMatchingDesktopProject = async (goalPrompt) => {
     const text = String(goalPrompt || '').trim();
     if (!text) return null;
 
-    // 1. Extract potential project names from URLs in the prompt (e.g. sample-res-tful-api)
+    // 1. Extract potential project names from URLs in the prompt (e.g. sample-res-tful-api, rent-room-self)
     const urlMatches = text.match(/https?:\/\/([a-z0-9_-]+)(?:\.[a-z0-9_-]+)*\.[a-z]{2,}/gi) || [];
     const candidates = [];
 
@@ -5930,6 +5906,8 @@ const findMatchingDesktopProject = async (goalPrompt) => {
     candidates.push(...words);
 
     const normalize = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const cleanSuffix = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(?:self|app|api|backend|frontend|web|live|prod|production|stage|staging|client|server)$/g, '');
+
     const desktopRoot = path.join(os.homedir(), 'Desktop');
 
     try {
@@ -5938,6 +5916,9 @@ const findMatchingDesktopProject = async (goalPrompt) => {
 
         for (const entry of topEntries) {
             if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            // Ignore single-letter folders like 's' as valid project candidates
+            if (entry.name.length < 2) continue;
+
             directories.push({relativePath: entry.name, name: entry.name});
 
             // Also check 1 level deep inside category folders (e.g. Api-Productions, projects, etc.)
@@ -5946,7 +5927,7 @@ const findMatchingDesktopProject = async (goalPrompt) => {
                     const subDir = path.join(desktopRoot, entry.name);
                     const subEntries = await fs.readdir(subDir, {withFileTypes: true});
                     for (const sub of subEntries) {
-                        if (sub.isDirectory() && !sub.name.startsWith('.')) {
+                        if (sub.isDirectory() && !sub.name.startsWith('.') && sub.name.length >= 2) {
                             directories.push({
                                 relativePath: `${entry.name}/${sub.name}`,
                                 name: sub.name,
@@ -5957,13 +5938,60 @@ const findMatchingDesktopProject = async (goalPrompt) => {
             }
         }
 
+        // Pass 0: Check git remote repos on desktop directories (100% exact match)
+        for (const dir of directories) {
+            try {
+                const gitConfigPath = path.join(desktopRoot, dir.relativePath, '.git', 'config');
+                const gitConfig = await fs.readFile(gitConfigPath, 'utf8');
+                const match = gitConfig.match(/url\s*=\s*.*\/([^\s\/]+?)(?:\.git)?\s*$/m);
+                if (match) {
+                    const repoName = cleanSuffix(match[1]);
+                    for (const candidate of candidates) {
+                        const candClean = cleanSuffix(candidate);
+                        if (candClean && repoName && (repoName === candClean || (candClean.length >= 4 && repoName.includes(candClean)))) {
+                            return `Desktop/${dir.relativePath}`;
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // Pass 1: Cleaned suffix match (e.g. rent-room-self vs RentRoom-Backend -> rentroom === rentroom)
+        for (const candidate of candidates) {
+            const candClean = cleanSuffix(candidate);
+            if (!candClean || candClean.length < 3) continue;
+
+            for (const dir of directories) {
+                const dirClean = cleanSuffix(dir.name);
+                if (dirClean && candClean && dirClean === candClean) {
+                    return `Desktop/${dir.relativePath}`;
+                }
+            }
+        }
+
+        // Pass 2: Exact normalized match
         for (const candidate of candidates) {
             const candNorm = normalize(candidate);
             if (!candNorm || candNorm.length < 3) continue;
 
             for (const dir of directories) {
                 const dirNorm = normalize(dir.name);
-                if (dirNorm === candNorm || (candNorm.length >= 6 && (dirNorm.includes(candNorm) || candNorm.includes(dirNorm)))) {
+                if (dirNorm === candNorm) {
+                    return `Desktop/${dir.relativePath}`;
+                }
+            }
+        }
+
+        // Pass 3: Substring match with strict minimum lengths (>= 4 chars each to prevent short false positives)
+        for (const candidate of candidates) {
+            const candClean = cleanSuffix(candidate);
+            if (!candClean || candClean.length < 4) continue;
+
+            for (const dir of directories) {
+                const dirClean = cleanSuffix(dir.name);
+                if (!dirClean || dirClean.length < 4) continue;
+
+                if (dirClean.includes(candClean) || candClean.includes(dirClean)) {
                     return `Desktop/${dir.relativePath}`;
                 }
             }

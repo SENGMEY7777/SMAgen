@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const os = require('os');
 const path = require('path');
 
@@ -3959,24 +3960,51 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
 
     const desktopProjectPath = `Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
     const cleanRelativePath = projectPath.replace(/^desktop[\\/]+/i, '').replace(/[\\/]+$/, '');
+    const desktopAbsRoot = path.join(os.homedir(), 'Desktop', cleanRelativePath);
+    const expressEntryCandidates = ['src/app.js', 'app.js', 'src/index.js', 'index.js', 'src/server.js', 'server.js'];
+    const detectedExpressEntry = expressEntryCandidates.find((candidate) => {
+        try {
+            return fsSync.existsSync(path.join(desktopAbsRoot, candidate));
+        } catch (_) {
+            return false;
+        }
+    }) || 'app.js';
 
-    const hasHttpTask = tasks.some((t) => t.assignedTool === 'httpRequester');
-    const hasCodeUpdateTask = tasks.some((t) => {
+    const fixVercelApiEntryTask = (task) => {
+        const p = String(task?.toolInput?.path || '').replace(/\\/g, '/');
+        if (task?.assignedTool === 'fileManager' && /(?:^|\/)api\/index\.js$/i.test(p) && typeof task?.toolInput?.content === 'string') {
+            const fixedContent = task.toolInput.content.replace(/require\(\s*['"]\.\.\/app(?:\.js)?['"]\s*\)/g, `require('../${detectedExpressEntry}')`);
+            return {
+                ...task,
+                toolInput: {
+                    ...task.toolInput,
+                    path: `${cleanRelativePath}/api/index.js`,
+                    content: fixedContent,
+                },
+            };
+        }
+        return task;
+    };
+
+    const normalizedExistingTasks = tasks.map(fixVercelApiEntryTask);
+
+    const hasHttpTask = normalizedExistingTasks.some((t) => t.assignedTool === 'httpRequester');
+    const hasCodeUpdateTask = normalizedExistingTasks.some((t) => {
         const action = String(t.toolInput?.action || '').toLowerCase();
         return (t.assignedTool === 'fileManager' && ['create', 'update', 'createdesktopfile', 'write'].includes(action) && !action.includes('directory'));
     });
-    const hasPushTask = tasks.some((t) => {
+    const hasPushTask = normalizedExistingTasks.some((t) => {
         const cmd = String(t.toolInput?.command || '').toLowerCase();
         return t.assignedTool === 'executeCommand' && (cmd.includes('git push') || cmd.includes('push origin'));
     });
 
     if (hasHttpTask && hasCodeUpdateTask && hasPushTask) {
-        return tasks;
+        return normalizedExistingTasks;
     }
 
     if (hasCodeUpdateTask && !hasPushTask) {
-        const updatedTasks = [...tasks];
-        const lastTask = tasks[tasks.length - 1];
+        const updatedTasks = [...normalizedExistingTasks];
+        const lastTask = normalizedExistingTasks[normalizedExistingTasks.length - 1];
         const targetBranch = extractDynamicTargetBranch(goalPrompt);
 
         const hasCommitTask = tasks.some((t) => {
@@ -4092,14 +4120,14 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
         newTasks.push({
             nodeKey: 'create_vercel_api_entry',
             title: 'Create Vercel serverless API entry',
-            instruction: `Create api/index.js in ${cleanRelativePath} to wrap Express app as a Vercel serverless function.`,
+            instruction: `Create api/index.js in ${cleanRelativePath} to wrap Express app (${detectedExpressEntry}) as a Vercel serverless function.`,
             dependencies: [prevDep],
             assignedTool: 'fileManager',
             toolInput: {
                 action: 'createDesktopFile',
                 mode: 'update',
                 path: `${cleanRelativePath}/api/index.js`,
-                content: "const app = require('../app.js');\n\nmodule.exports = app;\n",
+                content: `const app = require('../${detectedExpressEntry}');\n\nmodule.exports = app;\n`,
                 desktop: true,
                 overwrite: true,
             },
@@ -4122,17 +4150,36 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
             },
         });
         prevDep = 'configure_vercel_routing';
+
+        try {
+            if (fsSync.existsSync(path.join(desktopAbsRoot, 'src', 'api', 'index.js'))) {
+                newTasks.push({
+                    nodeKey: 'cleanup_misplaced_src_api',
+                    title: 'Remove misplaced src/api directory',
+                    instruction: `Remove misplaced src/api directory in ${cleanRelativePath} now that root api/index.js is configured.`,
+                    dependencies: [prevDep],
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        action: 'deleteDesktopPath',
+                        path: `${cleanRelativePath}/src/api`,
+                        kind: 'directory',
+                        ignoreMissing: true,
+                    },
+                });
+                prevDep = 'cleanup_misplaced_src_api';
+            }
+        } catch (_) {}
     }
 
     // Verify syntax with a SINGLE safe command (no chaining with &&)
     newTasks.push({
         nodeKey: 'verify_server_syntax',
         title: 'Verify server syntax',
-        instruction: 'Verify JavaScript syntax of app.js using node -c.',
+        instruction: `Verify JavaScript syntax of ${detectedExpressEntry} using node -c.`,
         dependencies: [prevDep],
         assignedTool: 'executeCommand',
         toolInput: {
-            command: 'node -c app.js',
+            command: `node -c ${detectedExpressEntry}`,
             cwd: desktopProjectPath,
             desktop: true,
         },

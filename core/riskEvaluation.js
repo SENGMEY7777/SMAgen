@@ -113,9 +113,31 @@ const evaluateTaskRisk = (task = {}) => {
     if (assignedTool === 'executeCommand' && toolInput.command) {
         const cwdContext = toolInput.cwd ? ` (cwd: ${toolInput.cwd})` : '';
         actionSummary = `${String(toolInput.command).trim()}${cwdContext}`.slice(0, 1000);
-    } else if (assignedTool === 'fileManager' && (toolInput.path || toolInput.destination)) {
-        const target = toolInput.destination ? `${toolInput.path || ''} -> ${toolInput.destination}` : toolInput.path;
-        actionSummary = `${action || 'fileManager'}: ${target}`.slice(0, 1000);
+    } else if (assignedTool === 'fileManager') {
+        if (toolInput.path || toolInput.destination) {
+            const target = toolInput.destination ? `${toolInput.path || ''} -> ${toolInput.destination}` : toolInput.path;
+            actionSummary = `${action || 'fileManager'}: ${target}`.slice(0, 1000);
+        } else if (Array.isArray(toolInput.files) && toolInput.files.length) {
+            const filePaths = toolInput.files
+                .map((entry) => (typeof entry === 'string' ? entry : (entry?.path || entry?.fileName || '')))
+                .filter(Boolean);
+            const joined = filePaths.join(', ');
+            actionSummary = `${action || 'createFiles'}: ${joined || `${toolInput.files.length} files`}`.slice(0, 1000);
+        } else if (toolInput.files && typeof toolInput.files === 'object') {
+            const filePaths = Object.keys(toolInput.files).filter(Boolean);
+            const joined = filePaths.join(', ');
+            actionSummary = `${action || 'createFiles'}: ${joined || 'files'}`.slice(0, 1000);
+        } else {
+            actionSummary = `${action || 'fileManager'}: ${String(
+                task.title || task.instruction || 'Unnamed task',
+            )}`.slice(0, 1000);
+        }
+    } else if (assignedTool === 'httpRequester' && toolInput.url) {
+        const method = String(toolInput.method || 'GET').toUpperCase();
+        actionSummary = `${method} ${toolInput.url}`.slice(0, 1000);
+    } else if (assignedTool === 'sshRequester' && toolInput.command) {
+        const host = toolInput.target || toolInput.host || 'remote';
+        actionSummary = `ssh ${host}: ${String(toolInput.command).trim()}`.slice(0, 1000);
     } else {
         actionSummary = `${assignedTool || 'Unknown tool'} task: ${String(
             task.title || task.instruction || 'Unnamed task',

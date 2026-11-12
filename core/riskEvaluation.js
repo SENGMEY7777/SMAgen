@@ -10,21 +10,11 @@ const RISK_LEVELS = {
     CRITICAL: 4,
 };
 
-const READ_ONLY_ACTIONS = new Set([
-    'read',
-    'list',
-    'search',
-    'get',
-    'listdesktopdirectory',
-    'list_desktop_directory',
-    'listdesktopfiles',
-    'list_desktop_files',
-]);
+const READ_ONLY_ACTIONS = new Set(['read', 'list', 'search', 'get']);
 const SAFE_COMMANDS = new Set(['cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc']);
 const HIGH_RISK_TOOLS = new Set([
     'databaseConnector',
     'httpRequester',
-    'sshRequester',
 ]);
 
 const DANGEROUS_PATTERNS = [
@@ -69,8 +59,6 @@ const getTaskText = (task, input) => {
         input.script,
         input.query,
         input.url,
-        input.target,
-        input.cwd,
     ]
         .filter((value) => value !== undefined && value !== null)
         .join(' ');
@@ -91,8 +79,9 @@ const evaluateTaskRisk = (task = {}) => {
     } else if (assignedTool === 'executeCommand') {
         const command = String(toolInput.command || '').trim();
         const commandName = command.split(/\s+/, 1)[0];
+        const isSafeReadOnlyGit = /^git\s+(?:status|log|diff|show|branch\s+--show-current|remote(?:\s+-v)?|rev-parse)\b/i.test(command);
 
-        if (SAFE_COMMANDS.has(commandName) && !DANGEROUS_PATTERNS.some((pattern) => pattern.test(command))) {
+        if ((SAFE_COMMANDS.has(commandName) || isSafeReadOnlyGit) && !DANGEROUS_PATTERNS.some((pattern) => pattern.test(command))) {
             riskLevel = 'LOW';
             reason = 'Read-only command can execute automatically';
         } else {
@@ -101,9 +90,7 @@ const evaluateTaskRisk = (task = {}) => {
         }
     } else if (HIGH_RISK_TOOLS.has(assignedTool)) {
         riskLevel = 'HIGH';
-        reason = assignedTool === 'sshRequester'
-            ? 'SSH remote commands always require human approval'
-            : `${assignedTool} can access external systems or execute sensitive operations`;
+        reason = `${assignedTool} can access external systems or execute sensitive operations`;
     } else if (assignedTool === 'fileManager' && !READ_ONLY_ACTIONS.has(action)) {
         riskLevel = 'MEDIUM';
         reason = 'File changes require human approval';
@@ -122,15 +109,26 @@ const evaluateTaskRisk = (task = {}) => {
         reason = 'Task input appears to contain a secret or credential';
     }
 
+    let actionSummary;
+    if (assignedTool === 'executeCommand' && toolInput.command) {
+        const cwdContext = toolInput.cwd ? ` (cwd: ${toolInput.cwd})` : '';
+        actionSummary = `${String(toolInput.command).trim()}${cwdContext}`.slice(0, 1000);
+    } else if (assignedTool === 'fileManager' && (toolInput.path || toolInput.destination)) {
+        const target = toolInput.destination ? `${toolInput.path || ''} -> ${toolInput.destination}` : toolInput.path;
+        actionSummary = `${action || 'fileManager'}: ${target}`.slice(0, 1000);
+    } else {
+        actionSummary = `${assignedTool || 'Unknown tool'} task: ${String(
+            task.title || task.instruction || 'Unnamed task',
+        ).slice(0, 1000)}`;
+    }
+
     return {
         riskLevel,
         riskScore: RISK_LEVELS[riskLevel],
         requiresApproval: riskLevel !== 'LOW',
         canExecute: riskLevel === 'LOW',
         reason,
-        actionSummary: `${assignedTool || 'Unknown tool'} task: ${String(
-            task.title || task.instruction || 'Unnamed task',
-        ).slice(0, 1000)}`,
+        actionSummary,
     };
 };
 

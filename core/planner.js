@@ -3734,6 +3734,47 @@ const ensureVueBuildToolingTasks = (tasks, goalPrompt) => {
     });
 };
 
+const detectProjectGitState = (cwdOrProjectPath = '') => {
+    const cleanRel = String(cwdOrProjectPath || '')
+        .trim()
+        .replace(/^[~\\/]*desktops?[\\/]+/i, '')
+        .replace(/[\\/]+$/, '');
+    let branch = 'main';
+    let hasUpstream = false;
+
+    if (!cleanRel) {
+        return { branch, hasUpstream };
+    }
+
+    try {
+        const gitDir = path.join(os.homedir(), 'Desktop', cleanRel, '.git');
+        const headPath = path.join(gitDir, 'HEAD');
+        if (fsSync.existsSync(headPath)) {
+            const headContent = fsSync.readFileSync(headPath, 'utf8').trim();
+            const refMatch = headContent.match(/^ref:\s*refs\/heads\/(.+)$/);
+            if (refMatch && refMatch[1]) {
+                branch = refMatch[1].trim();
+            }
+        }
+        const configPath = path.join(gitDir, 'config');
+        if (fsSync.existsSync(configPath)) {
+            const configContent = fsSync.readFileSync(configPath, 'utf8');
+            const escapedBranch = branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const branchSectionPattern = new RegExp(`\\[branch "${escapedBranch}"\\]([\\s\\S]*?)(?=\\n\\[|$)`, 'i');
+            const sectionMatch = configContent.match(branchSectionPattern);
+            if (sectionMatch && /\bremote\s*=/.test(sectionMatch[1]) && /\bmerge\s*=/.test(sectionMatch[1])) {
+                hasUpstream = true;
+            }
+        }
+    } catch (_) {}
+
+    return { branch, hasUpstream };
+};
+
+const formatStandardGitPushCommand = (branch = 'main', hasUpstream = false) => {
+    return hasUpstream ? `git push origin ${branch}` : `git push -u origin ${branch}`;
+};
+
 const extractDynamicTargetBranch = (goalPrompt = '') => {
     const text = String(goalPrompt || '');
     const explicitBranchMatch = text.match(/\b(?:branch\s+to|set\s+(?:default\s+)?branch(?:\s+to)?|rename\s+branch\s+to|switch\s+to|checkout\s+(?:-b\s+)?|push\s+to\s+branch)\s+["'`]?([a-zA-Z0-9_./-]+)["'`]?/i);
@@ -3765,16 +3806,17 @@ const normalizeGitBranchTasks = (tasks, goalPrompt = '') => {
         return cmd.includes('git branch -m') || cmd.includes('git checkout -b') || cmd.includes('git switch');
     });
 
-    // Ensure push command targets the requested branch or active HEAD dynamically instead of static 'main'
+    const gitState = detectProjectGitState(pushTask.toolInput?.cwd);
+    const effectiveBranch = targetBranch || gitState.branch || 'main';
     const currentPushCmd = String(pushTask.toolInput?.command || '').trim();
-    if (!targetBranch && /^git\s+push(?:\s+-u)?\s+origin\s+main$/i.test(currentPushCmd)) {
-        pushTask.toolInput.command = 'git push -u origin HEAD';
-        pushTask.title = 'Push changes to active remote branch';
-        pushTask.instruction = 'Push committed changes on the active branch to the remote repository.';
-    } else if (targetBranch && /^git\s+push/i.test(currentPushCmd)) {
-        pushTask.toolInput.command = `git push -u origin ${targetBranch}`;
-        pushTask.title = `Push changes to origin/${targetBranch}`;
-        pushTask.instruction = `Push committed changes to remote branch ${targetBranch}.`;
+    const isGenericHeadPush = /^git\s+push(?:\s+-u)?\s+origin\s+HEAD$/i.test(currentPushCmd);
+
+    if ((!targetBranch && (isGenericHeadPush || /^git\s+push(?:\s+-u)?\s+origin\s+main$/i.test(currentPushCmd)))
+        || (targetBranch && /^git\s+push/i.test(currentPushCmd))) {
+        const useUpstream = targetBranch ? true : !gitState.hasUpstream;
+        pushTask.toolInput.command = formatStandardGitPushCommand(effectiveBranch, !useUpstream);
+        pushTask.title = `Push changes to origin/${effectiveBranch}`;
+        pushTask.instruction = `Push committed changes to remote branch ${effectiveBranch}.`;
     }
 
     // Only inject a branch rename/switch task if the user explicitly requested changing to a specific branch
@@ -4067,15 +4109,17 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
             pushDep = 'git_branch_target';
         }
 
-        const pushBranchRef = targetBranch || 'HEAD';
+        const gitState = detectProjectGitState(cleanRelativePath);
+        const pushBranchRef = targetBranch || gitState.branch || 'main';
+        const standardPushCmd = formatStandardGitPushCommand(pushBranchRef, targetBranch ? false : gitState.hasUpstream);
         updatedTasks.push({
             nodeKey: 'git_push_deploy',
-            title: `Push changes to ${targetBranch ? `origin/${targetBranch}` : 'active remote branch'}`,
-            instruction: `Push committed changes to remote repository (${pushBranchRef}).`,
+            title: `Push changes to origin/${pushBranchRef}`,
+            instruction: `Push committed changes to remote branch ${pushBranchRef}.`,
             dependencies: [pushDep],
             assignedTool: 'executeCommand',
             toolInput: {
-                command: `git push -u origin ${pushBranchRef}`,
+                command: standardPushCmd,
                 cwd: desktopProjectPath,
                 desktop: true,
             },
@@ -4229,15 +4273,17 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
         pushDep = 'git_branch_target';
     }
 
-    const pushBranchRef = targetBranch || 'HEAD';
+    const gitState = detectProjectGitState(cleanRelativePath);
+    const pushBranchRef = targetBranch || gitState.branch || 'main';
+    const standardPushCmd = formatStandardGitPushCommand(pushBranchRef, targetBranch ? false : gitState.hasUpstream);
     newTasks.push({
         nodeKey: 'git_push_deploy',
-        title: `Push changes to ${targetBranch ? `origin/${targetBranch}` : 'active remote branch'}`,
+        title: `Push changes to origin/${pushBranchRef}`,
         instruction: `Push commit to remote repository (${pushBranchRef}) to trigger live deployment.`,
         dependencies: [pushDep],
         assignedTool: 'executeCommand',
         toolInput: {
-            command: `git push -u origin ${pushBranchRef}`,
+            command: standardPushCmd,
             cwd: desktopProjectPath,
             desktop: true,
         },
@@ -4276,7 +4322,9 @@ const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
     const desktopProjectPath = `Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
     const dynamicCommitMsg = generateDynamicCommitMessage(goalPrompt, tasks);
     const targetBranch = extractDynamicTargetBranch(goalPrompt);
-    const pushBranchRef = targetBranch || 'HEAD';
+    const gitState = detectProjectGitState(projectPath);
+    const pushBranchRef = targetBranch || gitState.branch || 'main';
+    const standardPushCmd = formatStandardGitPushCommand(pushBranchRef, targetBranch ? false : gitState.hasUpstream);
 
     const workflowTasks = [
         {
@@ -4336,12 +4384,12 @@ const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
 
     workflowTasks.push({
         nodeKey: 'git_push_deploy',
-        title: `Push changes to ${targetBranch ? `origin/${targetBranch}` : 'active remote branch'}`,
+        title: `Push changes to origin/${pushBranchRef}`,
         instruction: `Push commit to remote repository (${pushBranchRef}).`,
         dependencies: [pushDep],
         assignedTool: 'executeCommand',
         toolInput: {
-            command: `git push -u origin ${pushBranchRef}`,
+            command: standardPushCmd,
             cwd: desktopProjectPath,
             desktop: true,
         },
@@ -6387,7 +6435,7 @@ Rules:
 - For requests to generate a visual image, logo, icon, banner, illustration, or artwork, assign imageGenerator. Do not answer with a textual design description or use fileManager to create an SVG unless the user explicitly requests source code.
 - When the user asks to "add file <filename>" (e.g. "add file main.java", "add file app.js", "create file"), this means CREATE/WRITE a new file using fileManager. Do NOT run git add, git commit, or execute git commands for file creation requests unless the user explicitly requested Git/GitHub operations.
 - STRICT DEPLOYMENT & VERCEL RULE: NEVER generate 'vercel.json', 'api/index.js', or serverless deployment configurations unless the user explicitly and directly asks to deploy to Vercel or fix a Vercel deployment (e.g. "deploy to vercel", "fix vercel deployment"). For normal feature development, coding, adding files, building applications, or working in existing projects, NEVER create, modify, or delete vercel.json or api/index.js.
-- For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. Check repository status and current branch (git status, git branch --show-current), initialize Git only if needed (git init), stage files (git add .), and generate a dynamic Conventional Commit message describing the actual changes (e.g. git commit -m "fix(vercel): ..." or "feat: ..."). Only rename or switch branches when explicitly requested by the user; otherwise push dynamically to the active branch (git push -u origin HEAD).
+- For Git and GitHub requests (e.g. "git init", "commit", "push this project to github", "create repo on github"): ALWAYS set cwd to the top-level project root folder (e.g. Desktop/<project> with desktop: true). Never set cwd to an internal subfolder. Check repository status and current branch (git status, git branch --show-current), initialize Git only if needed (git init), stage files (git add .), and generate a dynamic Conventional Commit message describing the actual changes (e.g. git commit -m "fix(vercel): ..." or "feat: ..."). Only rename or switch branches when explicitly requested by the user; otherwise use standard git push commands with the active branch name (e.g. git push origin main, or git push -u origin main if no upstream exists yet).
 - When the user provides a deployment or API URL (e.g. https://... or .vercel.app) and asks to review, test, or modify the URL or server: NEVER bind or modify an unrelated local project (such as Blockchain or any previous project) unless the user explicitly named that project or context matches. NEVER use executeCommand to 'grep' for the deployment domain string across the codebase (e.g. do NOT run 'grep -rn sample-res-tful-api.vercel.app .'); remote hostnames are hosted externally and will never exist inside local source files. To test or review the live endpoint, use 'httpRequester' with method 'GET' and toolInput.allowFailure=true. When the prompt also asks to modify or fix the server: if a target project folder is provided or matched (e.g. on Desktop), plan subsequent steps to inspect the server entry files (app.js, server.js, index.js), add or fix the missing route (such as adding app.get('/', ...) to resolve Express 'Cannot GET /' 404 errors), and verify syntax with node -c. If no local code exists or only the live URL is tested, report the root-cause diagnosis clearly.
 - When asked to inspect, profile, or calculate remote server resources (CPU, RAM, storage, disk, or memory usage): For a configured remote target, plan diagnostic tasks using 'sshRequester' (e.g. command 'free -m' for RAM, 'df -hT' for storage, 'lscpu' for CPU cores, or 'uptime' for load average) to collect accurate server hardware telemetry.
 - Never add '|| true', '|| exit 0', redirects, or chained operators to executeCommand commands; keep every command as a single clean executable command.

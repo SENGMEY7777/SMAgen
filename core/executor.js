@@ -1175,6 +1175,23 @@ const fileManager = async (input, workspacePath, task = {}) => {
                     }
                 } catch (_) {}
             }
+
+            if (!foundOnDesktop && ['create', 'write', 'update', 'append'].includes(action)) {
+                try {
+                    const cleanPath = String(input.path || '').replace(/^desktop[\\/]+/i, '').trim();
+                    const segments = cleanPath.split(/[\\/]/).filter(Boolean);
+                    if (segments.length >= 2) {
+                        const desktopProjectDir = await resolveLocalDesktopPath(segments[0]);
+                        const desktopProjectStats = await readExistingPathStats(desktopProjectDir);
+                        const workspaceProjectStats = await readExistingPathStats(path.join(workspacePath, segments[0]));
+                        if (desktopProjectStats && desktopProjectStats.isDirectory() && !workspaceProjectStats) {
+                            filePath = await resolveLocalDesktopPath(cleanPath);
+                            foundOnDesktop = true;
+                            isDesktopTarget = true;
+                        }
+                    }
+                } catch (_) {}
+            }
         }
 
         if (!foundOnDesktop) {

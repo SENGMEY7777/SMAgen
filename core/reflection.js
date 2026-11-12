@@ -94,6 +94,22 @@ const getNonRepairableFailureReason = ({task, error, errorTrace}) => {
         return 'Local file removal is deterministic and does not require AI repair.';
     }
 
+    if (code === 'COMMAND_CWD_NOT_FOUND' || code === 'GIT_PROJECT_NOT_FOUND' || /target working directory does not exist/.test(text)) {
+        return 'The target project directory does not exist; specify an existing project folder on Desktop or create it first.';
+    }
+
+    if (code === 'EXECUTABLE_NOT_FOUND' || /was not found in execution path/.test(text)) {
+        return 'The required command executable is missing from the backend execution PATH; verify installation and restart the backend.';
+    }
+
+    if (code === 'GIT_REMOTE_NOT_CONFIGURED' || /does not appear to be a git repository|no configured push destination|remote '.*' is not configured/.test(text)) {
+        return 'No Git remote (origin) is configured for this repository; add a GitHub remote URL before pushing.';
+    }
+
+    if (code === 'GIT_PUSH_AUTH_REQUIRED' || /github authentication required/.test(text)) {
+        return 'Git push requires GitHub credentials (SSH key or GITHUB_TOKEN) configured on the host.';
+    }
+
     if (code === 'SERVER_FILE_ACCESS_READ_ONLY' || /server file access is read-only/.test(text)) {
         return 'The server is configured for read-only file access.';
     }

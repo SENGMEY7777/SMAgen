@@ -305,6 +305,13 @@ const resolveLocalDesktopPath = async (requestedPath) => {
                 }
 
                 const rootOnlyItems = new Set([
+                    'api',
+                    'data',
+                    'vercel.json',
+                    '.vercel',
+                    '.env.local',
+                    'netlify',
+                    'netlify.toml',
                     'package.json',
                     'package-lock.json',
                     'pnpm-lock.yaml',

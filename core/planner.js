@@ -942,7 +942,15 @@ const shouldExportWorkspaceToDesktop = (goalPrompt, tasks) => {
 };
 
 const normalizeLocalExportTasks = (tasks, goalPrompt) => {
-    if (!isExplicitDesktopWriteRequest(goalPrompt)) {
+    const hasDirectDesktopAction = tasks.some((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        return action === 'createdesktopfile'
+            || action === 'create_desktop_file'
+            || action === 'createdesktopfiles'
+            || action === 'create_desktop_files';
+    });
+
+    if (!isExplicitDesktopWriteRequest(goalPrompt) && !hasDirectDesktopAction) {
         return tasks;
     }
 
@@ -950,10 +958,13 @@ const normalizeLocalExportTasks = (tasks, goalPrompt) => {
     const requestedDesktopPath = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
     );
-    const hasDirectDesktopFileOutput = tasks.some((task) => {
+    const hasDirectDesktopFileOutput = hasDirectDesktopAction || tasks.some((task) => {
         const tool = String(task.assignedTool || '').trim().toLowerCase();
         const action = String(task.toolInput?.action || '').trim().toLowerCase();
-        if (action === 'createdesktopfile' || action === 'create_desktop_file') {
+        if (action === 'createdesktopfile'
+            || action === 'create_desktop_file'
+            || action === 'createdesktopfiles'
+            || action === 'create_desktop_files') {
             return true;
         }
 
@@ -4017,7 +4028,10 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
             }
         }
         if (!projectPath && /sample-res-tful-api/i.test(targetUrl)) {
-            projectPath = 'Api-Productions/Sample-RESTful-API-';
+            const legacyCandidate = path.join(os.homedir(), 'Desktop', 'Api-Productions', 'Sample-RESTful-API-');
+            if (fsSync.existsSync(legacyCandidate)) {
+                projectPath = 'Api-Productions/Sample-RESTful-API-';
+            }
         }
     }
 
@@ -4315,32 +4329,154 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     return newTasks;
 };
 
-const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
+const isGitPushGoalPrompt = (goalPrompt) => {
     const text = String(goalPrompt || '').trim();
-    if (!text) return tasks;
-
-    const isGitPushIntent = /\b(?:push|deploy|publish)\b.*\b(?:github|git|remote|origin|repo)\b/i.test(text)
+    if (!text) return false;
+    return /\b(?:push|deploy|publish)\b.*\b(?:github|git|remote|origin|repo)\b/i.test(text)
         || /\b(?:git\s+push|push\s+to\s+github|deploy\s+to\s+github|push\s+code)\b/i.test(text)
         || /^[\s\w]*push[\s\w]*github[\s\w]*$/i.test(text);
+};
 
-    if (!isGitPushIntent) return tasks;
+const findExistingDesktopDirectory = (candidatePath) => {
+    if (!candidatePath || typeof candidatePath !== 'string') return null;
 
-    let projectPath = null;
-    const dest = normalizeLocalDestination(localDestination);
-    if (dest?.relativePath) {
-        projectPath = dest.relativePath;
-    } else {
-        for (const t of tasks) {
-            const candidate = t.toolInput?.cwd || t.toolInput?.path;
-            if (typeof candidate === 'string' && candidate.toLowerCase().includes('sample-res-tful-api')) {
-                projectPath = candidate.replace(/^desktop[\\/]+/i, '').replace(/[\\/]+$/, '');
-                break;
+    let rel = candidatePath
+        .trim()
+        .replace(/^['"`]|['"`]$/g, '')
+        .replace(/\\/g, '/')
+        .replace(/^(?:~\/|\/Users\/[^/]+\/)?Desktop\/+/i, '')
+        .replace(/^\/+|\/+$/g, '');
+
+    if (!rel || rel === '.' || rel.split('/').includes('..')) return null;
+
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+    const checkDir = (relativeCandidate) => {
+        const cleanRel = String(relativeCandidate || '').replace(/^\/+|\/+$/g, '');
+        if (!cleanRel || cleanRel === '.' || cleanRel.split('/').includes('..')) return null;
+        const abs = path.resolve(desktopRoot, cleanRel);
+        if (!abs.startsWith(desktopRoot + path.sep)) return null;
+        try {
+            if (fsSync.statSync(abs).isDirectory()) {
+                return cleanRel;
+            }
+        } catch (_) {}
+        return null;
+    };
+
+    const direct = checkDir(rel);
+    if (direct) return direct;
+
+    // Strip trailing file segment (e.g. Mini-Mart/src/app.js -> Mini-Mart/src or Mini-Mart)
+    if (rel.includes('/')) {
+        let cursor = path.posix.dirname(rel);
+        while (cursor && cursor !== '.' && cursor !== '/') {
+            const abs = path.resolve(desktopRoot, cursor);
+            try {
+                if (fsSync.statSync(abs).isDirectory()) {
+                    if (fsSync.existsSync(path.join(abs, '.git')) || fsSync.existsSync(path.join(abs, 'package.json'))) {
+                        return cursor;
+                    }
+                }
+            } catch (_) {}
+            const parent = path.posix.dirname(cursor);
+            if (parent === cursor) break;
+            cursor = parent;
+        }
+        const parentDir = checkDir(path.posix.dirname(rel));
+        if (parentDir) return parentDir;
+    }
+
+    return null;
+};
+
+const listDesktopGitProjectsSync = () => {
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+    const repos = [];
+    const seen = new Set();
+
+    const addIfGitRepo = (relativePath) => {
+        if (seen.has(relativePath)) return;
+        const gitPath = path.join(desktopRoot, relativePath, '.git');
+        try {
+            if (fsSync.existsSync(gitPath)) {
+                seen.add(relativePath);
+                repos.push(relativePath);
+            }
+        } catch (_) {}
+    };
+
+    try {
+        const entries = fsSync.readdirSync(desktopRoot, {withFileTypes: true});
+        for (const entry of entries) {
+            if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.length < 2) continue;
+            addIfGitRepo(entry.name);
+
+            if (['api-productions', 'projects', 'apps', 'code', 'apis', 'services', 'servers'].includes(entry.name.toLowerCase()) || entry.name.includes('-')) {
+                try {
+                    const subEntries = fsSync.readdirSync(path.join(desktopRoot, entry.name), {withFileTypes: true});
+                    for (const sub of subEntries) {
+                        if (sub.isDirectory() && !sub.name.startsWith('.') && sub.name.length >= 2) {
+                            addIfGitRepo(`${entry.name}/${sub.name}`);
+                        }
+                    }
+                } catch (_) {}
             }
         }
-        if (!projectPath) {
-            projectPath = 'Api-Productions/Sample-RESTful-API-';
+    } catch (_) {}
+
+    return repos;
+};
+
+const resolveGitPushProjectPath = (tasks = [], goalPrompt = '', localDestination = '') => {
+    const dest = normalizeLocalDestination(localDestination);
+    if (dest?.relativePath) {
+        const verifiedDest = findExistingDesktopDirectory(dest.relativePath);
+        if (verifiedDest) {
+            return verifiedDest;
         }
     }
+
+    const inferredDir = inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt);
+    if (inferredDir) {
+        const verifiedInferred = findExistingDesktopDirectory(inferredDir);
+        if (verifiedInferred) {
+            return verifiedInferred;
+        }
+    }
+
+    for (const t of Array.isArray(tasks) ? tasks : []) {
+        const candidate = t?.toolInput?.cwd || t?.toolInput?.workingDirectory || t?.toolInput?.path || t?.toolInput?.desktopPath;
+        const verifiedTaskDir = findExistingDesktopDirectory(candidate);
+        if (verifiedTaskDir) {
+            return verifiedTaskDir;
+        }
+    }
+
+    const gitRepos = listDesktopGitProjectsSync();
+    if (gitRepos.length === 1) {
+        return gitRepos[0];
+    }
+
+    let message = '';
+    if (dest?.relativePath) {
+        message = `Target project folder "Desktop/${dest.relativePath}" does not exist on Desktop. Verify the folder name or select an existing project before pushing to GitHub.`;
+    } else if (gitRepos.length > 1) {
+        message = `Multiple Git projects were found on Desktop (${gitRepos.slice(0, 6).join(', ')}). Specify the project folder to push (for example: "push Desktop/${gitRepos[0]} to github") or select the project first.`;
+    } else {
+        message = 'No existing Git project folder on Desktop was specified or found for push. Specify the Desktop project folder (for example: "push Desktop/My-Project to github") or initialize Git in your project first.';
+    }
+
+    const err = new Error(message);
+    err.code = 'GIT_PROJECT_NOT_FOUND';
+    err.status = 400;
+    throw err;
+};
+
+const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
+    const text = String(goalPrompt || '').trim();
+    if (!isGitPushGoalPrompt(text)) return tasks;
+
+    const projectPath = resolveGitPushProjectPath(tasks, goalPrompt, localDestination);
 
     const desktopProjectPath = `Desktop/${projectPath.replace(/^desktop[\\/]+/i, '')}`;
     const dynamicCommitMsg = generateDynamicCommitMessage(goalPrompt, tasks);
@@ -6732,7 +6868,7 @@ const findMatchingDesktopProject = async (goalPrompt) => {
     return null;
 };
 
-const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt) => {
+const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt, {hasImages = false} = {}) => {
     if (!LOCAL_DESKTOP_OUTPUT_ENABLED) return '';
     const destination = normalizeLocalDestination(localDestination);
     if (!destination || destination.location !== 'Desktop' || !destination.relativePath) {
@@ -6740,7 +6876,8 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt)
     }
 
     const text = String(goalPrompt || '');
-    const isDebugOrFix = /\b(?:fix|bug|error|crash|repair|debug|troubleshoot|broken|cannot\s+find\s+module|module_not_found|eaddrinuse|enoent|typeerror|syntaxerror|referenceerror|exception|stack|failed)\b/i.test(text);
+    const isDebugOrFix = hasImages
+        || /\b(?:fix|bug|error|crash|repair|debug|troubleshoot|broken|cannot\s+find\s+module|module_not_found|eaddrinuse|enoent|typeerror|syntaxerror|referenceerror|exception|stack|failed)\b/i.test(text);
     if (!isDebugOrFix) {
         return '';
     }
@@ -6972,12 +7109,38 @@ const planWorkflowRun = async ({
             effectiveDestination = await findMatchingDesktopProject(goalPrompt);
         }
     }
-    const diagnosticSnapshot = await buildLocalProjectDiagnosticSnapshot(effectiveDestination, goalPrompt);
+    if (!effectiveDestination && isGitPushGoalPrompt(goalPrompt)) {
+        const gitProjects = listDesktopGitProjectsSync();
+        if (gitProjects.length === 1) {
+            effectiveDestination = `Desktop/${gitProjects[0]}`;
+        }
+    }
+    const hasImages = Array.isArray(images) && images.length > 0;
+    const isStandaloneGitPush = isGitPushGoalPrompt(goalPrompt)
+        && !hasImages
+        && !/https?:\/\//i.test(String(goalPrompt || ''))
+        && !/\b(?:create|fix|update|modify|edit|add|write|build|refactor|remove|delete|setup)\b/i.test(String(goalPrompt || ''));
+    const diagnosticSnapshot = await buildLocalProjectDiagnosticSnapshot(effectiveDestination, goalPrompt, {hasImages});
     const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination, diagnosticSnapshot);
     const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;
 
-    if (!diagnosticSnapshot && planCache.has(cacheKey)) {
+    if (isStandaloneGitPush) {
+        try {
+            const gitPushTasks = normalizeGitPushWorkflowTasks([], goalPrompt, effectiveDestination);
+            const resolvedCwd = gitPushTasks[0]?.toolInput?.cwd || effectiveDestination || 'Project';
+            validatedPlan = {
+                workflowTitle: `Push ${String(resolvedCwd).replace(/^desktop[\\/]+/i, '')} to GitHub`,
+                summary: `Stage, commit, and push updates in ${resolvedCwd} to GitHub.`,
+                tasks: gitPushTasks,
+            };
+        } catch (gitResolveError) {
+            await updateExecutionRunStatus(runId, 'FAILED');
+            throw gitResolveError;
+        }
+    }
+
+    if (!validatedPlan && !diagnosticSnapshot && !hasImages && planCache.has(cacheKey)) {
         console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
         const cached = planCache.get(cacheKey);
         validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
@@ -7179,6 +7342,7 @@ ${largeTreeInstruction}
                 const errorCode = Number(error.code);
                 const shouldStopPlannerRetries = [
                     'LLM_ERROR',
+                    'GIT_PROJECT_NOT_FOUND',
                 ].includes(error.code)
                     || [400, 401, 403].includes(errorCode)
                     || [400, 401, 403].includes(Number(error.status));
@@ -7195,30 +7359,34 @@ ${largeTreeInstruction}
             }
         }
 
-        if (!validatedPlan) {
-            let fallbackTasks = normalizeServerReviewAndFixTasks([], goalPrompt, effectiveDestination);
-            if (!fallbackTasks || !fallbackTasks.length) {
-                fallbackTasks = normalizeGitPushWorkflowTasks([], goalPrompt, effectiveDestination);
-            }
-            if (fallbackTasks && fallbackTasks.length > 0) {
-                console.log(`🛡️ [Planner Resilience] Using deterministic plan for ${goalPrompt}`);
-                fallbackTasks = fallbackTasks.map((t) => {
-                    if (t.assignedTool === 'executeCommand' && typeof t.toolInput?.command === 'string' && /[\r\n]/.test(t.toolInput.command)) {
-                        return {
-                            ...t,
-                            toolInput: {
-                                ...t.toolInput,
-                                command: t.toolInput.command.replace(/[\r\n]+/g, ' ').trim(),
-                            },
-                        };
-                    }
-                    return t;
-                });
-                validatedPlan = {
-                    workflowTitle: `Deploy to GitHub for ${effectiveDestination || 'Project'}`,
-                    summary: `Autonomously stage, commit, and push changes to GitHub.`,
-                    tasks: fallbackTasks,
-                };
+        if (!validatedPlan && lastPlannerError?.code !== 'GIT_PROJECT_NOT_FOUND') {
+            try {
+                let fallbackTasks = normalizeServerReviewAndFixTasks([], goalPrompt, effectiveDestination);
+                if (!fallbackTasks || !fallbackTasks.length) {
+                    fallbackTasks = normalizeGitPushWorkflowTasks([], goalPrompt, effectiveDestination);
+                }
+                if (fallbackTasks && fallbackTasks.length > 0) {
+                    console.log(`🛡️ [Planner Resilience] Using deterministic plan for ${goalPrompt}`);
+                    fallbackTasks = fallbackTasks.map((t) => {
+                        if (t.assignedTool === 'executeCommand' && typeof t.toolInput?.command === 'string' && /[\r\n]/.test(t.toolInput.command)) {
+                            return {
+                                ...t,
+                                toolInput: {
+                                    ...t.toolInput,
+                                    command: t.toolInput.command.replace(/[\r\n]+/g, ' ').trim(),
+                                },
+                            };
+                        }
+                        return t;
+                    });
+                    validatedPlan = {
+                        workflowTitle: `Deploy to GitHub for ${effectiveDestination || 'Project'}`,
+                        summary: `Autonomously stage, commit, and push changes to GitHub.`,
+                        tasks: fallbackTasks,
+                    };
+                }
+            } catch (fallbackError) {
+                lastPlannerError = fallbackError;
             }
         }
 
@@ -7227,8 +7395,8 @@ ${largeTreeInstruction}
 
             const errorMessage = lastPlannerError?.message || 'Failed to generate a valid acyclic DAG plan after maximum attempts.';
             const error = new Error(errorMessage);
-            error.code = lastPlannerError?.code === 'LLM_INVALID_JSON'
-                ? 'LLM_INVALID_JSON'
+            error.code = ['LLM_INVALID_JSON', 'GIT_PROJECT_NOT_FOUND'].includes(lastPlannerError?.code)
+                ? lastPlannerError.code
                 : [408, 500, 502, 503, 504].includes(Number(lastPlannerError?.code))
                     || ['LLM_UNAVAILABLE', 'LLM_ERROR', 'LLM_TIMEOUT'].includes(lastPlannerError?.code)
                     ? 'LLM_UNAVAILABLE'

@@ -1,4 +1,5 @@
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const os = require('os');
 const path = require('path');
 const axios = require('axios');
@@ -2190,31 +2191,50 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             } catch (_) {}
         }
 
-        gitEnv = gitCreds ? {
-            GIT_AUTHOR_NAME: gitCreds.authorName,
-            GIT_AUTHOR_EMAIL: gitCreds.authorEmail,
-            GIT_COMMITTER_NAME: gitCreds.committerName,
-            GIT_COMMITTER_EMAIL: gitCreds.committerEmail,
+        const gitConfigEntries = [
+            { key: 'safe.directory', value: '*' },
+        ];
+        if (gitCreds?.githubToken) {
+            gitConfigEntries.push({
+                key: 'http.https://github.com/.extraheader',
+                value: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${gitCreds.githubToken.trim()}`).toString('base64')}`,
+            });
+        }
+        const gitConfigEnv = {
+            GIT_CONFIG_COUNT: String(gitConfigEntries.length),
+            ...(gitCreds?.githubToken ? { GIT_ASKPASS: 'echo' } : {}),
+        };
+        gitConfigEntries.forEach((entry, idx) => {
+            gitConfigEnv[`GIT_CONFIG_KEY_${idx}`] = entry.key;
+            gitConfigEnv[`GIT_CONFIG_VALUE_${idx}`] = entry.value;
+        });
+
+        gitEnv = {
+            GIT_AUTHOR_NAME: gitCreds?.authorName || 'Kairo Bot',
+            GIT_AUTHOR_EMAIL: gitCreds?.authorEmail || 'bot@kairo.ai',
+            GIT_COMMITTER_NAME: gitCreds?.committerName || 'Kairo Bot',
+            GIT_COMMITTER_EMAIL: gitCreds?.committerEmail || 'bot@kairo.ai',
             GIT_TERMINAL_PROMPT: '0',
             GIT_SSH_COMMAND: sshCommand,
-            ...(gitCreds.githubToken ? {
-                GIT_ASKPASS: 'echo',
-                GIT_CONFIG_COUNT: '1',
-                GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-                GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${gitCreds.githubToken.trim()}`).toString('base64')}`,
-            } : {}),
-        } : {};
+            ...gitConfigEnv,
+        };
 
         // If pushing to GitHub via HTTPS but user has SSH keys and no token, auto-convert to SSH URL
         if (commandName === 'git' && args[0] === 'push' && effectiveCwd && hasSshKey && !gitCreds?.githubToken) {
             try {
-                const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd: effectiveCwd, timeout: 2000 })
-                    .then((r) => r.stdout.trim())
-                    .catch(() => '');
+                const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+                    cwd: effectiveCwd,
+                    timeout: 2000,
+                    env: { ...process.env, PATH: commandPath, ...gitEnv },
+                }).then((r) => r.stdout.trim()).catch(() => '');
                 const httpsMatch = originUrl.match(/https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
                 if (httpsMatch) {
                     const sshUrl = `git@github.com:${httpsMatch[1]}/${httpsMatch[2]}.git`;
-                    await execFileAsync('git', ['remote', 'set-url', 'origin', sshUrl], { cwd: effectiveCwd, timeout: 2000 }).catch(() => {});
+                    await execFileAsync('git', ['remote', 'set-url', 'origin', sshUrl], {
+                        cwd: effectiveCwd,
+                        timeout: 2000,
+                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                    }).catch(() => {});
                 }
             } catch (_) {}
         }
@@ -2349,9 +2369,11 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
             if (/Permission denied/i.test(combined) || /could not read/i.test(combined) || /terminal prompts disabled/i.test(combined) || /Authentication failed/i.test(combined)) {
                 try {
-                    const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], { cwd: effectiveCwd, timeout: 2000 })
-                        .then((r) => r.stdout.trim())
-                        .catch(() => '');
+                    const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+                        cwd: effectiveCwd,
+                        timeout: 2000,
+                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                    }).then((r) => r.stdout.trim()).catch(() => '');
                     const httpsMatch = originUrl.match(/https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
                     const sshMatch = originUrl.match(/git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
                     const owner = (httpsMatch || sshMatch)?.[1];
@@ -2361,7 +2383,11 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         // 1. Try SSH push if user has SSH keys configured
                         if (hasSshKey) {
                             const sshUrl = `git@github.com:${owner}/${repo}.git`;
-                            await execFileAsync('git', ['remote', 'set-url', 'origin', sshUrl], { cwd: effectiveCwd, timeout: 2000 }).catch(() => {});
+                            await execFileAsync('git', ['remote', 'set-url', 'origin', sshUrl], {
+                                cwd: effectiveCwd,
+                                timeout: 2000,
+                                env: { ...process.env, PATH: commandPath, ...gitEnv },
+                            }).catch(() => {});
                             const retryResult = await execFileAsync('git', ['push', '-u', 'origin', 'main'], {
                                 cwd: effectiveCwd,
                                 timeout: COMMAND_TIMEOUT_MS,

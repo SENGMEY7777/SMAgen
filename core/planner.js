@@ -302,12 +302,26 @@ const INVALID_REMOVAL_TARGETS = new Set([
 ]);
 
 const isStructureCleanupRequest = (value) => {
+    const raw = String(value || '');
+    // Project creation requests and explicit project trees (even when listing
+    // HTTP DELETE endpoints alongside a src/ directory) are never cleanup tasks.
+    if (
+        /[├└│─]/.test(raw)
+        || /\b(?:explicit\s+project\s+tree|tree\s+layout)\b/i.test(raw)
+        || /\b(?:create|build|generate|setup|scaffold|develop|implement)\s+[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(raw)
+    ) {
+        return false;
+    }
+
     // "Clean layered architecture" is an architecture quality adjective, not
     // a request to delete or reorganize an existing project structure.
-    const text = String(value || '')
-        .replace(/\bclean\s+(?:layered\s+)?architecture\b/gi, '');
+    // Strip REST DELETE endpoint docs before inspecting removal keywords.
+    const text = raw
+        .replace(/\bclean\s+(?:layered\s+)?architecture\b/gi, '')
+        .replace(/\b(?:GET|POST|PUT|PATCH|DELETE)\s+\/[^\s)]*/g, '')
+        .replace(/\b(?:on\s+delete\s+(?:cascade|set\s+null|restrict|no\s+action)|delete\s+(?:endpoint|route|method|record|item|row|entry)|http\s+delete)\b/gi, '');
     return /\b(?:cleanup|clean\s*up|reorganize|refactor|modify\s+structure|fix\s+structure|remove\s+redundant|remove\s+empty|delete\s+redundant|structure\s+project\s+to\s+clean|clean\s+structure)\b/i.test(text)
-        || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|src|redundant|empty|schema)\b/i.test(text));
+        || (/\b(?:remove|delete)\b/i.test(text) && /\b(?:still\s+have|redundant|empty|unused|unneeded)\b/i.test(text));
 };
 
 const extractRemovalTarget = (value) => {
@@ -1457,12 +1471,26 @@ const extractProjectTreeLayout = (goalPrompt) => {
     const directories = new Set();
     const files = new Set();
     const directoryStack = [];
+    let rootName = null;
+    let previousNonEmptyLine = '';
     const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+#.*)?$/;
+    const treeRootHeaderPattern = /^([A-Za-z0-9][A-Za-z0-9._-]*)\/\s*(?:#.*)?$/;
 
     for (const line of String(goalPrompt || '').split(/\r?\n/)) {
+        const trimmedLine = line.trim();
         const match = line.match(treeEntryPattern);
         if (!match) {
+            if (trimmedLine) {
+                previousNonEmptyLine = trimmedLine;
+            }
             continue;
+        }
+
+        if (!rootName && previousNonEmptyLine) {
+            const headerMatch = previousNonEmptyLine.match(treeRootHeaderPattern);
+            if (headerMatch && headerMatch[1] && !headerMatch[1].includes('.')) {
+                rootName = headerMatch[1];
+            }
         }
 
         const depth = (match[1].match(/(?:│|\|)\s{3}| {4}/g) || []).length;
@@ -1510,6 +1538,7 @@ const extractProjectTreeLayout = (goalPrompt) => {
     }
 
     return {
+        rootName,
         directories: [...directories],
         files: [...files],
     };
@@ -6162,18 +6191,54 @@ const planWorkflowRun = async ({
         }
     } else {
         // Check if goalPrompt explicitly specifies a project name or project tree layout
+        const GENERIC_SUBFOLDER_NAMES = new Set([
+            'data', 'src', 'public', 'config', 'configs', 'controllers', 'controller',
+            'models', 'model', 'routes', 'route', 'services', 'service', 'middlewares',
+            'middleware', 'validators', 'validator', 'utils', 'util', 'helpers',
+            'views', 'tests', 'test', 'dist', 'build', 'assets', 'css', 'js',
+            'scripts', 'app', 'api', 'lib', 'uploads', 'migrations', 'seeders',
+            'constants', 'jobs',
+        ]);
+        const IGNORED_PROJECT_WORDS = new Set([
+            'the', 'this', 'a', 'an', 'new', 'for', 'our', 'all', 'any',
+            'your', 'my', 'local', 'desktop', 'folder', 'directory', 'project',
+        ]);
+
         const explicitTree = extractProjectTreeLayout(goalPrompt);
-        const treeRoot = explicitTree.directories[0]?.split('/')[0]
+        const namedFolderMatch = String(goalPrompt || '').match(
+            /\b(?:folder|directory|project)\s+(?:named|called|name(?:\s+is|['’]s)?)\s*[:=-]?\s*["'`*]?([A-Za-z0-9][A-Za-z0-9._-]{1,})["'`*]?/i,
+        );
+        const calledMatch = namedFolderMatch || String(goalPrompt || '').match(
+            /\b(?:called|named)\s+["'`*]?([A-Za-z0-9][A-Za-z0-9._-]{1,})["'`*]?/i,
+        );
+        const proseProjectName = (
+            calledMatch
+            && !IGNORED_PROJECT_WORDS.has(calledMatch[1].toLowerCase())
+            && !GENERIC_SUBFOLDER_NAMES.has(calledMatch[1].toLowerCase())
+        ) ? calledMatch[1] : null;
+
+        const treeRootHeader = (
+            explicitTree.rootName
+            && explicitTree.rootName.length >= 2
+            && !explicitTree.rootName.includes('.')
+            && !GENERIC_SUBFOLDER_NAMES.has(explicitTree.rootName.toLowerCase())
+        ) ? explicitTree.rootName : null;
+
+        const firstTreeDir = explicitTree.directories[0]?.split('/')[0]
             || (explicitTree.files[0]?.includes('/') ? explicitTree.files[0].split('/')[0] : null);
-        const treeProjectName = (treeRoot && treeRoot.length >= 2 && !treeRoot.includes('.')) ? treeRoot : null;
-        const calledMatch = String(goalPrompt || '').match(/\b(?:called|named|project)\s+[*"`']*([a-zA-Z0-9_-]{2,})[*"`']*/i);
-        const explicitProjectName = treeProjectName
-            || (calledMatch && !['the', 'this', 'a', 'an', 'new', 'for', 'our', 'all', 'any'].includes(calledMatch[1].toLowerCase()) ? calledMatch[1] : null);
+        const treeProjectName = (
+            firstTreeDir
+            && firstTreeDir.length >= 2
+            && !firstTreeDir.includes('.')
+            && !GENERIC_SUBFOLDER_NAMES.has(firstTreeDir.toLowerCase())
+        ) ? firstTreeDir : null;
+
+        const explicitProjectName = proseProjectName || treeRootHeader || treeProjectName;
 
         if (explicitProjectName) {
             const explicitNorm = explicitProjectName.toLowerCase().replace(/[^a-z0-9]/g, '');
             const destNorm = String(effectiveDestination || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            // If current effectiveDestination belongs to an entirely different project (e.g. Coffee-Shop-API vs SmartPOS), override it!
+            // If current effectiveDestination belongs to an entirely different project (e.g. Coffee-Shop-API vs Airpord), override it!
             if (!destNorm || (!destNorm.includes(explicitNorm) && !explicitNorm.includes(destNorm))) {
                 effectiveDestination = `Desktop/${explicitProjectName}`;
             }

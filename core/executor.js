@@ -1900,12 +1900,19 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
     }
 
     // 2. If still not set, read from local git config of the project directory if available
+    const safeGitEnv = {
+        ...process.env,
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'safe.directory',
+        GIT_CONFIG_VALUE_0: '*',
+    };
+
     if (effectiveCwd) {
         try {
             const [localNameResult, localEmailResult, localTokenResult] = await Promise.allSettled([
-                !authorName ? execFileAsync('git', ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000 }) : Promise.resolve(null),
-                !authorEmail ? execFileAsync('git', ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000 }) : Promise.resolve(null),
-                !githubToken ? execFileAsync('git', ['config', 'github.token'], { cwd: effectiveCwd, timeout: 2000 }) : Promise.resolve(null),
+                !authorName ? execFileAsync('git', ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
+                !authorEmail ? execFileAsync('git', ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
+                !githubToken ? execFileAsync('git', ['config', 'github.token'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
             ]);
             if (!authorName && localNameResult.status === 'fulfilled' && localNameResult.value?.stdout?.trim()) {
                 authorName = localNameResult.value.stdout.trim();
@@ -1925,8 +1932,8 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
     if (effectiveCwd && authorName && authorEmail) {
         try {
             await Promise.allSettled([
-                execFileAsync('git', ['config', 'user.name', authorName], { cwd: effectiveCwd, timeout: 2000 }),
-                execFileAsync('git', ['config', 'user.email', authorEmail], { cwd: effectiveCwd, timeout: 2000 }),
+                execFileAsync('git', ['config', 'user.name', authorName], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }),
+                execFileAsync('git', ['config', 'user.email', authorEmail], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }),
             ]);
         } catch (_) {}
     }
@@ -2239,12 +2246,26 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             } catch (_) {}
         }
 
+        const gitExecEnv = {
+            ...process.env,
+            PATH: commandPath,
+            ...gitEnv,
+        };
+
         if (commandName === 'git' && effectiveCwd && !args.includes('clone') && !args.includes('init')) {
             try {
-                await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], { cwd: effectiveCwd, timeout: 2000 });
+                await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
+                    cwd: effectiveCwd,
+                    timeout: 2000,
+                    env: gitExecEnv,
+                });
             } catch (_) {
                 try {
-                    await execFileAsync('git', ['init'], { cwd: effectiveCwd, timeout: 3000 });
+                    await execFileAsync('git', ['init'], {
+                        cwd: effectiveCwd,
+                        timeout: 3000,
+                        env: gitExecEnv,
+                    });
                 } catch (_) {}
             }
         }
@@ -2254,33 +2275,41 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             try {
                 const msgIndex = args.indexOf('-m');
                 const currentMsg = msgIndex !== -1 ? args[msgIndex + 1] : '';
-                const isGeneric = !currentMsg || /^(?:chore:\s*)?(?:prepare changes|update|commit|changes|initial commit|fix:\s*update server and deploy)(?:\s+to\s+production)?$/i.test(currentMsg.trim());
+                const isGeneric = !currentMsg
+                    || /^(?:chore:\s*)?(?:prepare changes|update|commit|changes|initial commit|fix:\s*update server and deploy|fix:\s*(?:fix\s*)?(?:bug\s*)?(?:this\s*)?url.*|commit server changes)(?:\s+to\s+production)?$/i.test(currentMsg.trim());
 
                 if (isGeneric) {
-                    const stagedFilesOutput = await execFileAsync('git', ['diff', '--cached', '--name-only'], { cwd: effectiveCwd, timeout: 2000 }).then(r => r.stdout.trim()).catch(() => '');
+                    const stagedFilesOutput = await execFileAsync('git', ['diff', '--cached', '--name-only'], {
+                        cwd: effectiveCwd,
+                        timeout: 2000,
+                        env: gitExecEnv,
+                    }).then(r => r.stdout.trim()).catch(() => '');
                     const files = stagedFilesOutput ? stagedFilesOutput.split('\n').map(f => f.trim()).filter(Boolean) : [];
 
                     if (files.length > 0) {
+                        const fileSummary = files.slice(0, 3).map(f => path.basename(f)).join(', ');
                         let dynamicMessage = '';
+                        const hasVercel = files.some(f => /vercel\.json|api\/index\.js/i.test(f));
                         const hasValidation = files.some(f => /validat|schema|regex/i.test(f));
                         const hasAuth = files.some(f => /auth|jwt|user|login|token|pass/i.test(f));
                         const hasRoute = files.some(f => /route|controller|api/i.test(f));
-                        const hasServer = files.some(f => /app\.js|index\.js|server\.js|vercel\.json/i.test(f));
+                        const hasServer = files.some(f => /app\.js|index\.js|server\.js/i.test(f));
                         const hasModel = files.some(f => /model|db/i.test(f));
 
-                        if (hasValidation) {
-                            dynamicMessage = 'feat(validation): add validation middleware and schemas';
+                        if (hasVercel) {
+                            dynamicMessage = `fix(vercel): configure serverless entry and routing (${fileSummary})`;
+                        } else if (hasValidation) {
+                            dynamicMessage = `feat(validation): update schemas and validation (${fileSummary})`;
                         } else if (hasAuth) {
-                            dynamicMessage = 'feat(auth): implement user authentication handlers';
+                            dynamicMessage = `feat(auth): update authentication handlers (${fileSummary})`;
                         } else if (hasRoute) {
-                            dynamicMessage = 'feat(api): update API routes and controller logic';
+                            dynamicMessage = `feat(api): update routes and controller logic (${fileSummary})`;
                         } else if (hasServer) {
-                            dynamicMessage = 'fix(server): configure server entry points and routing';
+                            dynamicMessage = `fix(server): update entry points and server config (${fileSummary})`;
                         } else if (hasModel) {
-                            dynamicMessage = 'feat(database): update models and schema definitions';
+                            dynamicMessage = `feat(database): update models and schema definitions (${fileSummary})`;
                         } else {
-                            const sampleFiles = files.slice(0, 3).map(f => path.basename(f)).join(', ');
-                            dynamicMessage = `feat: update ${sampleFiles}`;
+                            dynamicMessage = `chore: update ${fileSummary}`;
                         }
 
                         if (msgIndex !== -1) {
@@ -2288,6 +2317,29 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         } else {
                             args.push('-m', dynamicMessage);
                         }
+                        command = `${commandName} ${args.map(a => /\s/.test(a) ? `"${a}"` : a).join(' ')}`;
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // Dynamic Branch Resolution for git push (never hardcode main if another branch is checked out)
+        if (commandName === 'git' && args[0] === 'push' && effectiveCwd) {
+            try {
+                const currentBranch = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+                    cwd: effectiveCwd,
+                    timeout: 2000,
+                    env: gitExecEnv,
+                }).then((r) => r.stdout.trim()).catch(() => '');
+
+                if (currentBranch && currentBranch !== 'HEAD') {
+                    const lastArg = args[args.length - 1];
+                    if (lastArg === 'HEAD') {
+                        args[args.length - 1] = currentBranch;
+                        command = `${commandName} ${args.map(a => /\s/.test(a) ? `"${a}"` : a).join(' ')}`;
+                    } else if (args.length === 1) {
+                        args.push('-u', 'origin', currentBranch);
+                        command = `${commandName} ${args.join(' ')}`;
                     }
                 }
             } catch (_) {}
@@ -2300,9 +2352,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             maxBuffer: MAX_COMMAND_OUTPUT,
             shell: false,
             env: {
-                ...process.env,
-                PATH: commandPath,
-                ...gitEnv,
+                ...gitExecEnv,
                 npm_config_yes: 'true',
                 CI: 'true',
             },
@@ -2331,16 +2381,27 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
         if (commandName === 'git' && args[0] === 'push') {
             const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
+            const nonFlagPushArgs = args.filter((a, idx) => idx > 0 && !String(a).startsWith('-'));
+            const pushRemote = nonFlagPushArgs[0] || 'origin';
+            let targetBranch = nonFlagPushArgs[1] || '';
+            if (!targetBranch || targetBranch === 'HEAD') {
+                targetBranch = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+                    cwd: effectiveCwd,
+                    timeout: 2000,
+                    env: gitExecEnv,
+                }).then((r) => r.stdout.trim()).catch(() => 'HEAD') || 'HEAD';
+                if (targetBranch === 'HEAD') targetBranch = 'main';
+            }
+
             if (/no upstream branch|set-upstream/i.test(combined)) {
                 try {
-                    const branchName = args[args.length - 1] || 'main';
-                    const retryResult = await execFileAsync('git', ['push', '-u', 'origin', branchName], {
+                    const retryResult = await execFileAsync('git', ['push', '-u', pushRemote, targetBranch], {
                         cwd: effectiveCwd,
                         timeout: COMMAND_TIMEOUT_MS,
-                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                        env: gitExecEnv,
                     });
                     return {
-                        command: `git push -u origin ${branchName}`,
+                        command: `git push -u ${pushRemote} ${targetBranch}`,
                         cwd: effectiveCwd,
                         stdout: retryResult.stdout,
                         stderr: retryResult.stderr,
@@ -2349,16 +2410,20 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                 } catch (_) {}
             }
 
-            if (/src refspec main does not match any/i.test(combined)) {
+            if (/src refspec .+ does not match any/i.test(combined)) {
                 try {
-                    await execFileAsync('git', ['branch', '-M', 'main'], { cwd: effectiveCwd, timeout: 3000 });
-                    const retryResult = await execFileAsync('git', ['push', '-u', 'origin', 'main'], {
+                    await execFileAsync('git', ['branch', '-M', targetBranch], {
+                        cwd: effectiveCwd,
+                        timeout: 3000,
+                        env: gitExecEnv,
+                    });
+                    const retryResult = await execFileAsync('git', ['push', '-u', pushRemote, targetBranch], {
                         cwd: effectiveCwd,
                         timeout: COMMAND_TIMEOUT_MS,
-                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                        env: gitExecEnv,
                     });
                     return {
-                        command: 'git push -u origin main',
+                        command: `git push -u ${pushRemote} ${targetBranch}`,
                         cwd: effectiveCwd,
                         stdout: retryResult.stdout,
                         stderr: retryResult.stderr,
@@ -2369,10 +2434,10 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
             if (/Permission denied/i.test(combined) || /could not read/i.test(combined) || /terminal prompts disabled/i.test(combined) || /Authentication failed/i.test(combined)) {
                 try {
-                    const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+                    const originUrl = await execFileAsync('git', ['remote', 'get-url', pushRemote], {
                         cwd: effectiveCwd,
                         timeout: 2000,
-                        env: { ...process.env, PATH: commandPath, ...gitEnv },
+                        env: gitExecEnv,
                     }).then((r) => r.stdout.trim()).catch(() => '');
                     const httpsMatch = originUrl.match(/https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
                     const sshMatch = originUrl.match(/git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
@@ -2383,18 +2448,18 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         // 1. Try SSH push if user has SSH keys configured
                         if (hasSshKey) {
                             const sshUrl = `git@github.com:${owner}/${repo}.git`;
-                            await execFileAsync('git', ['remote', 'set-url', 'origin', sshUrl], {
+                            await execFileAsync('git', ['remote', 'set-url', pushRemote, sshUrl], {
                                 cwd: effectiveCwd,
                                 timeout: 2000,
-                                env: { ...process.env, PATH: commandPath, ...gitEnv },
+                                env: gitExecEnv,
                             }).catch(() => {});
-                            const retryResult = await execFileAsync('git', ['push', '-u', 'origin', 'main'], {
+                            const retryResult = await execFileAsync('git', ['push', '-u', pushRemote, targetBranch], {
                                 cwd: effectiveCwd,
                                 timeout: COMMAND_TIMEOUT_MS,
-                                env: { ...process.env, PATH: commandPath, ...gitEnv },
+                                env: gitExecEnv,
                             });
                             return {
-                                command: 'git push origin main',
+                                command: `git push -u ${pushRemote} ${targetBranch}`,
                                 cwd: effectiveCwd,
                                 stdout: retryResult.stdout,
                                 stderr: retryResult.stderr,
@@ -2405,12 +2470,13 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         // 2. Try token push if GitHub token is present
                         if (gitCreds?.githubToken) {
                             const tokenPushUrl = `https://x-access-token:${gitCreds.githubToken.trim()}@github.com/${owner}/${repo}.git`;
-                            const retryResult = await execFileAsync('git', ['push', tokenPushUrl, 'HEAD:main'], {
+                            const retryResult = await execFileAsync('git', ['push', tokenPushUrl, `HEAD:${targetBranch}`], {
                                 cwd: effectiveCwd,
                                 timeout: COMMAND_TIMEOUT_MS,
+                                env: gitExecEnv,
                             });
                             return {
-                                command: 'git push origin main',
+                                command: `git push -u ${pushRemote} ${targetBranch}`,
                                 cwd: effectiveCwd,
                                 stdout: retryResult.stdout,
                                 stderr: retryResult.stderr,
@@ -2423,7 +2489,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
             if (/could not read (?:Username|password)|Permission denied|Authentication failed|terminal prompts disabled|device not configured/i.test(combined)) {
                 const pushAuthError = new Error(
-                    'Git push failed: GitHub authentication required. Ensure your SSH key is added or set GITHUB_TOKEN in your environment. You can deploy by running in terminal: cd "' + effectiveCwd + '" && git push origin main'
+                    `Git push failed: GitHub authentication required. Ensure your SSH key is added or set GITHUB_TOKEN in your environment. You can deploy by running in terminal: cd "${effectiveCwd}" && git push -u ${pushRemote} ${targetBranch}`
                 );
                 pushAuthError.code = 'GIT_PUSH_AUTH_REQUIRED';
                 pushAuthError.status = 401;

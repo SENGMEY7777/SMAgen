@@ -178,15 +178,34 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const taskText = `${goalPrompt} ${task.title || ''} ${task.instruction || ''}`;
+    const followUpContextMatch = taskText.match(
+        /\[Follow-up execution context:\s*Target local folder is\s+"(?:Desktop|Downloads?)[\\/]([^"]+)"/i,
+    );
+    if (followUpContextMatch) {
+        return cleanRelativeDirectoryPath(followUpContextMatch[1]);
+    }
+
+    const stripFileTail = (relPath) => {
+        const cleaned = cleanRelativeDirectoryPath(String(relPath || '').replace(/[.,;!?]+$/, ''));
+        if (!cleaned) return null;
+        const segments = cleaned.split(/[\\/]/).filter(Boolean);
+        if (segments.length >= 2 && /\.[A-Za-z0-9]{1,8}$/.test(segments[segments.length - 1])) {
+            return segments.slice(0, -1).join('/');
+        }
+        return /\.[A-Za-z0-9]{1,8}$/.test(cleaned) ? null : cleaned;
+    };
+
     const localDestinationMatch = taskText.match(LOCAL_DESTINATION_PATH_PATTERN);
 
     if (localDestinationMatch) {
-        return cleanRelativeDirectoryPath(localDestinationMatch[1].replace(/[.,;!?]+$/, ''));
+        const dir = stripFileTail(localDestinationMatch[1]);
+        if (dir) return dir;
     }
 
     const desktopPathMatch = taskText.match(DESKTOP_PATH_PATTERN);
     if (desktopPathMatch) {
-        return cleanRelativeDirectoryPath(desktopPathMatch[1].replace(/[.,;!?]+$/, ''));
+        const dir = stripFileTail(desktopPathMatch[1]);
+        if (dir) return dir;
     }
 
     const quotedName = taskText.match(
@@ -233,9 +252,9 @@ const isDirectoryCreationTask = (task, toolInput) => {
 
 const isExplicitDesktopWriteRequest = (value) => {
     const text = String(value || '');
-    const hasWriteVerb = /\b(?:create|make|add|write|save|put|place|export|copy)\b/i.test(text);
-    const hasDesktopTarget = /\bdesktop\b/i.test(text);
-    const hasFileOrDirectoryTarget = /\b(?:file|files|folder|directory|project)\b/i.test(text);
+    const hasWriteVerb = /\b(?:create|make|add|write|save|put|place|export|copy|fix|repair|debug|patch|update|modify|edit|refactor|replace|overwrite)\b/i.test(text);
+    const hasDesktopTarget = /\bdesktop\b/i.test(text) || /\/Users\/[^\s/'"`]+\/Desktop\//i.test(text);
+    const hasFileOrDirectoryTarget = /\b(?:file|files|folder|directory|project|bug|error|issue|app|server|route|endpoint|package\.json)\b/i.test(text);
 
     return LOCAL_DESKTOP_OUTPUT_ENABLED && hasWriteVerb && hasDesktopTarget && hasFileOrDirectoryTarget;
 };
@@ -1050,6 +1069,8 @@ const appendDownloadsExportTask = (tasks, goalPrompt) => {
         || isDesktopOutputRequest(goalPrompt)
         || isNodeProjectSetupRequest(goalPrompt)
         || isStructureCleanupRequest(goalPrompt)
+        || isExplicitExistingProjectUpdateRequest(goalPrompt)
+        || /\[Follow-up execution context:\s*Target local folder is\s+"Desktop[\\/]/i.test(String(goalPrompt || ''))
         || hasLocalExportTask(tasks)
     ) {
         return tasks;
@@ -1094,7 +1115,9 @@ const isDesktopDirectoryTask = (task) => {
 
 const normalizeDesktopFileTasks = (tasks, goalPrompt) => {
     const desktopDirectoryTasks = tasks.filter(isDesktopDirectoryTask);
-    const desktopGoal = isExplicitDesktopWriteRequest(goalPrompt);
+    const hasDesktopContext = /\[Follow-up execution context:\s*Target local folder is\s+"Desktop[\\/]/i.test(String(goalPrompt || ''));
+    const desktopGoal = isExplicitDesktopWriteRequest(goalPrompt)
+        || (LOCAL_DESKTOP_OUTPUT_ENABLED && hasDesktopContext && isExplicitExistingProjectUpdateRequest(goalPrompt));
 
     if (!desktopDirectoryTasks.length && !desktopGoal) {
         return tasks;
@@ -1906,8 +1929,8 @@ const normalizeIdempotentDesktopSetupTasks = (tasks, goalPrompt) => {
 const isExplicitExistingProjectUpdateRequest = (goalPrompt) => {
     const text = String(goalPrompt || '');
     const userGoal = getUserGoalText(text);
-    const hasFollowUpContext = /\[Follow-up execution context:\s*continue working in the existing local/i.test(text);
-    const hasFollowUpIntent = /\b(?:add|install|configure|fix|update|modify|edit|extend|refactor|build|create|generate|scaffold)\b/i.test(userGoal);
+    const hasFollowUpContext = /\[Follow-up execution context:\s*(?:continue working in the existing local|Target local folder is\s+"Desktop[\\/])/i.test(text);
+    const hasFollowUpIntent = /\b(?:add|install|configure|fix|repair|debug|patch|update|modify|edit|extend|refactor|build|create|generate|scaffold)\b/i.test(userGoal);
     if (hasFollowUpContext && hasFollowUpIntent) {
         return true;
     }
@@ -4607,7 +4630,7 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
             }
         }
 
-        if (isExplicitDesktopWriteRequest(goalPrompt)) {
+        if (isExplicitDesktopWriteRequest(goalPrompt) && !isExplicitExistingProjectUpdateRequest(goalPrompt)) {
             const directoryPath = cleanRelativeDirectoryPath(
                 plan.tasks.find(isDesktopDirectoryTask)?.toolInput?.path
                     || inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
@@ -4884,11 +4907,22 @@ const validatePlan = (rawPlan, options = {}) => {
 const generateDynamicProductionCode = (filePath, goalPrompt = '', projectRoot = '') => {
     const fileName = path.basename(filePath);
     const lowerPath = filePath.toLowerCase();
-    const isCoffee = lowerPath.includes('coffee') || (projectRoot && projectRoot.toLowerCase().includes('coffee')) || (goalPrompt && goalPrompt.toLowerCase().includes('coffee'));
-    const isSchool = lowerPath.includes('school') || (projectRoot && projectRoot.toLowerCase().includes('school')) || (goalPrompt && goalPrompt.toLowerCase().includes('school'));
-    const entityName = fileName.replace(/(?:controller|service|model|routes?|validator)\.js$/i, '').replace(/\.[^.]+$/, '');
+    const goalLower = String(goalPrompt || '').toLowerCase();
+    const isCoffee = lowerPath.includes('coffee') || (projectRoot && projectRoot.toLowerCase().includes('coffee')) || goalLower.includes('coffee');
+    const isSchool = lowerPath.includes('school') || (projectRoot && projectRoot.toLowerCase().includes('school')) || goalLower.includes('school');
+    const usesJsonStorage = !/\bmysql2?\b/i.test(goalLower) && (/\bjson\s+file\s+storage\b|\bno\s+external\s+database\b|\bstorage\.js\b|data\/[^\s]+\.json/i.test(goalLower));
+    const configFolder = /\bconfigs\b/i.test(goalPrompt) && !/\bsrc\/config\b/i.test(goalPrompt) ? 'configs' : 'config';
+    const hasSrcLayout = /\bsrc\//i.test(goalPrompt) || lowerPath.includes('/src/');
+    const entryFile = /\bserver\.js\b/i.test(goalPrompt) && !/\bapp\.js\s*\(entry\)/i.test(goalPrompt)
+        ? 'server.js'
+        : 'app.js';
+    const entityName = fileName.replace(/(?:controller|service|model|routes?|validator|schema)\.js$/i, '').replace(/\.[^.]+$/, '');
     const capitalizedEntity = entityName ? entityName.charAt(0).toUpperCase() + entityName.slice(1) : 'Item';
     const tableName = entityName ? `${entityName.toLowerCase()}s` : 'items';
+
+    if (fileName.toLowerCase() === '.gitignore') {
+        return `node_modules/\n.env\n*.log\n.DS_Store\n`;
+    }
 
     if (lowerPath.endsWith('.sql')) {
         if (lowerPath.includes('seed')) {
@@ -5181,17 +5215,19 @@ CORS_ORIGIN=*
     }
 
     if (lowerPath.endsWith('package.json')) {
-        return `{
-  "name": "${(projectRoot || 'ecommerce-api').toLowerCase()}",
-  "version": "1.0.0",
-  "description": "Production-grade secure E-Commerce REST API",
-  "main": "app.js",
-  "scripts": {
-    "start": "node app.js",
-    "dev": "nodemon app.js"
-  },
-  "dependencies": {
-    "express": "^4.21.2",
+        const deps = usesJsonStorage
+            ? `    "express": "^4.21.2",
+    "dotenv": "^16.4.7",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "helmet": "^8.0.0",
+    "express-rate-limit": "^7.5.0",
+    "hpp": "^0.2.3",
+    "morgan": "^1.10.0",
+    "uuid": "^11.1.0",
+    "joi": "^17.13.3"`
+            : `    "express": "^4.21.2",
     "mysql2": "^3.12.0",
     "dotenv": "^16.4.7",
     "jsonwebtoken": "^9.0.2",
@@ -5199,12 +5235,67 @@ CORS_ORIGIN=*
     "cors": "^2.8.5",
     "helmet": "^8.0.0",
     "compression": "^1.7.5",
-    "joi": "^17.13.3"
+    "joi": "^17.13.3"`;
+        return `{
+  "name": "${(projectRoot || 'ecommerce-api').toLowerCase()}",
+  "version": "1.0.0",
+  "description": "Production-grade secure REST API",
+  "main": "${entryFile}",
+  "scripts": {
+    "start": "node ${entryFile}",
+    "dev": "nodemon ${entryFile}"
+  },
+  "dependencies": {
+${deps}
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
   }
 }
+`;
+    }
+
+    if (lowerPath.endsWith('storage.js')) {
+        return `const fs = require('fs/promises');
+const path = require('path');
+
+const DATA_DIR = path.resolve(__dirname, '../../data');
+const writeQueues = new Map();
+
+const getFilePath = (fileName) => path.join(DATA_DIR, fileName);
+
+const readData = async (fileName) => {
+    const filePath = getFilePath(fileName);
+    try {
+        const raw = await fs.readFile(filePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            await fs.mkdir(DATA_DIR, { recursive: true });
+            await fs.writeFile(filePath, '[]\\n', 'utf8');
+            return [];
+        }
+        throw error;
+    }
+};
+
+const writeData = async (fileName, data) => {
+    const prev = writeQueues.get(fileName) || Promise.resolve();
+    const next = prev.then(async () => {
+        const filePath = getFilePath(fileName);
+        await fs.mkdir(DATA_DIR, { recursive: true });
+        await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\\n', 'utf8');
+    });
+    writeQueues.set(fileName, next.catch(() => {}));
+    return next;
+};
+
+module.exports = {
+    DATA_DIR,
+    readData,
+    writeData,
+};
 `;
     }
 
@@ -5704,9 +5795,99 @@ module.exports = {
     }
 
     if (lowerPath.includes('middleware')) {
+        if (lowerPath.includes('validat')) {
+            return `const validate = (schemas = {}) => (req, res, next) => {
+    const errors = [];
+    for (const target of ['params', 'query', 'body']) {
+        if (!schemas[target]) continue;
+        const { error, value } = schemas[target].validate(req[target], {
+            abortEarly: false,
+            stripUnknown: true,
+        });
+        if (error) {
+            errors.push(...error.details.map((d) => ({
+                location: target,
+                field: d.path.join('.'),
+                message: d.message.replace(/"/g, ''),
+            })));
+        } else {
+            req[target] = value;
+        }
+    }
+    if (errors.length > 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Validation failed',
+            errors,
+        });
+    }
+    next();
+};
+
+module.exports = validate;
+module.exports.validate = validate;
+`;
+        }
+
+        if (lowerPath.includes('ratelimit')) {
+            return `const rateLimit = require('express-rate-limit');
+
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many requests, please try again later.' },
+});
+
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { success: false, message: 'Too many authentication attempts, please try again later.' },
+});
+
+module.exports = {
+    apiLimiter,
+    authLimiter,
+};
+`;
+        }
+
+        if (lowerPath.includes('error')) {
+            return `const notFoundHandler = (req, res) => {
+    res.status(404).json({
+        success: false,
+        message: \`Route not found: \${req.method} \${req.originalUrl}\`,
+    });
+};
+
+const errorHandler = (err, req, res, next) => {
+    const status = err.statusCode || err.status || 500;
+    const payload = {
+        success: false,
+        message: err.message || 'Internal Server Error',
+    };
+    if (err.errors) {
+        payload.errors = err.errors;
+    }
+    if (process.env.NODE_ENV !== 'production' && status >= 500 && err.stack) {
+        payload.stack = err.stack;
+    }
+    res.status(status).json(payload);
+};
+
+module.exports = {
+    notFoundHandler,
+    errorHandler,
+};
+`;
+        }
+
         return `// Authentication and Authorization Middleware
 const jwt = require('jsonwebtoken');
-const env = require('../configs/env');
+const env = require('../${configFolder}/env');
 
 const authenticate = (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -5737,7 +5918,7 @@ module.exports = {
 `;
     }
 
-    if (lowerPath.includes('validator')) {
+    if (lowerPath.includes('validator') || lowerPath.includes('schema')) {
         return `const Joi = require('joi');
 
 const ${entityName}CreateSchema = Joi.object({
@@ -5764,53 +5945,118 @@ const validate = (schema) => (req, res, next) => {
 
 module.exports = {
     schema: ${entityName}CreateSchema,
+    createSchema: ${entityName}CreateSchema,
     validate,
 };
 `;
     }
 
-    if (lowerPath.endsWith('app.js') || lowerPath.endsWith('server.js') || lowerPath.endsWith('index.js')) {
-        return `const express = require('express');
-const cors = require('cors');
-const helmet = require('helmet');
-const compression = require('compression');
-require('dotenv').config();
+    if (lowerPath.endsWith('apierror.js')) {
+        return `class ApiError extends Error {
+    constructor(statusCode, message, errors = null) {
+        super(message);
+        this.statusCode = statusCode;
+        this.status = statusCode;
+        if (errors) this.errors = errors;
+    }
+}
 
-const routes = require('./src/routes');
+module.exports = ApiError;
+`;
+    }
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+    if (lowerPath.endsWith('sanitize.js')) {
+        return `const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
-app.use(helmet());
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
-app.use(compression());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+const sanitizeValue = (value) => {
+    if (typeof value === 'string') return value.trim();
+    if (Array.isArray(value)) return value.map(sanitizeValue);
+    if (value && typeof value === 'object') {
+        const clean = {};
+        for (const [k, v] of Object.entries(value)) {
+            if (!DANGEROUS_KEYS.has(k)) {
+                clean[k] = sanitizeValue(v);
+            }
+        }
+        return clean;
+    }
+    return value;
+};
 
-app.use('/api', routes);
+const sanitizeRequest = (req, res, next) => {
+    if (req.body && typeof req.body === 'object') req.body = sanitizeValue(req.body);
+    if (req.query && typeof req.query === 'object') req.query = sanitizeValue(req.query);
+    if (req.params && typeof req.params === 'object') req.params = sanitizeValue(req.params);
+    next();
+};
 
-app.get('/', (req, res) => {
-    res.json({
-        name: '${projectRoot || 'E-Commerce-API'}',
-        version: '1.0.0',
-        status: 'online',
-        documentation: '/api/health'
-    });
-});
+module.exports = {
+    sanitizeValue,
+    sanitizeRequest,
+};
+`;
+    }
 
-app.use((err, req, res, next) => {
-    console.error('Unhandled Error:', err.message);
-    const status = err.status || 500;
-    res.status(status).json({
-        success: false,
-        error: err.message || 'Internal Server Error'
-    });
-});
+    if (lowerPath.endsWith('server.js') && hasSrcLayout && !lowerPath.includes('/src/')) {
+        return `require('dotenv').config();
+const app = require('./src/app');
+
+const PORT = Number(process.env.PORT) || 5000;
 
 app.listen(PORT, () => {
     console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
 });
+`;
+    }
 
+    if (lowerPath.endsWith('app.js') || lowerPath.endsWith('server.js') || lowerPath.endsWith('index.js')) {
+        const isInsideSrc = lowerPath.includes('/src/');
+        const shouldListenHere = !(isInsideSrc && entryFile === 'server.js');
+        const listenBlock = shouldListenHere
+            ? `
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
+    });
+}
+`
+            : '';
+        return `const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+require('dotenv').config();
+
+const app = express();
+const PORT = Number(process.env.PORT) || 5000;
+
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+
+app.get('/', (req, res) => {
+    res.json({
+        name: '${projectRoot || 'API'}',
+        version: '1.0.0',
+        status: 'online',
+        health: '/health'
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.status(200).json({ success: true, status: 'UP', timestamp: new Date().toISOString() });
+});
+
+app.use((err, req, res, next) => {
+    console.error('Unhandled Error:', err.message);
+    const status = err.statusCode || err.status || 500;
+    res.status(status).json({
+        success: false,
+        message: err.message || 'Internal Server Error'
+    });
+});
+${listenBlock}
 module.exports = app;
 `;
     }
@@ -5836,6 +6082,9 @@ npm run dev
     }
 
     if (lowerPath.endsWith('.json')) {
+        if (lowerPath.includes('/data/') || lowerPath.startsWith('data/')) {
+            return '[]\n';
+        }
         return `{\n  "name": "${fileName.replace('.json', '')}"\n}\n`;
     }
 
@@ -6179,6 +6428,19 @@ const findMatchingDesktopProject = async (goalPrompt) => {
         if (matchPart) candidates.push(matchPart);
     }
 
+    // Extract Desktop project folders from terminal errors/stack traces of any length
+    // e.g. "/Users/user/Desktop/Mini-Mart/app.js", "~/Desktop/Mini-Mart", "Desktop/Mini-Mart"
+    const desktopPathMatches = text.matchAll(/(?:\/Users\/[^\s/'"`]+|~|\b)[\\/]Desktop[\\/]([A-Za-z0-9._-]+)/gi);
+    for (const m of desktopPathMatches) {
+        if (m[1]) candidates.push(m[1]);
+    }
+
+    // Extract macOS zsh/bash prompt directory prefix (e.g. "user@MacBook-Pro Mini-Mart % nodemon app")
+    const shellPromptMatches = text.matchAll(/\b[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+([A-Za-z0-9][A-Za-z0-9._-]{1,})\s*[%$#]/g);
+    for (const m of shellPromptMatches) {
+        if (m[1] && m[1] !== '~' && m[1] !== '/') candidates.push(m[1]);
+    }
+
     // Only if prompt is short (e.g. "fix Coffee-Shop-API" or "debug RentRoom-Backend"), extract project-like identifiers
     if (text.length <= 100) {
         const shortMatches = text.match(/\b[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)+\b/g) || [];
@@ -6286,11 +6548,150 @@ const findMatchingDesktopProject = async (goalPrompt) => {
     return null;
 };
 
-const buildPlanningGoalPrompt = (goalPrompt, localDestination) => {
+const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) return '';
+    const destination = normalizeLocalDestination(localDestination);
+    if (!destination || destination.location !== 'Desktop' || !destination.relativePath) {
+        return '';
+    }
+
+    const text = String(goalPrompt || '');
+    const isDebugOrFix = /\b(?:fix|bug|error|crash|repair|debug|troubleshoot|broken|cannot\s+find\s+module|module_not_found|eaddrinuse|enoent|typeerror|syntaxerror|referenceerror|exception|stack|failed)\b/i.test(text);
+    if (!isDebugOrFix) {
+        return '';
+    }
+
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+    const projectRoot = path.resolve(desktopRoot, destination.relativePath);
+    if (!projectRoot.startsWith(desktopRoot + path.sep)) {
+        return '';
+    }
+
+    try {
+        const rootStats = await fs.stat(projectRoot);
+        if (!rootStats.isDirectory()) return '';
+    } catch (_) {
+        return '';
+    }
+
+    const relativeFiles = [];
+    const jsFiles = [];
+    const walkDir = async (dirPath, depth = 0) => {
+        if (depth > 4 || relativeFiles.length >= 80) return;
+        let entries = [];
+        try {
+            entries = await fs.readdir(dirPath, {withFileTypes: true});
+        } catch (_) {
+            return;
+        }
+        for (const entry of entries) {
+            if (relativeFiles.length >= 80) break;
+            if (['node_modules', '.git', 'dist', 'build', '.vercel'].includes(entry.name)) continue;
+            const abs = path.join(dirPath, entry.name);
+            const rel = path.relative(projectRoot, abs).replace(/\\/g, '/');
+            if (entry.isDirectory()) {
+                await walkDir(abs, depth + 1);
+            } else if (entry.isFile()) {
+                relativeFiles.push(rel);
+                if (/\.(?:js|cjs|mjs)$/i.test(entry.name)) {
+                    jsFiles.push(rel);
+                }
+            }
+        }
+    };
+    await walkDir(projectRoot, 0);
+
+    const fileMapByBasename = new Map();
+    for (const rel of relativeFiles) {
+        const base = path.basename(rel).toLowerCase();
+        if (!fileMapByBasename.has(base)) fileMapByBasename.set(base, []);
+        fileMapByBasename.get(base).push(rel);
+    }
+
+    const brokenImports = [];
+    for (const relJs of jsFiles.slice(0, 45)) {
+        try {
+            const content = await fs.readFile(path.join(projectRoot, relJs), 'utf8');
+            const lines = content.split(/\r?\n/);
+            lines.forEach((line, idx) => {
+                const reqMatches = line.matchAll(/require\(\s*['"](\.[^'"]+)['"]\s*\)/g);
+                for (const m of reqMatches) {
+                    const spec = m[1];
+                    const resolvedBase = path.resolve(projectRoot, path.dirname(relJs), spec);
+                    const candidates = [
+                        resolvedBase,
+                        `${resolvedBase}.js`,
+                        `${resolvedBase}.cjs`,
+                        `${resolvedBase}.json`,
+                        path.join(resolvedBase, 'index.js'),
+                    ];
+                    const exists = candidates.some((c) => {
+                        try {
+                            return fsSync.existsSync(c);
+                        } catch (_) {
+                            return false;
+                        }
+                    });
+                    if (!exists) {
+                        const targetBase = `${path.basename(spec.replace(/\.(?:js|cjs|json)$/i, '')).toLowerCase()}.js`;
+                        const altMatches = fileMapByBasename.get(targetBase) || [];
+                        const hint = altMatches.length
+                            ? ` (possible match: ${altMatches.join(', ')})`
+                            : '';
+                        brokenImports.push(`${relJs}:${idx + 1} require('${spec}') -> NOT FOUND${hint}`);
+                    }
+                }
+            });
+        } catch (_) {}
+    }
+
+    const snippets = [];
+    const readSnippet = async (relPath, maxChars = 1400) => {
+        if (!relativeFiles.includes(relPath)) return;
+        try {
+            const raw = await fs.readFile(path.join(projectRoot, relPath), 'utf8');
+            const clipped = raw.length > maxChars ? `${raw.slice(0, maxChars)}\n... [truncated]` : raw;
+            snippets.push(`--- ${relPath} ---\n${clipped}`);
+        } catch (_) {}
+    };
+
+    await readSnippet('package.json', 1800);
+    for (const entryCandidate of ['server.js', 'app.js', 'index.js', 'src/app.js', 'src/server.js']) {
+        await readSnippet(entryCandidate, 1400);
+    }
+
+    const mentionedRelPaths = text.matchAll(/(?:^|[\s'"`(])((?:src|routes?|controllers?|models?|middlewares?|configs?|config|schemas?|validators?|utils?|services?)[\\/][A-Za-z0-9_.\-\\/]+\.(?:js|cjs|mjs|json))/gi);
+    const seenMentioned = new Set();
+    for (const m of mentionedRelPaths) {
+        const rel = m[1].replace(/\\/g, '/');
+        if (!seenMentioned.has(rel)) {
+            seenMentioned.add(rel);
+            await readSnippet(rel, 1200);
+        }
+    }
+
+    const parts = [
+        `[Local Project Diagnostic Snapshot for ${destination.location}/${destination.relativePath}]`,
+        `Project files (${relativeFiles.length}): ${relativeFiles.join(', ') || '(empty)'}`,
+    ];
+
+    if (brokenImports.length) {
+        parts.push(`Broken relative require() imports detected (${brokenImports.length}):\n- ${brokenImports.slice(0, 20).join('\n- ')}`);
+    }
+
+    if (snippets.length) {
+        parts.push(`Key inspected file contents:\n${snippets.slice(0, 7).join('\n\n')}`);
+    }
+
+    return parts.join('\n\n');
+};
+
+const buildPlanningGoalPrompt = (goalPrompt, localDestination, diagnosticSnapshot = '') => {
     const destination = normalizeLocalDestination(localDestination);
     if (!destination) return goalPrompt;
 
-    return `${goalPrompt}\n\n[Follow-up execution context: Target local folder is "${destination.location}/${destination.relativePath}". Work inside this project directory.]`;
+    const base = `${goalPrompt}\n\n[Follow-up execution context: Target local folder is "${destination.location}/${destination.relativePath}". Work inside this project directory.]`;
+    return diagnosticSnapshot ? `${base}\n\n${diagnosticSnapshot}` : base;
 };
 
 const planWorkflowRun = async ({
@@ -6385,11 +6786,12 @@ const planWorkflowRun = async ({
             effectiveDestination = await findMatchingDesktopProject(goalPrompt);
         }
     }
-    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
+    const diagnosticSnapshot = await buildLocalProjectDiagnosticSnapshot(effectiveDestination, goalPrompt);
+    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination, diagnosticSnapshot);
     const cacheKey = getCacheKey(planningGoalPrompt);
     let validatedPlan = null;
 
-    if (planCache.has(cacheKey)) {
+    if (!diagnosticSnapshot && planCache.has(cacheKey)) {
         console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
         const cached = planCache.get(cacheKey);
         validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
@@ -6459,6 +6861,7 @@ Rules:
 - If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 - When modifying or adding files/folders to an existing local project (e.g. 'Api-Productions/Sample-RESTful-API-'): Always inspect and follow the project's existing directory structure. If the project places its code folders (such as controllers/, routes/, models/) directly at the project root, place new folders (like validation/) directly at the project root matching the existing pattern. NEVER prepend or create an unneeded 'src/' folder, NEVER create subfolders named 'desktops', and NEVER duplicate existing files into 'src/'.
+- When a [Local Project Diagnostic Snapshot] is included in the goal for a local bug fix or runtime crash: Diagnose ALL reported root causes using the inspected files and broken relative require() list. Update existing broken files in-place using fileManager with action 'createDesktopFile' and mode 'update' (e.g. fix package.json "main"/"scripts" to match server.js or src/app.js, fix mismatched relative require paths such as ../configs/env -> ../config/env, remove duplicate app.listen() calls when an entry file already listens), and finish with an executeCommand syntax check ('node -c <entry>' with cwd='Desktop/<project>', desktop=true). NEVER invent an unrelated standalone dummy app.js listening on port 3000 when server.js or src/app.js already exists, and NEVER add exportWorkspaceToDownloads.
 - When asked to add validation to routes, do not merely create a validator file; also update the existing router/controller files to import and apply the validation middleware to the routes so the validation is actually active.
 - PROJECT STRUCTURE CLEANUP RULE: When the user requests to clean, organize, or modify a project structure (e.g. 'modify structure project to clean', 'clean up project structure', 'remove unused folders', 'clean redundant folder', 'remove already but it still have'):
   - Inspect the project's layout and remove redundant or unneeded directories in-place using fileManager with action 'deleteDesktopPath' (e.g., {"action":"deleteDesktopPath","path":"<project>/src","kind":"directory"}).

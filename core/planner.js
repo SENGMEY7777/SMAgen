@@ -839,14 +839,33 @@ const inferDesktopAssetPath = (task, goalPrompt) => {
 const isDesktopAssetTask = (task, goalPrompt) => {
     const toolInput = task.toolInput || {};
     const action = String(toolInput.action || '').trim().toLowerCase();
-    if (action === 'exportworkspacetodesktop'
+    if (FILE_WRITE_ACTIONS.has(action)
+        || DIRECTORY_ACTIONS.has(action)
+        || action === 'createdesktopfile'
+        || action === 'create_desktop_file'
+        || action === 'createdesktopfiles'
+        || action === 'create_desktop_files'
+        || action === 'updatedesktopfile'
+        || action === 'update_desktop_file'
+        || action === 'writedesktopfile'
+        || action === 'write_desktop_file'
+        || action === 'editdesktopfile'
+        || action === 'edit_desktop_file'
+        || action === 'appenddesktopfile'
+        || action === 'append_desktop_file'
+        || action === 'deletedesktoppath'
+        || action === 'delete_desktop_path'
+        || action === 'renamedesktoppath'
+        || action === 'rename_desktop_path'
+        || action === 'exportworkspacetodesktop'
         || action === 'export_workspace_to_desktop'
         || action === 'exportworkspacetodownloads'
         || action === 'export_workspace_to_downloads') {
         return false;
     }
 
-    const taskText = `${task.title || ''} ${task.instruction || ''} ${JSON.stringify(toolInput)}`;
+    const {content: _ignoredContent, files: _ignoredFiles, ...metadataInput} = toolInput;
+    const taskText = `${task.title || ''} ${task.instruction || ''} ${JSON.stringify(metadataInput)}`;
     const goalText = String(goalPrompt || '');
     const referencesDesktop = /\bdesktop\b/i.test(taskText)
         || /(?:~[\\/]|\/Users\/[^\s/'"`]+[\\/])Desktop[\\/]/i.test(taskText)
@@ -1473,8 +1492,8 @@ const extractProjectTreeLayout = (goalPrompt) => {
     const directoryStack = [];
     let rootName = null;
     let previousNonEmptyLine = '';
-    const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+#.*)?$/;
-    const treeRootHeaderPattern = /^([A-Za-z0-9][A-Za-z0-9._-]*)\/\s*(?:#.*)?$/;
+    const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+.*)?$/;
+    const treeRootHeaderPattern = /^([A-Za-z0-9][A-Za-z0-9._-]*)\/\s*(?:[#(].*)?$/;
 
     for (const line of String(goalPrompt || '').split(/\r?\n/)) {
         const trimmedLine = line.trim();
@@ -1516,14 +1535,34 @@ const extractProjectTreeLayout = (goalPrompt) => {
         }
     }
 
-    // package.json and similar root files are often mentioned in prose rather
-    // than repeated in the tree. Add those explicit names without duplicating
-    // files already found at another tree depth.
+    // package.json and similar root config files are often mentioned in prose
+    // rather than repeated in the tree. When an explicit tree already lists
+    // files, only supplement standard root config/doc files (do not hoist
+    // prose data files like users.json out of data/ to root).
+    const ROOT_CONFIG_PROSE_FILES = new Set([
+        'package.json',
+        'tsconfig.json',
+        'jsconfig.json',
+        '.env',
+        '.env.example',
+        '.gitignore',
+        'readme.md',
+        'dockerfile',
+        'docker-compose.yml',
+        'docker-compose.yaml',
+        'vite.config.js',
+        'vite.config.ts',
+    ]);
+    const hasExplicitTreeEntries = files.size > 0 || directories.size > 0;
     const treeFileNames = new Set(
         [...files].map((filePath) => path.basename(filePath).toLowerCase()),
     );
     for (const fileName of extractDesktopFileNames(goalPrompt)) {
-        if (!fileName.includes('/') && !treeFileNames.has(fileName.toLowerCase())) {
+        const lowerName = fileName.toLowerCase();
+        if (hasExplicitTreeEntries && !ROOT_CONFIG_PROSE_FILES.has(lowerName)) {
+            continue;
+        }
+        if (!fileName.includes('/') && !treeFileNames.has(lowerName)) {
             files.add(fileName);
         }
     }
@@ -2461,16 +2500,21 @@ const ensureExplicitProjectTreeDirectories = (tasks, goalPrompt) => {
         projectRoot,
         ...requestedDirectories,
     ].map((directoryPath) => directoryPath.toLowerCase()));
-    const requestedFilePaths = new Set(
-        layout.files.map((relativePath) => canonicalizeProjectPath(relativePath, projectRoot)?.toLowerCase()).filter(Boolean),
-    );
+    const requestedFileMap = new Map();
+    for (const relativePath of layout.files) {
+        const canonicalFile = canonicalizeProjectPath(relativePath, projectRoot);
+        if (canonicalFile) {
+            requestedFileMap.set(canonicalFile.toLowerCase(), canonicalFile);
+        }
+    }
+    const requestedFilePaths = new Set(requestedFileMap.keys());
     const requestedFileByBasename = new Map();
-    for (const filePath of requestedFilePaths) {
-        const fileName = path.basename(filePath);
+    for (const [lowerPath, canonicalFile] of requestedFileMap.entries()) {
+        const fileName = path.basename(lowerPath);
         if (requestedFileByBasename.has(fileName)) {
             requestedFileByBasename.set(fileName, null);
         } else {
-            requestedFileByBasename.set(fileName, filePath);
+            requestedFileByBasename.set(fileName, canonicalFile);
         }
     }
 
@@ -2524,7 +2568,7 @@ const ensureExplicitProjectTreeDirectories = (tasks, goalPrompt) => {
 
             const lowerPath = canonicalPath.toLowerCase();
             if (requestedFilePaths.has(lowerPath)) {
-                return canonicalPath;
+                return requestedFileMap.get(lowerPath) || canonicalPath;
             }
 
             const basenameMatch = requestedFileByBasename.get(path.basename(lowerPath));

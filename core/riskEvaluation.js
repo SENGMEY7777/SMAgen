@@ -111,7 +111,8 @@ const evaluateTaskRisk = (task = {}) => {
 
     let actionSummary;
     if (assignedTool === 'executeCommand' && toolInput.command) {
-        const cwdContext = toolInput.cwd ? ` (cwd: ${toolInput.cwd})` : '';
+        const cleanCwd = toolInput.cwd ? String(toolInput.cwd).replace(/^desktop[\\/]+/i, '') : '';
+        const cwdContext = cleanCwd ? ` (cwd: ${cleanCwd})` : '';
         actionSummary = `${String(toolInput.command).trim()}${cwdContext}`.slice(0, 1000);
     } else if (assignedTool === 'fileManager') {
         if (toolInput.path || toolInput.destination) {

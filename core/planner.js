@@ -4898,6 +4898,23 @@ const validatePlan = (rawPlan, options = {}) => {
         };
     }
 
+    const goalText = String(options.goalPrompt || '');
+    if (/\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(goalText)) {
+        const hasKillPortOnly = plan.tasks.some((t) => (
+            t.assignedTool === 'executeCommand'
+            && /\b(?:kill-port|pkill|killall|lsof\b|fuser\b|\bkill\s+-)\b/i.test(String(t.toolInput?.command || ''))
+        ));
+        const hasCodeFix = plan.tasks.some((t) => t.assignedTool === 'fileManager' && ['create', 'update', 'write', 'createdesktopfile', 'createdesktopfiles'].includes(String(t.toolInput?.action || '').toLowerCase()));
+        if (hasKillPortOnly || !hasCodeFix) {
+            return {
+                success: false,
+                error: {
+                    message: 'Do not use kill-port or host process-kill commands to fix EADDRINUSE: commands run inside an isolated container and cannot free ports on the user Mac host. Fix the project source files in-place using fileManager (e.g. update app.js/package.json to use the real entry point or non-conflicting port 5000, add EADDRINUSE port fallback, and fix any broken relative require imports from the diagnostic snapshot).',
+                },
+            };
+        }
+    }
+
     return {
         success: true,
         data: plan,
@@ -5395,7 +5412,78 @@ module.exports = router;
     }
 
     if (lowerPath.includes('controller')) {
+        const hasServicesDir = /\bservices?\//i.test(goalPrompt) && !/\bno\s+services\b/i.test(goalPrompt);
         if (entityName.toLowerCase() === 'auth') {
+            if (!hasServicesDir) {
+                return `const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const userModel = require('../models/userModel');
+const env = require('../${configFolder}/env');
+
+const register = async (req, res, next) => {
+    try {
+        const { name, email, password } = req.body;
+        const existing = await userModel.findByEmail(email);
+        if (existing) {
+            return res.status(409).json({ success: false, message: 'Email is already registered' });
+        }
+        const passwordHash = await bcrypt.hash(password, 10);
+        const user = await userModel.create({
+            id: crypto.randomUUID(),
+            name,
+            email,
+            passwordHash,
+            role: 'customer',
+        });
+        const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, env.jwt.secret, {
+            expiresIn: env.jwt.expiresIn,
+        });
+        return res.status(201).json({
+            success: true,
+            data: { user: { id: user.id, name: user.name, email: user.email, role: user.role }, token },
+        });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const login = async (req, res, next) => {
+    try {
+        const { email, password } = req.body;
+        const user = await userModel.findByEmail(email);
+        const hash = user?.passwordHash || user?.password;
+        if (!user || !hash || !(await bcrypt.compare(password, hash))) {
+            return res.status(401).json({ success: false, message: 'Invalid email or password' });
+        }
+        const token = jwt.sign({ id: user.id, email: user.email, role: user.role }, env.jwt.secret, {
+            expiresIn: env.jwt.expiresIn,
+        });
+        return res.status(200).json({
+            success: true,
+            data: { user: { id: user.id, name: user.name, email: user.email, role: user.role }, token },
+        });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+const getProfile = async (req, res, next) => {
+    try {
+        const user = await userModel.findById(req.user?.id);
+        return res.status(200).json({ success: true, data: user });
+    } catch (error) {
+        return next(error);
+    }
+};
+
+module.exports = {
+    register,
+    login,
+    getProfile,
+};
+`;
+            }
             return `const authService = require('../services/authService');
 
 const register = async (req, res, next) => {
@@ -5445,11 +5533,14 @@ module.exports = {
 `;
         }
 
-        return `const ${entityName}Service = require('../services/${entityName}Service');
+        const targetLayerImport = hasServicesDir
+            ? `../services/${entityName}Service`
+            : `../models/${entityName}Model`;
+        return `const ${hasServicesDir ? `${entityName}Service` : `${entityName}Model`} = require('${targetLayerImport}');
 
 const getAll = async (req, res, next) => {
     try {
-        const data = await ${entityName}Service.findAll(req.query);
+        const data = await ${hasServicesDir ? `${entityName}Service` : `${entityName}Model`}.findAll(req.query);
         return res.status(200).json({ success: true, count: data.length, data });
     } catch (error) {
         return next(error);
@@ -5458,7 +5549,7 @@ const getAll = async (req, res, next) => {
 
 const getById = async (req, res, next) => {
     try {
-        const item = await ${entityName}Service.findById(req.params.id);
+        const item = await ${hasServicesDir ? `${entityName}Service` : `${entityName}Model`}.findById(req.params.id);
         if (!item) {
             return res.status(404).json({ success: false, message: '${capitalizedEntity} not found' });
         }
@@ -5470,7 +5561,7 @@ const getById = async (req, res, next) => {
 
 const create = async (req, res, next) => {
     try {
-        const created = await ${entityName}Service.create(req.body);
+        const created = await ${hasServicesDir ? `${entityName}Service` : `${entityName}Model`}.create(req.body);
         return res.status(201).json({ success: true, message: '${capitalizedEntity} created successfully', data: created });
     } catch (error) {
         return next(error);
@@ -5479,7 +5570,7 @@ const create = async (req, res, next) => {
 
 const update = async (req, res, next) => {
     try {
-        const updated = await ${entityName}Service.update(req.params.id, req.body);
+        const updated = await ${hasServicesDir ? `${entityName}Service` : `${entityName}Model`}.update(req.params.id, req.body);
         return res.status(200).json({ success: true, message: '${capitalizedEntity} updated successfully', data: updated });
     } catch (error) {
         return next(error);
@@ -5488,7 +5579,7 @@ const update = async (req, res, next) => {
 
 const deleteItem = async (req, res, next) => {
     try {
-        await ${entityName}Service.delete(req.params.id);
+        await ${hasServicesDir ? `${entityName}Service` : `${entityName}Model`}.delete(req.params.id);
         return res.status(200).json({ success: true, message: '${capitalizedEntity} deleted successfully' });
     } catch (error) {
         return next(error);
@@ -5714,6 +5805,99 @@ module.exports = {
     }
 
     if (lowerPath.includes('model')) {
+        if (usesJsonStorage) {
+            const jsonFile = `${entityName.toLowerCase() === 'category' ? 'categories' : `${entityName.toLowerCase()}s`}.json`;
+            if (entityName.toLowerCase() === 'user') {
+                return `const crypto = require('crypto');
+const { readData, writeData } = require('../${configFolder}/storage');
+
+const FILE_NAME = 'users.json';
+
+const findByEmail = async (email) => {
+    const users = await readData(FILE_NAME);
+    return users.find((u) => String(u.email || '').toLowerCase() === String(email || '').toLowerCase()) || null;
+};
+
+const findById = async (id) => {
+    const users = await readData(FILE_NAME);
+    const user = users.find((u) => u.id === id);
+    if (!user) return null;
+    const { passwordHash, password, ...safeUser } = user;
+    return safeUser;
+};
+
+const findAll = async () => {
+    const users = await readData(FILE_NAME);
+    return users.map(({ passwordHash, password, ...safeUser }) => safeUser);
+};
+
+const create = async (payload) => {
+    const users = await readData(FILE_NAME);
+    const newUser = {
+        id: payload.id || crypto.randomUUID(),
+        ...payload,
+        createdAt: new Date().toISOString(),
+    };
+    users.push(newUser);
+    await writeData(FILE_NAME, users);
+    const { passwordHash, password, ...safeUser } = newUser;
+    return safeUser;
+};
+
+module.exports = {
+    findByEmail,
+    findById,
+    findAll,
+    create,
+};
+`;
+            }
+            return `const crypto = require('crypto');
+const { readData, writeData } = require('../${configFolder}/storage');
+
+const FILE_NAME = '${jsonFile}';
+
+const findAll = async () => readData(FILE_NAME);
+
+const findById = async (id) => {
+    const items = await readData(FILE_NAME);
+    return items.find((item) => item.id === id) || null;
+};
+
+const create = async (payload) => {
+    const items = await readData(FILE_NAME);
+    const created = { id: payload.id || crypto.randomUUID(), ...payload, createdAt: new Date().toISOString() };
+    items.push(created);
+    await writeData(FILE_NAME, items);
+    return created;
+};
+
+const update = async (id, payload) => {
+    const items = await readData(FILE_NAME);
+    const idx = items.findIndex((item) => item.id === id);
+    if (idx === -1) return null;
+    items[idx] = { ...items[idx], ...payload, updatedAt: new Date().toISOString() };
+    await writeData(FILE_NAME, items);
+    return items[idx];
+};
+
+const deleteRecord = async (id) => {
+    const items = await readData(FILE_NAME);
+    const filtered = items.filter((item) => item.id !== id);
+    if (filtered.length === items.length) return false;
+    await writeData(FILE_NAME, filtered);
+    return true;
+};
+
+module.exports = {
+    findAll,
+    findById,
+    create,
+    update,
+    delete: deleteRecord,
+};
+`;
+        }
         if (entityName.toLowerCase() === 'user') {
             return `const db = require('../configs/db');
 
@@ -6656,6 +6840,8 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt)
     };
 
     await readSnippet('package.json', 1800);
+    await readSnippet('.env', 800);
+    await readSnippet('.env.example', 800);
     for (const entryCandidate of ['server.js', 'app.js', 'index.js', 'src/app.js', 'src/server.js']) {
         await readSnippet(entryCandidate, 1400);
     }
@@ -6861,7 +7047,7 @@ Rules:
 - If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 - When modifying or adding files/folders to an existing local project (e.g. 'Api-Productions/Sample-RESTful-API-'): Always inspect and follow the project's existing directory structure. If the project places its code folders (such as controllers/, routes/, models/) directly at the project root, place new folders (like validation/) directly at the project root matching the existing pattern. NEVER prepend or create an unneeded 'src/' folder, NEVER create subfolders named 'desktops', and NEVER duplicate existing files into 'src/'.
-- When a [Local Project Diagnostic Snapshot] is included in the goal for a local bug fix or runtime crash: Diagnose ALL reported root causes using the inspected files and broken relative require() list. Update existing broken files in-place using fileManager with action 'createDesktopFile' and mode 'update' (e.g. fix package.json "main"/"scripts" to match server.js or src/app.js, fix mismatched relative require paths such as ../configs/env -> ../config/env, remove duplicate app.listen() calls when an entry file already listens), and finish with an executeCommand syntax check ('node -c <entry>' with cwd='Desktop/<project>', desktop=true). NEVER invent an unrelated standalone dummy app.js listening on port 3000 when server.js or src/app.js already exists, and NEVER add exportWorkspaceToDownloads.
+- When a [Local Project Diagnostic Snapshot] is included in the goal for a local bug fix or runtime crash: Diagnose ALL reported root causes using the inspected files and broken relative require() list. Update existing broken files in-place using fileManager with action 'createDesktopFile' and mode 'update' (e.g. fix package.json "main"/"scripts" to match server.js or src/app.js, fix mismatched relative require paths such as ../configs/env -> ../config/env, remove duplicate app.listen() calls when an entry file already listens), and finish with an executeCommand syntax check ('node -c <entry>' with cwd='Desktop/<project>', desktop=true). NEVER invent an unrelated standalone dummy app.js listening on port 3000 when server.js or src/app.js already exists, and NEVER add exportWorkspaceToDownloads. For EADDRINUSE errors: NEVER run 'npx kill-port', 'kill', or 'lsof' (commands run inside an isolated container and cannot kill processes on the user's Mac host); instead update the project code/port (.env, package.json, app.js/server.js) to use a non-conflicting port (e.g. 5000) or clean delegation + EADDRINUSE error handling.
 - When asked to add validation to routes, do not merely create a validator file; also update the existing router/controller files to import and apply the validation middleware to the routes so the validation is actually active.
 - PROJECT STRUCTURE CLEANUP RULE: When the user requests to clean, organize, or modify a project structure (e.g. 'modify structure project to clean', 'clean up project structure', 'remove unused folders', 'clean redundant folder', 'remove already but it still have'):
   - Inspect the project's layout and remove redundant or unneeded directories in-place using fileManager with action 'deleteDesktopPath' (e.g., {"action":"deleteDesktopPath","path":"<project>/src","kind":"directory"}).

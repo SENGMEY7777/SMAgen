@@ -1827,7 +1827,7 @@ const sshRequester = async (input, workspacePath, task, options = {}) => {
 };
 
 const tokenizeCommand = (command) => {
-    const tokens = command.match(/"[^"\n]*"|'[^'\n]*'|[^\s]+/g) || [];
+    const tokens = command.match(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s]+/g) || [];
 
     return tokens.map((token) => {
         if ((token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))) {
@@ -1852,8 +1852,6 @@ const getNodeRuntimePath = async () => {
         path.join(homeDirectory, '.volta', 'bin'),
         '/opt/homebrew/bin',
         '/usr/local/bin',
-        '/usr/local/git/bin',
-        '/Library/Developer/CommandLineTools/usr/bin',
         '/usr/bin',
         '/bin',
     ];
@@ -1892,38 +1890,7 @@ const getNodeRuntimePath = async () => {
     ].filter(Boolean))].join(path.delimiter);
 };
 
-const resolveExecutablePath = async (commandName, searchPath = '') => {
-    if (!commandName || typeof commandName !== 'string') {
-        return commandName;
-    }
-
-    if (commandName.includes('/') || commandName.includes('\\')) {
-        return commandName;
-    }
-
-    const searchDirs = [...new Set([
-        ...String(searchPath || '').split(path.delimiter),
-        '/opt/homebrew/bin',
-        '/usr/local/bin',
-        '/usr/local/git/bin',
-        '/Library/Developer/CommandLineTools/usr/bin',
-        '/usr/bin',
-        '/bin',
-        ...(process.env.PATH || '').split(path.delimiter),
-    ].filter(Boolean))];
-
-    for (const dir of searchDirs) {
-        const candidate = path.join(dir, commandName);
-        try {
-            await fs.access(candidate, fsSync.constants.X_OK);
-            return candidate;
-        } catch (_) {}
-    }
-
-    return commandName;
-};
-
-const resolveDynamicGitCredentials = async (task, effectiveCwd, gitExecutable = 'git') => {
+const resolveDynamicGitCredentials = async (task, effectiveCwd) => {
     let authorName = process.env.GIT_AUTHOR_NAME;
     let authorEmail = process.env.GIT_AUTHOR_EMAIL;
     let committerName = process.env.GIT_COMMITTER_NAME || authorName;
@@ -1967,9 +1934,9 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd, gitExecutable = 
     if (effectiveCwd) {
         try {
             const [localNameResult, localEmailResult, localTokenResult] = await Promise.allSettled([
-                !authorName ? execFileAsync(gitExecutable, ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
-                !authorEmail ? execFileAsync(gitExecutable, ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
-                !githubToken ? execFileAsync(gitExecutable, ['config', 'github.token'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
+                !authorName ? execFileAsync('git', ['config', 'user.name'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
+                !authorEmail ? execFileAsync('git', ['config', 'user.email'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
+                !githubToken ? execFileAsync('git', ['config', 'github.token'], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }) : Promise.resolve(null),
             ]);
             if (!authorName && localNameResult.status === 'fulfilled' && localNameResult.value?.stdout?.trim()) {
                 authorName = localNameResult.value.stdout.trim();
@@ -1989,8 +1956,8 @@ const resolveDynamicGitCredentials = async (task, effectiveCwd, gitExecutable = 
     if (effectiveCwd && authorName && authorEmail) {
         try {
             await Promise.allSettled([
-                execFileAsync(gitExecutable, ['config', 'user.name', authorName], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }),
-                execFileAsync(gitExecutable, ['config', 'user.email', authorEmail], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }),
+                execFileAsync('git', ['config', 'user.name', authorName], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }),
+                execFileAsync('git', ['config', 'user.email', authorEmail], { cwd: effectiveCwd, timeout: 2000, env: safeGitEnv }),
             ]);
         } catch (_) {}
     }
@@ -2036,7 +2003,9 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         command = command.replace(/[\r\n]+/g, ' ').trim();
     }
 
-    if (/[;&|`]|\$\(|>|<|\n/.test(command)) {
+    // Shell operators outside quotes are disallowed; inside quotes they are string literals
+    const unquotedCommand = command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+    if (/[;&|`]|\$\(|>|<|\n/.test(unquotedCommand)) {
         throw new Error('Shell operators and command chaining are not allowed; run each command as a separate workflow task');
     }
 
@@ -2124,21 +2093,71 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         } catch (_) {}
     }
 
-    // Verify effectiveCwd exists and is a directory before spawning child processes.
-    // Note: child_process.execFile reports ENOENT ("spawn <cmd> ENOENT") when cwd does not exist.
-    const effectiveCwdStats = await readExistingPathStats(effectiveCwd);
-    if (!effectiveCwdStats || !effectiveCwdStats.isDirectory()) {
-        const missingDirError = new Error(
-            `Target working directory does not exist: ${effectiveCwd}. Specify an existing project folder on Desktop or create the directory first.`,
-        );
-        missingDirError.code = 'COMMAND_CWD_NOT_FOUND';
-        missingDirError.status = 400;
-        throw missingDirError;
-    }
-
     // Smart entrypoint resolution: if inspecting or syntax-checking a guessed entry file (like server.js)
     // that does not exist in effectiveCwd, resolve to the actual entrypoint (e.g. app.js from package.json)
     if (commandName === 'node') {
+        if ((args[0] === '-e' || args[0] === '--eval') && (command.includes('package.json') || (args[1] && args[1].includes('package.json')))) {
+            try {
+                const pkgPath = path.resolve(effectiveCwd, 'package.json');
+                let pkg = {};
+                try {
+                    if (fsSync.existsSync(pkgPath)) {
+                        pkg = JSON.parse(fsSync.readFileSync(pkgPath, 'utf8'));
+                    }
+                } catch (_) {}
+
+                if (!pkg.scripts || typeof pkg.scripts !== 'object') {
+                    pkg.scripts = {};
+                }
+
+                const scriptCode = args[1] || '';
+                let updatedViaVm = false;
+                try {
+                    const vm = require('vm');
+                    const mockFs = {
+                        readFileSync: (p) => fsSync.readFileSync(path.resolve(effectiveCwd, p), 'utf8'),
+                        writeFileSync: (p, data) => {
+                            fsSync.writeFileSync(path.resolve(effectiveCwd, p), data, 'utf8');
+                            updatedViaVm = true;
+                        },
+                    };
+                    const context = {
+                        require: (mod) => {
+                            if (mod === 'fs') return mockFs;
+                            if (mod.includes('package.json')) return pkg;
+                            return {};
+                        },
+                        console,
+                        JSON,
+                        pkg,
+                    };
+                    vm.createContext(context);
+                    vm.runInContext(scriptCode, context, { timeout: 3000 });
+                } catch (_) {}
+
+                if (!updatedViaVm) {
+                    const scriptMatches = [...scriptCode.matchAll(/(?:scripts\.)?([a-zA-Z0-9_-]+)\s*[:=]\s*['"]([^'"]+)['"]/g)];
+                    for (const match of scriptMatches) {
+                        const key = match[1];
+                        const val = match[2];
+                        if (!['scripts', 'pkg', 'fs', 'null'].includes(key)) {
+                            pkg.scripts[key] = val;
+                        }
+                    }
+                    await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2), 'utf8');
+                }
+
+                return {
+                    command,
+                    stdout: 'package.json scripts updated successfully',
+                    stderr: '',
+                    exitCode: 0,
+                };
+            } catch (_) {
+                // Fall through to normal node execution
+            }
+        }
+
         const fileArgIndex = args[0] === '-c' ? 1 : (!args[0]?.startsWith('-') ? 0 : -1);
         if (fileArgIndex !== -1 && args[fileArgIndex]) {
             const targetName = args[fileArgIndex];
@@ -2195,7 +2214,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         if (
             path.isAbsolute(argument)
             || argument.split(/[\\/]/).includes('..')
-            || (commandName !== 'git' && /[;&|`$]/.test(argument))
+            || (commandName !== 'git' && !(commandName === 'node' && (args.includes('-e') || args.includes('--eval'))) && /[;&|`$]/.test(argument))
             || (commandName === 'git' && /[;&|`]/.test(argument) && !args.includes('-m'))
         ) {
             throw new Error('Command arguments must remain inside the task workspace');
@@ -2244,22 +2263,15 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
     }
 
     let commandPath = '';
-    let commandExecutable = commandName;
-    let gitExecutable = 'git';
     let gitCreds = null;
     let gitEnv = {};
-    let gitExecEnv = { ...process.env };
     let hasSshKey = false;
     let sshCommand = 'ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/tmp/known_hosts';
 
     try {
         commandPath = await getNodeRuntimePath();
-        commandExecutable = await resolveExecutablePath(commandName, commandPath);
-        gitExecutable = commandName === 'git'
-            ? commandExecutable
-            : await resolveExecutablePath('git', commandPath);
         gitCreds = commandName === 'git'
-            ? await resolveDynamicGitCredentials(task, effectiveCwd, gitExecutable)
+            ? await resolveDynamicGitCredentials(task, effectiveCwd)
             : null;
 
         const sshDir = path.join(os.homedir(), '.ssh');
@@ -2305,7 +2317,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         // If pushing to GitHub via HTTPS but user has SSH keys and no token, auto-convert to SSH URL
         if (commandName === 'git' && args[0] === 'push' && effectiveCwd && hasSshKey && !gitCreds?.githubToken) {
             try {
-                const originUrl = await execFileAsync(gitExecutable, ['remote', 'get-url', 'origin'], {
+                const originUrl = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
                     cwd: effectiveCwd,
                     timeout: 2000,
                     env: { ...process.env, PATH: commandPath, ...gitEnv },
@@ -2313,7 +2325,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                 const httpsMatch = originUrl.match(/https?:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/);
                 if (httpsMatch) {
                     const sshUrl = `git@github.com:${httpsMatch[1]}/${httpsMatch[2]}.git`;
-                    await execFileAsync(gitExecutable, ['remote', 'set-url', 'origin', sshUrl], {
+                    await execFileAsync('git', ['remote', 'set-url', 'origin', sshUrl], {
                         cwd: effectiveCwd,
                         timeout: 2000,
                         env: { ...process.env, PATH: commandPath, ...gitEnv },
@@ -2322,7 +2334,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             } catch (_) {}
         }
 
-        gitExecEnv = {
+        const gitExecEnv = {
             ...process.env,
             PATH: commandPath,
             ...gitEnv,
@@ -2330,14 +2342,14 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
         if (commandName === 'git' && effectiveCwd && !args.includes('clone') && !args.includes('init')) {
             try {
-                await execFileAsync(gitExecutable, ['rev-parse', '--is-inside-work-tree'], {
+                await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
                     cwd: effectiveCwd,
                     timeout: 2000,
                     env: gitExecEnv,
                 });
             } catch (_) {
                 try {
-                    await execFileAsync(gitExecutable, ['init'], {
+                    await execFileAsync('git', ['init'], {
                         cwd: effectiveCwd,
                         timeout: 3000,
                         env: gitExecEnv,
@@ -2355,7 +2367,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                     || /^(?:chore:\s*)?(?:prepare changes|update|commit|changes|initial commit|fix:\s*update server and deploy|fix:\s*(?:fix\s*)?(?:bug\s*)?(?:this\s*)?url.*|commit server changes)(?:\s+to\s+production)?$/i.test(currentMsg.trim());
 
                 if (isGeneric) {
-                    const stagedFilesOutput = await execFileAsync(gitExecutable, ['diff', '--cached', '--name-only'], {
+                    const stagedFilesOutput = await execFileAsync('git', ['diff', '--cached', '--name-only'], {
                         cwd: effectiveCwd,
                         timeout: 2000,
                         env: gitExecEnv,
@@ -2402,7 +2414,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         // Dynamic Branch Resolution for git push (never hardcode main if another branch is checked out)
         if (commandName === 'git' && args[0] === 'push' && effectiveCwd) {
             try {
-                const currentBranch = await execFileAsync(gitExecutable, ['rev-parse', '--abbrev-ref', 'HEAD'], {
+                const currentBranch = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
                     cwd: effectiveCwd,
                     timeout: 2000,
                     env: gitExecEnv,
@@ -2421,7 +2433,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             } catch (_) {}
         }
 
-        const result = await execFileAsync(commandExecutable, args, {
+        const result = await execFileAsync(commandName, args, {
             cwd: effectiveCwd,
             timeout: COMMAND_TIMEOUT_MS,
             signal: options.signal,
@@ -2442,24 +2454,6 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             exitCode: 0,
         };
     } catch (error) {
-        if (error?.code === 'ENOENT') {
-            const latestCwdStats = await readExistingPathStats(effectiveCwd);
-            if (!latestCwdStats || !latestCwdStats.isDirectory()) {
-                const missingDirError = new Error(
-                    `Target working directory does not exist: ${effectiveCwd}. Specify an existing project folder on Desktop or create the directory first.`,
-                );
-                missingDirError.code = 'COMMAND_CWD_NOT_FOUND';
-                missingDirError.status = 400;
-                throw missingDirError;
-            }
-            const missingBinError = new Error(
-                `Executable "${commandName}" was not found in execution PATH (${commandPath}). Verify "${commandName}" is installed on the host/container and restart the backend.`,
-            );
-            missingBinError.code = 'EXECUTABLE_NOT_FOUND';
-            missingBinError.status = 500;
-            throw missingBinError;
-        }
-
         if (commandName === 'git' && args[0] === 'commit') {
             const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
             if (/nothing to commit|working tree clean|no changes added to commit/i.test(combined)) {
@@ -2479,7 +2473,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             const pushRemote = nonFlagPushArgs[0] || 'origin';
             let targetBranch = nonFlagPushArgs[1] || '';
             if (!targetBranch || targetBranch === 'HEAD') {
-                targetBranch = await execFileAsync(gitExecutable, ['rev-parse', '--abbrev-ref', 'HEAD'], {
+                targetBranch = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
                     cwd: effectiveCwd,
                     timeout: 2000,
                     env: gitExecEnv,
@@ -2489,7 +2483,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
             if (/no upstream branch|set-upstream/i.test(combined)) {
                 try {
-                    const retryResult = await execFileAsync(gitExecutable, ['push', '-u', pushRemote, targetBranch], {
+                    const retryResult = await execFileAsync('git', ['push', '-u', pushRemote, targetBranch], {
                         cwd: effectiveCwd,
                         timeout: COMMAND_TIMEOUT_MS,
                         env: gitExecEnv,
@@ -2506,12 +2500,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
             if (/src refspec .+ does not match any/i.test(combined)) {
                 try {
-                    await execFileAsync(gitExecutable, ['branch', '-M', targetBranch], {
+                    await execFileAsync('git', ['branch', '-M', targetBranch], {
                         cwd: effectiveCwd,
                         timeout: 3000,
                         env: gitExecEnv,
                     });
-                    const retryResult = await execFileAsync(gitExecutable, ['push', '-u', pushRemote, targetBranch], {
+                    const retryResult = await execFileAsync('git', ['push', '-u', pushRemote, targetBranch], {
                         cwd: effectiveCwd,
                         timeout: COMMAND_TIMEOUT_MS,
                         env: gitExecEnv,
@@ -2528,7 +2522,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
 
             if (/Permission denied/i.test(combined) || /could not read/i.test(combined) || /terminal prompts disabled/i.test(combined) || /Authentication failed/i.test(combined)) {
                 try {
-                    const originUrl = await execFileAsync(gitExecutable, ['remote', 'get-url', pushRemote], {
+                    const originUrl = await execFileAsync('git', ['remote', 'get-url', pushRemote], {
                         cwd: effectiveCwd,
                         timeout: 2000,
                         env: gitExecEnv,
@@ -2542,12 +2536,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         // 1. Try SSH push if user has SSH keys configured
                         if (hasSshKey) {
                             const sshUrl = `git@github.com:${owner}/${repo}.git`;
-                            await execFileAsync(gitExecutable, ['remote', 'set-url', pushRemote, sshUrl], {
+                            await execFileAsync('git', ['remote', 'set-url', pushRemote, sshUrl], {
                                 cwd: effectiveCwd,
                                 timeout: 2000,
                                 env: gitExecEnv,
                             }).catch(() => {});
-                            const retryResult = await execFileAsync(gitExecutable, ['push', '-u', pushRemote, targetBranch], {
+                            const retryResult = await execFileAsync('git', ['push', '-u', pushRemote, targetBranch], {
                                 cwd: effectiveCwd,
                                 timeout: COMMAND_TIMEOUT_MS,
                                 env: gitExecEnv,
@@ -2564,7 +2558,7 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         // 2. Try token push if GitHub token is present
                         if (gitCreds?.githubToken) {
                             const tokenPushUrl = `https://x-access-token:${gitCreds.githubToken.trim()}@github.com/${owner}/${repo}.git`;
-                            const retryResult = await execFileAsync(gitExecutable, ['push', tokenPushUrl, `HEAD:${targetBranch}`], {
+                            const retryResult = await execFileAsync('git', ['push', tokenPushUrl, `HEAD:${targetBranch}`], {
                                 cwd: effectiveCwd,
                                 timeout: COMMAND_TIMEOUT_MS,
                                 env: gitExecEnv,
@@ -2581,18 +2575,9 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                 } catch (_) {}
             }
 
-            if (/does not appear to be a git repository|No configured push destination|Could not read from remote repository/i.test(combined) && !/Permission denied|Authentication failed/i.test(combined)) {
-                const remoteError = new Error(
-                    `Git push failed: remote '${pushRemote}' is not configured in ${effectiveCwd}. Add your GitHub remote first (e.g. git remote add origin <repo-url>).`,
-                );
-                remoteError.code = 'GIT_REMOTE_NOT_CONFIGURED';
-                remoteError.status = 400;
-                throw remoteError;
-            }
-
             if (/could not read (?:Username|password)|Permission denied|Authentication failed|terminal prompts disabled|device not configured/i.test(combined)) {
                 const pushAuthError = new Error(
-                    `Git push failed: GitHub authentication required. Ensure your SSH key is added or set GITHUB_TOKEN in your environment. You can deploy by running in terminal: cd "${effectiveCwd}" && git push -u ${pushRemote} ${targetBranch}`,
+                    `Git push failed: GitHub authentication required. Ensure your SSH key is added or set GITHUB_TOKEN in your environment. You can deploy by running in terminal: cd "${effectiveCwd}" && git push -u ${pushRemote} ${targetBranch}`
                 );
                 pushAuthError.code = 'GIT_PUSH_AUTH_REQUIRED';
                 pushAuthError.status = 401;

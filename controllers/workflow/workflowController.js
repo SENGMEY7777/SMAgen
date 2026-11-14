@@ -33,6 +33,12 @@ const runWorkflow = async (req, res, next) => {
         return runWorkflowStream(req, res);
     }
 
+    let clientDisconnected = false;
+    const onClose = () => {
+        clientDisconnected = true;
+    };
+    req.on('close', onClose);
+
     try {
         const body = req.body || {};
         const result = await workflowService.runWorkflow({
@@ -47,7 +53,20 @@ const runWorkflow = async (req, res, next) => {
                 || (body.projectName ? `Desktop/${body.projectName}` : ''),
             userId: req.user.id,
             io: req.app.get('io'),
+            isAborted: () => clientDisconnected || req.destroyed,
         });
+
+        if (clientDisconnected || req.destroyed) {
+            if (result?.runId) {
+                console.log(`🛑 [Workflow Controller] Client aborted request for Run ${result.runId}. Cancelling run.`);
+                await workflowService.cancelRun({
+                    runId: result.runId,
+                    userId: req.user.id,
+                    reason: 'Client aborted request before execution',
+                }).catch(() => {});
+            }
+            return;
+        }
 
         const statusCode = result.executionStarted ? 202 : 201;
         const messageByStatus = {
@@ -61,6 +80,8 @@ const runWorkflow = async (req, res, next) => {
         return sendResponse(res, statusCode, true, message, result);
     } catch (error) {
         return next(error);
+    } finally {
+        req.removeListener('close', onClose);
     }
 };
 

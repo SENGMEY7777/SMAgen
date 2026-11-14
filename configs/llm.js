@@ -6,8 +6,8 @@ const {
 const {parseJsonResponse} = require('../utils/jsonParser');
 require('./env');
 
-const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
-const RETIRED_MODEL_PATTERN = /^gemini-(?:1\.5|2\.5)-flash(?:-lite)?$/i;
+const DEFAULT_MODEL = 'gemini-2.5-flash';
+const RETIRED_MODEL_PATTERN = /^gemini-(?:1\.0)-/i;
 
 const normalizeModelCandidate = (value) => {
     const candidate = String(value || '')
@@ -92,25 +92,29 @@ const isRetryableError = (error) => {
 };
 
 const isTransientProviderError = (error) => {
+    const code = getErrorCode(error);
+    if (code === 404 || (code >= 400 && code < 500 && code !== 408 && code !== 429)) {
+        return false;
+    }
     return isRetryableError(error);
 };
 
 const configuredTimeout = Number(process.env.LLM_TIMEOUT_MS);
 const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout >= 1000
-    ? configuredTimeout
-    : 60000;
+    ? Math.min(configuredTimeout, 30000)
+    : 20000;
 
 const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS);
 const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)
     && configuredMaxModelAttempts >= 1
-    ? Math.min(configuredMaxModelAttempts, 5)
-    : 3;
+    ? Math.min(configuredMaxModelAttempts, 3)
+    : 2;
 
 const configuredTransientRetries = Number(process.env.GEMINI_TRANSIENT_RETRIES);
 const GEMINI_TRANSIENT_RETRIES = Number.isInteger(configuredTransientRetries)
     && configuredTransientRetries >= 0
-    ? Math.min(configuredTransientRetries, 5)
-    : 3;
+    ? Math.min(configuredTransientRetries, 2)
+    : 1;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
     let timeoutId;
@@ -135,10 +139,10 @@ const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
         model,
         process.env.GEMINI_MODEL,
         process.env.GEMINI_FALLBACK_MODEL,
-        'gemini-3.5-flash-lite',
-        'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
-        'gemini-3.8-flash',
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-2.0-flash-lite',
+        'gemini-1.5-flash',
         ...String(process.env.GEMINI_EXTRA_MODELS || '')
             .split(',')
             .map((candidate) => candidate.trim())

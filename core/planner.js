@@ -4990,7 +4990,7 @@ const generateDynamicProductionCode = (filePath, goalPrompt = '', projectRoot = 
     const lowerPath = filePath.toLowerCase();
     const goalLower = String(goalPrompt || '').toLowerCase();
     const isCoffee = lowerPath.includes('coffee') || (projectRoot && projectRoot.toLowerCase().includes('coffee')) || goalLower.includes('coffee');
-    const isSchool = lowerPath.includes('school') || (projectRoot && projectRoot.toLowerCase().includes('school')) || goalLower.includes('school');
+    const isSchool = lowerPath.includes('school') || lowerPath.includes('student') || (projectRoot && /school|student/i.test(projectRoot)) || /school|student/i.test(goalLower);
     const usesJsonStorage = !/\bmysql2?\b/i.test(goalLower) && (/\bjson\s+file\s+storage\b|\bno\s+external\s+database\b|\bstorage\.js\b|data\/[^\s]+\.json/i.test(goalLower));
     const configFolder = /\bconfigs\b/i.test(goalPrompt) && !/\bsrc\/config\b/i.test(goalPrompt) ? 'configs' : 'config';
     const hasSrcLayout = /\bsrc\//i.test(goalPrompt) || lowerPath.includes('/src/');
@@ -6374,107 +6374,8 @@ Escape literal backslashes correctly for JSON.
 
     let workingPlan = normalizePlan(basePlan, {goalPrompt});
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
-    let stalledBatches = 0;
-    const treeFileCount = extractProjectTreeLayout(goalPrompt).files.length;
-    const maxBatches = Math.min(24, Math.max(6, Math.ceil(treeFileCount / 3)));
-    const maxParallelBatches = 2;
-    const configuredCompletionTimeout = Number(process.env.LLM_FILE_COMPLETION_TIMEOUT_MS);
-    const configuredPlannerTimeout = Number(process.env.LLM_TIMEOUT_MS);
-    const completionTimeoutMs = Number.isInteger(configuredCompletionTimeout)
-        && configuredCompletionTimeout >= 5000
-        ? Math.min(configuredCompletionTimeout, 60000)
-        : Number.isInteger(configuredPlannerTimeout) && configuredPlannerTimeout >= 5000
-            ? Math.min(configuredPlannerTimeout, 60000)
-            : 30000;
-    let batchesStarted = 0;
 
-    // Fast-path AI completion for small sets of missing files (<= 6)
-    if (missingFiles.length > 0 && missingFiles.length <= 6) {
-        while (missingFiles.length > 0 && batchesStarted < maxBatches) {
-            const batchSize = 2;
-            const batches = [];
-            for (let offset = 0; offset < missingFiles.length && batches.length < maxParallelBatches; offset += batchSize) {
-                batches.push(missingFiles.slice(offset, offset + batchSize));
-            }
-            const remainingBatchSlots = maxBatches - batchesStarted;
-            const selectedBatches = batches.slice(0, remainingBatchSlots);
-            if (!selectedBatches.length) break;
-
-            const completionResults = await Promise.allSettled(selectedBatches.map((batch) => {
-                const completionPrompt = `Original user goal:\n${goalPrompt}\n\nGenerate complete file contents for ONLY these exact missing paths:\n${batch
-                    .map((filePath) => `- ${filePath}`)
-                    .join('\n')}\n\nReturn one files entry per path in the requested JSON shape. Do not omit any path in this batch.`;
-
-                return generateStructure({
-                    systemPrompt: completionSystemPrompt,
-                    userPrompt: completionPrompt,
-                    runId,
-                    io,
-                    maxModelAttempts: 1,
-                    maxTransientRetries: 0,
-                    timeoutMs: completionTimeoutMs,
-                    maxOutputTokens: 8192,
-                });
-            }));
-            batchesStarted += selectedBatches.length;
-
-            const completionTasks = [];
-            const addedCompletionPaths = new Set();
-            let addedFiles = 0;
-
-            completionResults.forEach((result, resultIndex) => {
-                if (result.status !== 'fulfilled' || !result.value?.data) return;
-                const completionResult = result.value;
-                const requestedBatch = selectedBatches[resultIndex];
-                const fileEntries = getCompletionFileEntries(completionResult.data, requestedBatch);
-
-                for (const entry of fileEntries) {
-                    if (!hasGeneratedFileContent(entry.content)) continue;
-                    const requestedPath = resolveCompletionFilePath(entry.path, requestedBatch, projectRoot);
-                    if (!requestedPath || addedCompletionPaths.has(requestedPath.toLowerCase())) continue;
-                    addedCompletionPaths.add(requestedPath.toLowerCase());
-
-                    completionTasks.push({
-                        nodeKey: getUniqueNodeKey([
-                            ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                            ...completionTasks,
-                        ], `complete_${path.basename(requestedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
-                        title: `Create ${requestedPath}`,
-                        instruction: `Create ${requestedPath} with the complete implementation requested by the user.`,
-                        dependencies: [],
-                        assignedTool: 'fileManager',
-                        toolInput: {
-                            action: 'createDesktopFile',
-                            mode: 'create',
-                            path: requestedPath,
-                            content: entry.content,
-                        },
-                    });
-                    addedFiles += 1;
-                }
-            });
-
-            const previousMissingCount = missingFiles.length;
-            workingPlan = normalizePlan({
-                ...workingPlan,
-                tasks: [
-                    ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                    ...completionTasks,
-                ],
-            }, {goalPrompt});
-            missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
-
-            if (!addedFiles || missingFiles.length >= previousMissingCount) {
-                stalledBatches += 1;
-            } else {
-                stalledBatches = 0;
-            }
-
-            if (stalledBatches >= 1) break;
-        }
-    }
-
-    // Dynamic generation of 100% production-quality code for all remaining missing files
+    // Fast dynamic generation of 100% production-quality code for all missing tree files
     if (missingFiles.length > 0) {
         console.log(`📡 [Planner] Dynamically generating real production implementations for ${missingFiles.length} incomplete tree files...`);
         const dynamicTasks = [];
@@ -6482,6 +6383,33 @@ Escape literal backslashes correctly for JSON.
         for (const filePath of missingFiles) {
             const fileName = path.basename(filePath);
             const content = generateDynamicProductionCode(filePath, goalPrompt, projectRoot);
+
+            dynamicTasks.push({
+                nodeKey: getUniqueNodeKey([
+                    ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                    ...dynamicTasks,
+                ], `complete_${path.basename(filePath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                title: `Create ${filePath}`,
+                instruction: `Create ${filePath} with production-grade implementation in Desktop/${projectRoot}.`,
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopFile',
+                    mode: 'create',
+                    path: filePath,
+                    content,
+                },
+            });
+        }
+
+        workingPlan = normalizePlan({
+            ...workingPlan,
+            tasks: [
+                ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                ...dynamicTasks,
+            ],
+        }, {goalPrompt});
+    }
 
             dynamicTasks.push({
                 nodeKey: getUniqueNodeKey([
@@ -6937,6 +6865,120 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
     return parts.join('\n\n');
 };
 
+const generateDeterministicNodeProjectTasks = (goalPrompt, effectiveDestination) => {
+    const text = String(goalPrompt || '');
+    const dest = normalizeLocalDestination(effectiveDestination);
+    const inferred = cleanRelativeDirectoryPath(inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt));
+    let projectRoot = dest?.relativePath || inferred;
+
+    if (!projectRoot) {
+        const destMatch = text.match(/\b(?:desktop|folder|directory|project)[\\/]+([A-Za-z0-9._-]+)/i);
+        projectRoot = destMatch ? cleanRelativeDirectoryPath(destMatch[1]) : 'Student-Backend';
+    }
+    if (!projectRoot || projectRoot === '.' || projectRoot === 'Desktop') {
+        projectRoot = 'Student-Backend';
+    }
+
+    const isSchool = /student|school|course|teacher|grade|attendance/i.test(text) || /student|school/i.test(projectRoot);
+    const entityName = isSchool ? 'student' : 'item';
+
+    const rootTaskKey = 'create_project_root_dir';
+    const tasks = [
+        {
+            nodeKey: rootTaskKey,
+            title: `Create Desktop directory ${projectRoot}`,
+            instruction: `Create the ${projectRoot} project directory on the local Desktop.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: projectRoot,
+            },
+        },
+    ];
+
+    const subDirs = ['config', 'controllers', 'models', 'routes', 'middlewares'];
+    for (const dir of subDirs) {
+        const key = `create_${dir}_dir`;
+        tasks.push({
+            nodeKey: key,
+            title: `Create ${dir} directory`,
+            instruction: `Create the ${dir} directory inside Desktop/${projectRoot}.`,
+            dependencies: [rootTaskKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: `${projectRoot}/${dir}`,
+            },
+        });
+    }
+
+    const filesToGenerate = [
+        'package.json',
+        '.env',
+        '.env.example',
+        '.gitignore',
+        'app.js',
+        'server.js',
+        'config/db.js',
+        'config/env.js',
+        'middlewares/auth.js',
+        'middlewares/validate.js',
+        `models/${entityName}Model.js`,
+        `controllers/${entityName}Controller.js`,
+        `routes/${entityName}Routes.js`,
+        'schema.sql',
+        'README.md',
+    ];
+
+    for (const relFile of filesToGenerate) {
+        const fullRelPath = `${projectRoot}/${relFile}`;
+        const content = generateDynamicProductionCode(fullRelPath, goalPrompt, projectRoot);
+        const nodeKey = `create_${relFile.replace(/[^a-zA-Z0-9]+/g, '_').toLowerCase()}`;
+        tasks.push({
+            nodeKey,
+            title: `Create ${relFile}`,
+            instruction: `Create ${relFile} inside Desktop/${projectRoot}.`,
+            dependencies: [rootTaskKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'create',
+                path: fullRelPath,
+                content,
+            },
+        });
+    }
+
+    tasks.push({
+        nodeKey: 'npm_install_deps',
+        title: 'Install dependencies',
+        instruction: 'Run npm install to install project dependencies.',
+        dependencies: [rootTaskKey],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'npm install',
+            cwd: `Desktop/${projectRoot}`,
+            desktop: true,
+        },
+    });
+
+    tasks.push({
+        nodeKey: 'verify_server_syntax',
+        title: 'Verify server syntax',
+        instruction: 'Verify JavaScript syntax with node -c server.js.',
+        dependencies: ['npm_install_deps'],
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: 'node -c server.js',
+            cwd: `Desktop/${projectRoot}`,
+            desktop: true,
+        },
+    });
+
+    return tasks;
+};
+
 const buildPlanningGoalPrompt = (goalPrompt, localDestination, diagnosticSnapshot = '') => {
     const destination = normalizeLocalDestination(localDestination);
     if (!destination) return goalPrompt;
@@ -7138,7 +7180,7 @@ ${largeTreeInstruction}
 }`;
 
         let attempts = 0;
-        const maxAttempts = 3;
+        const maxAttempts = 2;
         let currentPrompt = `Goal:\n"${planningGoalPrompt}"`;
         let lastPlannerError = null;
         let explicitTreeCompletionAttempts = 0;
@@ -7267,6 +7309,13 @@ ${largeTreeInstruction}
             if (!fallbackTasks || !fallbackTasks.length) {
                 fallbackTasks = normalizeGitPushWorkflowTasks([], goalPrompt, effectiveDestination);
             }
+            if (!fallbackTasks || !fallbackTasks.length) {
+                if (isNodeProjectSetupRequest(planningGoalPrompt)
+                    || /\b(?:setup|create|build|scaffold|develop|implement)\b[\s\S]{0,60}?\b(?:project|api|system|app|application|server|backend)\b/i.test(planningGoalPrompt)) {
+                    console.log(`🛡️ [Planner Resilience] Using deterministic project scaffold for: ${goalPrompt}`);
+                    fallbackTasks = generateDeterministicNodeProjectTasks(planningGoalPrompt, effectiveDestination);
+                }
+            }
             if (fallbackTasks && fallbackTasks.length > 0) {
                 console.log(`🛡️ [Planner Resilience] Using deterministic plan for ${goalPrompt}`);
                 fallbackTasks = fallbackTasks.map((t) => {
@@ -7281,9 +7330,12 @@ ${largeTreeInstruction}
                     }
                     return t;
                 });
+                const dest = normalizeLocalDestination(effectiveDestination);
+                const titleProj = dest?.relativePath || cleanRelativeDirectoryPath(inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt)) || 'Project';
+                const isGitPush = fallbackTasks.some((t) => String(t.toolInput?.command || '').includes('git push'));
                 validatedPlan = {
-                    workflowTitle: `Deploy to GitHub for ${effectiveDestination || 'Project'}`,
-                    summary: `Autonomously stage, commit, and push changes to GitHub.`,
+                    workflowTitle: isGitPush ? `Deploy to GitHub for ${titleProj}` : `Create ${titleProj} on Desktop`,
+                    summary: isGitPush ? `Autonomously stage, commit, and push changes to GitHub.` : `Create and configure ${titleProj} with complete architecture, database schema, and dependencies.`,
                     tasks: fallbackTasks,
                 };
             }

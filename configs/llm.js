@@ -6,7 +6,7 @@ const {
 const {parseJsonResponse} = require('../utils/jsonParser');
 require('./env');
 
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 const RETIRED_MODEL_PATTERN = /^gemini-(?:1\.0)-/i;
 
 const normalizeModelCandidate = (value) => {
@@ -136,13 +136,13 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
 
 const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
     const candidates = [
+        DEFAULT_MODEL,
         model,
         process.env.GEMINI_MODEL,
         process.env.GEMINI_FALLBACK_MODEL,
-        'gemini-2.5-flash',
-        'gemini-2.0-flash',
-        'gemini-2.0-flash-lite',
-        'gemini-1.5-flash',
+        'gemini-3.5-flash',
+        'gemini-3.1-flash-lite',
+        'gemini-2.5-flash-lite',
         ...String(process.env.GEMINI_EXTRA_MODELS || '')
             .split(',')
             .map((candidate) => candidate.trim())
@@ -168,7 +168,7 @@ const createLlmFailure = (lastError, operation = 'Gemini request') => {
     } else if (providerStatus === 404) {
         code = 'LLM_UNAVAILABLE';
         status = 503;
-        message = 'No configured Gemini model is available. Use GEMINI_MODEL=gemini-3.5-flash-lite or another currently supported Gemini model.';
+        message = 'No usable Gemini model is available. Set GEMINI_MODEL=gemini-3.5-flash-lite, then restart the backend.';
     } else if (providerStatus && providerStatus < 500) {
         code = 'LLM_ERROR';
         status = 503;

@@ -2462,6 +2462,65 @@ const normalizeDynamicNodeDesktopTasks = (tasks, goalPrompt, requestedDirectoryP
         };
     });
 
+    // Package-manager tasks must never race the package.json write. The
+    // planner can return both tasks with only the project directory as their
+    // dependency, which lets `npm install` start while package.json is still
+    // being created. Add a dynamic package file when it is missing and make
+    // every package operation depend on the task that writes it.
+    const getFileEntries = (task) => {
+        if (Array.isArray(task.toolInput?.files)) {
+            return task.toolInput.files.map((file) => ({
+                path: file?.path || file?.fileName,
+            }));
+        }
+        if (task.toolInput?.files && typeof task.toolInput.files === 'object') {
+            return Object.keys(task.toolInput.files).map((filePath) => ({path: filePath}));
+        }
+        return task.toolInput?.path ? [{path: task.toolInput.path}] : [];
+    };
+
+    const packageTask = nextTasks.find((task) => {
+        const action = String(task.toolInput?.action || '').trim().toLowerCase();
+        if (!isFileAction(action)) return false;
+        return getFileEntries(task).some((entry) => {
+            const normalizedPath = cleanRelativeDirectoryPath(entry.path);
+            return normalizedPath
+                && normalizedPath.toLowerCase() === `${directoryPath.toLowerCase()}/package.json`;
+        });
+    }) || (() => {
+        const createdTask = {
+            nodeKey: getUniqueNodeKey(nextTasks, 'create_package_json'),
+            title: 'Create package.json',
+            instruction: `Create package.json inside Desktop/${directoryPath} before installing dependencies.`,
+            dependencies: [directoryTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'create',
+                path: `${directoryPath}/package.json`,
+                content: generateDynamicProductionCode(`${directoryPath}/package.json`, goalPrompt, directoryPath),
+            },
+        };
+        nextTasks.push(createdTask);
+        return createdTask;
+    })();
+
+    const packageCommandPattern = /^(?:npm|pnpm|yarn|bun)\s+(?:install|i|ci|run|exec|pkg|add|remove|uninstall|update)\b/i;
+    nextTasks = nextTasks.map((task) => {
+        const tool = String(task.assignedTool || '').trim().toLowerCase();
+        const command = String(task.toolInput?.command || '').trim();
+        if (!['executecommand', 'execute_command'].includes(tool)
+            || !packageCommandPattern.test(command)
+            || task.nodeKey === packageTask.nodeKey) {
+            return task;
+        }
+
+        return {
+            ...task,
+            dependencies: [...new Set([...(task.dependencies || []), packageTask.nodeKey])],
+        };
+    });
+
     const explicitNodeRequest = /\bnode(?:\.js|\s*js)?\b/i.test(String(goalPrompt || ''));
     const explicitPhpRequest = /\bphp\b/i.test(String(goalPrompt || ''));
     if (explicitNodeRequest && !explicitPhpRequest) {

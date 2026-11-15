@@ -34,10 +34,16 @@ const runWorkflow = async (req, res, next) => {
     }
 
     let clientDisconnected = false;
-    const onClose = () => {
+    const onAborted = () => {
         clientDisconnected = true;
     };
-    req.on('close', onClose);
+    const onResponseClose = () => {
+        // A response close after headers/body were written is normal. Only
+        // treat an unwritten response as a client disconnect.
+        if (!res.writableEnded) clientDisconnected = true;
+    };
+    req.on('aborted', onAborted);
+    res.on('close', onResponseClose);
 
     try {
         const body = req.body || {};
@@ -53,10 +59,10 @@ const runWorkflow = async (req, res, next) => {
                 || (body.projectName ? `Desktop/${body.projectName}` : ''),
             userId: req.user.id,
             io: req.app.get('io'),
-            isAborted: () => clientDisconnected || req.destroyed,
+            isAborted: () => clientDisconnected || req.aborted === true,
         });
 
-        if (clientDisconnected || req.destroyed) {
+        if (clientDisconnected || req.aborted === true) {
             if (result?.runId) {
                 console.log(`🛑 [Workflow Controller] Client aborted request for Run ${result.runId}. Cancelling run.`);
                 await workflowService.cancelRun({
@@ -81,7 +87,8 @@ const runWorkflow = async (req, res, next) => {
     } catch (error) {
         return next(error);
     } finally {
-        req.removeListener('close', onClose);
+        req.removeListener('aborted', onAborted);
+        res.removeListener('close', onResponseClose);
     }
 };
 

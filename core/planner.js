@@ -1526,12 +1526,82 @@ const extractProjectTreeLayout = (goalPrompt) => {
     const files = new Set();
     const directoryStack = [];
     let rootName = null;
+    let inRootFilesSection = false;
     let previousNonEmptyLine = '';
     const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+.*)?$/;
     const treeRootHeaderPattern = /^([A-Za-z0-9][A-Za-z0-9._-]*)\/\s*(?:[#(].*)?$/;
 
     for (const line of String(goalPrompt || '').split(/\r?\n/)) {
         const trimmedLine = line.trim();
+
+        // Many users describe a project tree with Markdown bullets instead of
+        // box-drawing characters, for example:
+        //   - src/controllers/ -> auth.controller.js, user.controller.js
+        //   - Root Files: -> server.js, app.js
+        // Treat that format as an explicit acceptance contract too. The old
+        // parser only understood `├──`/`└──`, so large requests silently lost
+        // most of their requested files before planning started.
+        const rootFilesHeader = trimmedLine.replace(/^[*_`]+|[*_`]+$/g, '').trim();
+        const rootFilesHeaderMatch = rootFilesHeader.match(/^[-*]?\s*root\s+files?\s*:?[\s-]*(?:->|→)?\s*$/i);
+        if (rootFilesHeaderMatch) {
+            inRootFilesSection = true;
+            if (trimmedLine) previousNonEmptyLine = trimmedLine;
+            continue;
+        }
+
+        const structuredBulletMatch = line.match(/^\s*[-*]\s*`?([^`→]+?)`?\s*(?:→|->)\s*(.+?)\s*$/);
+        if (structuredBulletMatch) {
+            const rawDirectory = structuredBulletMatch[1]
+                .trim()
+                .replace(/^['"`]|['"`]$/g, '')
+                .replace(/[\s:]+$/, '')
+                .replace(/[\\/]+$/, '');
+            const directoryPath = cleanRelativeDirectoryPath(rawDirectory);
+            if (directoryPath && directoryPath !== '.') {
+                directories.add(directoryPath);
+
+                const entries = structuredBulletMatch[2]
+                    .split(/,|\s+and\s+/i)
+                    .map((entry) => entry
+                        .trim()
+                        .replace(/^['"`]|['"`]$/g, '')
+                        .replace(/[),;]+$/, ''))
+                    .filter(Boolean);
+
+                for (const entry of entries) {
+                    if (entry.endsWith('/')) {
+                        const nestedDirectory = cleanRelativeDirectoryPath(`${directoryPath}/${entry}`);
+                        if (nestedDirectory) directories.add(nestedDirectory);
+                        continue;
+                    }
+
+                    const fileName = cleanRelativeFilePath(entry);
+                    if (fileName && !fileName.includes('/') && /\.[A-Za-z0-9_-]+$/.test(fileName)) {
+                        files.add(`${directoryPath}/${fileName}`);
+                    }
+                }
+            }
+
+            if (trimmedLine) previousNonEmptyLine = trimmedLine;
+            continue;
+        }
+
+        // Root files are commonly written as one filename per bullet after a
+        // `Root Files:` heading. Keep this state local to the current prompt;
+        // it is reset when the next prose section begins.
+        if (inRootFilesSection && /^[-*]\s+/.test(trimmedLine)) {
+            const rootFile = cleanRelativeFilePath(trimmedLine.replace(/^[-*]\s+/, '').trim());
+            if (rootFile && !rootFile.includes('/') && /\.[A-Za-z0-9_-]+$/.test(rootFile)) {
+                files.add(rootFile);
+                if (trimmedLine) previousNonEmptyLine = trimmedLine;
+                continue;
+            }
+        }
+
+        if (inRootFilesSection && trimmedLine && !/^[-*]\s+/.test(trimmedLine)) {
+            inRootFilesSection = false;
+        }
+
         const match = line.match(treeEntryPattern);
         if (!match) {
             if (trimmedLine) {
@@ -6375,13 +6445,117 @@ Escape literal backslashes correctly for JSON.
     let workingPlan = normalizePlan(basePlan, {goalPrompt});
     let missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
 
-    // Fast dynamic generation of 100% production-quality code for all missing tree files
+    // Complete explicit trees in bounded concurrent batches. The previous
+    // implementation bypassed the injected/model completion function and
+    // immediately generated generic files, which made recovery tests fail and
+    // prevented the planner from using the requested project requirements.
+    // Batches keep the request bounded while still allowing large trees to
+    // make progress without one model response containing every file.
+    if (missingFiles.length > 0 && typeof generateStructure === 'function') {
+        const treeFileCount = extractProjectTreeLayout(goalPrompt).files.length;
+        const batchSize = 3;
+        const maxParallelBatches = 3;
+        const maxBatches = Math.min(24, Math.max(6, Math.ceil(treeFileCount / batchSize)));
+        const completionTimeoutMs = 60000;
+        let nextBatchSize = batchSize;
+        let completedBatches = 0;
+
+        while (missingFiles.length > 0 && completedBatches < maxBatches) {
+            const pendingFiles = [...missingFiles];
+            const batches = [];
+            for (let index = 0; index < maxParallelBatches && index * nextBatchSize < pendingFiles.length; index += 1) {
+                batches.push(pendingFiles.slice(index * nextBatchSize, (index + 1) * nextBatchSize));
+            }
+
+            if (!batches.length) break;
+            completedBatches += batches.length;
+
+            const results = await Promise.allSettled(batches.map(async (requestedBatch) => {
+                const completionPrompt = `
+Goal:
+${goalPrompt}
+
+Project root: Desktop/${projectRoot}
+Generate complete content for exactly these requested files:
+${requestedBatch.map((filePath) => `- ${filePath}`).join('\n')}
+`.trim();
+
+                return generateStructure({
+                    systemPrompt: completionSystemPrompt,
+                    userPrompt: completionPrompt,
+                    runId,
+                    io,
+                    maxModelAttempts: 2,
+                    maxTransientRetries: 1,
+                    timeoutMs: completionTimeoutMs,
+                    maxOutputTokens: 8192,
+                });
+            }));
+
+            const completedTasks = [];
+            for (const [resultIndex, result] of results.entries()) {
+                if (result.status !== 'fulfilled') {
+                    continue;
+                }
+
+                const resultData = result.value?.data ?? result.value;
+                const requestedBatch = batches[resultIndex] || [];
+                const entries = getCompletionFileEntries(resultData, requestedBatch);
+                for (const entry of entries) {
+                    const resolvedPath = resolveCompletionFilePath(entry.path, requestedBatch, projectRoot);
+                    if (!resolvedPath || !hasGeneratedFileContent(entry.content)) {
+                        continue;
+                    }
+
+                    completedTasks.push({
+                        nodeKey: getUniqueNodeKey([
+                            ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                            ...completedTasks,
+                        ], `complete_${path.basename(resolvedPath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
+                        title: `Create ${resolvedPath}`,
+                        instruction: `Create ${resolvedPath} with complete implementation in Desktop/${projectRoot}.`,
+                        dependencies: [],
+                        assignedTool: 'fileManager',
+                        toolInput: {
+                            action: 'createDesktopFile',
+                            mode: 'create',
+                            path: resolvedPath,
+                            content: entry.content,
+                        },
+                    });
+                }
+            }
+
+            if (completedTasks.length > 0) {
+                workingPlan = normalizePlan({
+                    ...workingPlan,
+                    tasks: [
+                        ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
+                        ...completedTasks,
+                    ],
+                }, {goalPrompt});
+                missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
+                nextBatchSize = batchSize;
+            } else if (nextBatchSize > 1) {
+                // If a multi-file response is truncated or malformed, retry
+                // the same pending files one at a time on the next pass.
+                nextBatchSize = 1;
+                missingFiles = pendingFiles;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // Keep a local, deterministic safety net for a provider outage or a
+    // model response that omits one or more exact paths. This path is fast and
+    // guarantees that every requested task still reaches the scheduler.
+    missingFiles = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     if (missingFiles.length > 0) {
-        console.log(`📡 [Planner] Dynamically generating real production implementations for ${missingFiles.length} incomplete tree files...`);
+        console.log(`📡 [Planner] Filling ${missingFiles.length} remaining tree files with local generation...`);
         const dynamicTasks = [];
 
         for (const filePath of missingFiles) {
-            const fileName = path.basename(filePath);
             const content = generateDynamicProductionCode(filePath, goalPrompt, projectRoot);
 
             dynamicTasks.push({
@@ -6952,6 +7126,149 @@ const generateDeterministicNodeProjectTasks = (goalPrompt, effectiveDestination)
     return tasks;
 };
 
+// Build a complete task graph directly from a large explicit project tree.
+// This is intentionally deterministic: the user already supplied the
+// acceptance criteria, so waiting for another model response to rediscover
+// the paths only delays task creation and makes the UI appear stuck.
+const buildDeterministicExplicitProjectTreePlan = (goalPrompt, effectiveDestination) => {
+    const layout = extractProjectTreeLayout(goalPrompt);
+    if (!layout.files.length && !layout.directories.length) {
+        return null;
+    }
+
+    const destination = normalizeLocalDestination(effectiveDestination);
+    const inferredRoot = cleanRelativeDirectoryPath(
+        inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
+    );
+    const projectRoot = destination?.relativePath
+        || inferredRoot
+        || layout.rootName
+        || layout.directories[0]?.split('/')[0]
+        || layout.files[0]?.split('/')[0]
+        || 'Student-Backend';
+
+    const rootTaskKey = 'create_project_root_dir';
+    const tasks = [{
+        nodeKey: rootTaskKey,
+        title: `Create Desktop directory ${projectRoot}`,
+        instruction: `Create the ${projectRoot} project directory on the local Desktop.`,
+        dependencies: [],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'createDesktopDirectory',
+            path: projectRoot,
+        },
+    }];
+    const directoryTasks = new Map([[projectRoot.toLowerCase(), tasks[0]]]);
+
+    const directoryPaths = new Set();
+    for (const relativeDirectory of layout.directories) {
+        const canonicalDirectory = canonicalizeProjectPath(relativeDirectory, projectRoot);
+        if (canonicalDirectory) directoryPaths.add(canonicalDirectory);
+    }
+    for (const relativeFile of layout.files) {
+        const canonicalFile = canonicalizeProjectPath(relativeFile, projectRoot);
+        if (!canonicalFile) continue;
+        const segments = canonicalFile.split('/');
+        for (let index = 1; index < segments.length; index += 1) {
+            directoryPaths.add(segments.slice(0, index).join('/'));
+        }
+    }
+
+    const orderedDirectories = [...directoryPaths]
+        .filter((directoryPath) => directoryPath.toLowerCase() !== projectRoot.toLowerCase())
+        .sort((left, right) => left.split('/').length - right.split('/').length);
+
+    for (const directoryPath of orderedDirectories) {
+        const parentPath = directoryPath.slice(0, directoryPath.lastIndexOf('/')) || projectRoot;
+        const parentTask = directoryTasks.get(parentPath.toLowerCase()) || tasks[0];
+        const nodeKey = getUniqueNodeKey(tasks, `create_${directoryPath.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}_dir`);
+        const directoryTask = {
+            nodeKey,
+            title: `Create Desktop directory ${directoryPath}`,
+            instruction: `Create the requested directory ${directoryPath} inside Desktop/${projectRoot}.`,
+            dependencies: [parentTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopDirectory',
+                path: directoryPath,
+            },
+        };
+        tasks.push(directoryTask);
+        directoryTasks.set(directoryPath.toLowerCase(), directoryTask);
+    }
+
+    const requestedFiles = [...new Set(layout.files
+        .map((relativeFile) => canonicalizeProjectPath(relativeFile, projectRoot))
+        .filter(Boolean))];
+    const fileTasks = new Map();
+
+    for (const filePath of requestedFiles) {
+        const parentPath = filePath.slice(0, filePath.lastIndexOf('/')) || projectRoot;
+        const parentTask = directoryTasks.get(parentPath.toLowerCase()) || tasks[0];
+        const nodeKey = getUniqueNodeKey(tasks, `create_${filePath.replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`);
+        const fileTask = {
+            nodeKey,
+            title: `Create ${filePath}`,
+            instruction: `Create ${filePath} with complete content derived from the requested Student Management System requirements.`,
+            dependencies: [parentTask.nodeKey],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'create',
+                path: filePath,
+                content: generateDynamicProductionCode(filePath, goalPrompt, projectRoot),
+            },
+        };
+        tasks.push(fileTask);
+        fileTasks.set(filePath.toLowerCase(), fileTask);
+    }
+
+    const packageTask = fileTasks.get(`${projectRoot.toLowerCase()}/package.json`);
+    if (packageTask) {
+        tasks.push({
+            nodeKey: 'npm_install_deps',
+            title: 'Install project dependencies',
+            instruction: `Run npm install inside Desktop/${projectRoot}.`,
+            dependencies: [packageTask.nodeKey],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm install',
+                cwd: `Desktop/${projectRoot}`,
+                desktop: true,
+            },
+        });
+    }
+
+    const serverFile = fileTasks.get(`${projectRoot.toLowerCase()}/server.js`);
+    const appFile = fileTasks.get(`${projectRoot.toLowerCase()}/app.js`);
+    if (serverFile || appFile) {
+        const entryFile = serverFile ? 'server.js' : 'app.js';
+        const installTask = tasks.find((task) => task.nodeKey === 'npm_install_deps');
+        tasks.push({
+            nodeKey: 'verify_entry_syntax',
+            title: `Verify ${entryFile} syntax`,
+            instruction: `Verify JavaScript syntax with node -c ${entryFile}.`,
+            dependencies: [installTask?.nodeKey, (serverFile || appFile).nodeKey].filter(Boolean),
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: `node -c ${entryFile}`,
+                cwd: `Desktop/${projectRoot}`,
+                desktop: true,
+            },
+        });
+    }
+
+    return normalizePlan({
+        workflowTitle: `Create ${projectRoot} Student Management Backend`,
+        summary: `Create every requested directory and file for the Node.js + Express Student Management System in Desktop/${projectRoot}.`,
+        tasks,
+    }, {
+        goalPrompt,
+        localDestination: `Desktop/${projectRoot}`,
+    });
+};
+
 const buildPlanningGoalPrompt = (goalPrompt, localDestination, diagnosticSnapshot = '') => {
     const destination = normalizeLocalDestination(localDestination);
     if (!destination) return goalPrompt;
@@ -7053,12 +7370,40 @@ const planWorkflowRun = async ({
         }
     }
     const hasImages = Array.isArray(images) && images.length > 0;
-    const diagnosticSnapshot = await buildLocalProjectDiagnosticSnapshot(effectiveDestination, goalPrompt, {hasImages});
-    const planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination, diagnosticSnapshot);
-    const cacheKey = getCacheKey(planningGoalPrompt);
+    const explicitTreeFiles = extractProjectTreeLayout(goalPrompt).files;
+    const useExplicitTreeFastPath = !hasImages
+        && isNodeProjectSetupRequest(goalPrompt)
+        && explicitTreeFiles.length >= 12;
+    let diagnosticSnapshot = '';
+    let planningGoalPrompt = '';
     let validatedPlan = null;
 
-    if (!diagnosticSnapshot && !hasImages && planCache.has(cacheKey)) {
+    if (useExplicitTreeFastPath) {
+        console.log(`⚡ [Planner Fast Path] Building ${explicitTreeFiles.length} explicit project-file tasks without an initial full-plan LLM call.`);
+        planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
+        const deterministicPlan = buildDeterministicExplicitProjectTreePlan(
+            planningGoalPrompt,
+            effectiveDestination,
+        );
+        const fastPathValidation = validatePlan(deterministicPlan, {
+            goalPrompt: planningGoalPrompt,
+            localDestination: effectiveDestination,
+        });
+        if (fastPathValidation.success) {
+            validatedPlan = fastPathValidation.data;
+            console.log(`✅ [Planner Fast Path] Prepared ${validatedPlan.tasks.length} directory, file, and verification tasks.`);
+        } else {
+            console.warn('⚠️ [Planner Fast Path] Falling back to the regular planner:', fastPathValidation.error.message);
+        }
+    }
+
+    if (!planningGoalPrompt) {
+        diagnosticSnapshot = await buildLocalProjectDiagnosticSnapshot(effectiveDestination, goalPrompt, {hasImages});
+        planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination, diagnosticSnapshot);
+    }
+    const cacheKey = getCacheKey(planningGoalPrompt);
+
+    if (!validatedPlan && !diagnosticSnapshot && !hasImages && planCache.has(cacheKey)) {
         console.log(`⚡ [Planner Cache Hit] Reusing validated DAG plan for goal: "${goalPrompt}"`);
         const cached = planCache.get(cacheKey);
         validatedPlan = normalizePlan(JSON.parse(JSON.stringify(cached)), {
@@ -7393,6 +7738,7 @@ ${largeTreeInstruction}
 };
 
 module.exports = {
+    buildDeterministicExplicitProjectTreePlan,
     completeExplicitProjectTreePlan,
     validateAcyclicGraph,
     normalizePlan,

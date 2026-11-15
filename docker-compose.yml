@@ -11,7 +11,10 @@ services:
       - .env
     environment:
       - PORT=5000
-      - NODE_ENV=production
+      # Local Docker runs must honor .env so Desktop workflows stay enabled.
+      # Production deployments can still set NODE_ENV=production explicitly.
+      - NODE_ENV=${NODE_ENV:-development}
+      - LOCAL_DESKTOP_OUTPUT=${LOCAL_DESKTOP_OUTPUT:-true}
     volumes:
       - kairo_workspaces:/app/workspaces
     healthcheck:

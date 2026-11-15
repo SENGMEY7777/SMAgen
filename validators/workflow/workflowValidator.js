@@ -35,7 +35,7 @@ const taskNodeSchema = Joi.object({
     instruction: secureText({min: 1, max: 10000}).required(),
     dependencies: Joi.array()
         .items(Joi.string().trim().pattern(NODE_KEY_REGEX))
-        .max(100)
+        .max(250)
         .unique()
         .default([]),
     assignedTool: Joi.string().trim().pattern(TOOL_NAME_REGEX).required(),
@@ -45,7 +45,7 @@ const taskNodeSchema = Joi.object({
 const dagPlanSchema = Joi.object({
     workflowTitle: secureText({min: 1, max: 255}).required(),
     summary: secureText({min: 1, max: 5000}).required(),
-    tasks: Joi.array().items(taskNodeSchema).min(1).max(100).required(),
+    tasks: Joi.array().items(taskNodeSchema).min(1).max(250).required(),
 }).unknown(false);
 
 module.exports = {

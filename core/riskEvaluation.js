@@ -80,20 +80,33 @@ const evaluateTaskRisk = (task = {}) => {
         const command = String(toolInput.command || '').trim();
         const commandName = command.split(/\s+/, 1)[0];
         const isSafeReadOnlyGit = /^git\s+(?:status|log|diff|show|branch\s+--show-current|remote(?:\s+-v)?|rev-parse)\b/i.test(command);
+        const isSafeProjectSetup = /^(?:npm\s+(?:install|i|init|run\s+build|run\s+test|run\s+seed|test)|pnpm\s+(?:install|i|init)|yarn\s+(?:install|add)|bun\s+(?:install|add)|node\s+-c\s+[^\s;&|]+)$/i.test(command);
 
-        if ((SAFE_COMMANDS.has(commandName) || isSafeReadOnlyGit) && !DANGEROUS_PATTERNS.some((pattern) => pattern.test(command))) {
+        if ((SAFE_COMMANDS.has(commandName) || isSafeReadOnlyGit || isSafeProjectSetup) && !DANGEROUS_PATTERNS.some((pattern) => pattern.test(command))) {
             riskLevel = 'LOW';
-            reason = 'Read-only command can execute automatically';
+            reason = 'Safe project command can execute automatically';
         } else {
             riskLevel = 'HIGH';
-            reason = 'Shell commands require human approval unless they are read-only';
+            reason = 'Shell commands require human approval unless they are read-only or standard project setup';
         }
     } else if (HIGH_RISK_TOOLS.has(assignedTool)) {
         riskLevel = 'HIGH';
         reason = `${assignedTool} can access external systems or execute sensitive operations`;
-    } else if (assignedTool === 'fileManager' && !READ_ONLY_ACTIONS.has(action)) {
-        riskLevel = 'MEDIUM';
-        reason = 'File changes require human approval';
+    } else if (assignedTool === 'fileManager') {
+        const isDeleteAction = ['delete', 'remove', 'deleteDesktopPath'].includes(action);
+        const targetPath = String(toolInput.path || toolInput.destination || '');
+        const hasTraversal = targetPath.includes('..') || /^\/(?:etc|var|usr|bin|sbin|root)\b/i.test(targetPath);
+
+        if (READ_ONLY_ACTIONS.has(action)) {
+            riskLevel = 'LOW';
+            reason = 'Read-only task can execute automatically';
+        } else if (isDeleteAction || hasTraversal) {
+            riskLevel = 'HIGH';
+            reason = isDeleteAction ? 'File deletion requires human approval' : 'Path traversal requires human approval';
+        } else {
+            riskLevel = 'LOW';
+            reason = 'Project file creation can execute automatically';
+        }
     } else if (assignedTool !== 'fileManager' && assignedTool !== 'webSearch') {
         riskLevel = 'HIGH';
         reason = `Tool ${assignedTool} is not on the trusted read-only allowlist`;

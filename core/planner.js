@@ -1527,6 +1527,7 @@ const extractProjectTreeLayout = (goalPrompt) => {
     const directoryStack = [];
     let rootName = null;
     let inRootFilesSection = false;
+    let currentSectionDirectory = null;
     let previousNonEmptyLine = '';
     const treeEntryPattern = /^((?:(?:│|\|)\s{3}| {4})*)(?:├──|└──|\|--)\s*([^\s#]+)(?:\s+.*)?$/;
     const treeRootHeaderPattern = /^([A-Za-z0-9][A-Za-z0-9._-]*)\/\s*(?:[#(].*)?$/;
@@ -1541,12 +1542,48 @@ const extractProjectTreeLayout = (goalPrompt) => {
         // Treat that format as an explicit acceptance contract too. The old
         // parser only understood `├──`/`└──`, so large requests silently lost
         // most of their requested files before planning started.
-        const rootFilesHeader = trimmedLine.replace(/^[*_`]+|[*_`]+$/g, '').trim();
-        const rootFilesHeaderMatch = rootFilesHeader.match(/^[-*]?\s*root\s+files?\s*:?[\s-]*(?:->|→)?\s*$/i);
-        if (rootFilesHeaderMatch) {
+        if (/\broot\s+files?\b/i.test(trimmedLine)) {
             inRootFilesSection = true;
+            currentSectionDirectory = null;
             if (trimmedLine) previousNonEmptyLine = trimmedLine;
             continue;
+        }
+
+        // Folder section headers like: **src/services/**, `src/services/`, src/services/:, or ### src/services/
+        const cleanCandidate = trimmedLine.replace(/^[*_`#\s]+|[*_`#\s:]+$/g, '').trim();
+        const isDirHeading = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*\/?$/.test(cleanCandidate)
+            && (trimmedLine.includes('/') || trimmedLine.includes('**') || trimmedLine.startsWith('`') || trimmedLine.endsWith(':'))
+            && !/\b(?:stack|feature|requirement|technology|security|specification|endpoint|database)\b/i.test(cleanCandidate);
+
+        if (isDirHeading) {
+            const parsedDir = cleanRelativeDirectoryPath(cleanCandidate.replace(/[\\/]+$/, ''));
+            if (parsedDir && parsedDir !== '.') {
+                currentSectionDirectory = parsedDir;
+                directories.add(parsedDir);
+                inRootFilesSection = false;
+                if (trimmedLine) previousNonEmptyLine = trimmedLine;
+                continue;
+            }
+        }
+
+        // Bullets under a folder section header
+        if (currentSectionDirectory && /^[-*]\s+/.test(trimmedLine)) {
+            const rawFile = trimmedLine.replace(/^[-*]\s+/, '').replace(/^[`*']+|[`*']+$/g, '').trim();
+            if (rawFile.endsWith('/')) {
+                const subDir = cleanRelativeDirectoryPath(`${currentSectionDirectory}/${rawFile}`);
+                if (subDir) directories.add(subDir);
+            } else {
+                const cleanFile = cleanRelativeFilePath(rawFile);
+                if (cleanFile && !cleanFile.includes('/') && /\.[A-Za-z0-9_-]+$/.test(cleanFile)) {
+                    files.add(`${currentSectionDirectory}/${cleanFile}`);
+                }
+            }
+            if (trimmedLine) previousNonEmptyLine = trimmedLine;
+            continue;
+        }
+
+        if (currentSectionDirectory && trimmedLine && !/^[-*]\s+/.test(trimmedLine) && !/^[`*#]/.test(trimmedLine)) {
+            currentSectionDirectory = null;
         }
 
         const structuredBulletMatch = line.match(/^\s*[-*]\s*`?([^`→]+?)`?\s*(?:→|->)\s*(.+?)\s*$/);
@@ -6380,8 +6417,18 @@ const app = require('./src/app');
 
 const PORT = Number(process.env.PORT) || 5000;
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        const nextPort = PORT + 1;
+        console.warn(\`⚠️ Port \${PORT} is in use, retrying on port \${nextPort}...\`);
+        server.listen(nextPort);
+    } else {
+        console.error('Server error:', err);
+    }
 });
 `;
     }
@@ -6392,8 +6439,18 @@ app.listen(PORT, () => {
         const listenBlock = shouldListenHere
             ? `
 if (require.main === module) {
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
         console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
+    });
+
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            const nextPort = PORT + 1;
+            console.warn(\`⚠️ Port \${PORT} is in use, retrying on port \${nextPort}...\`);
+            server.listen(nextPort);
+        } else {
+            console.error('Server error:', err);
+        }
     });
 }
 `
@@ -7116,7 +7173,7 @@ const generateDeterministicNodeProjectTasks = (goalPrompt, effectiveDestination)
         },
     ];
 
-    const subDirs = ['config', 'controllers', 'models', 'routes', 'middlewares'];
+    const subDirs = ['config', 'controllers', 'models', 'services', 'routes', 'middlewares'];
     for (const dir of subDirs) {
         const key = `create_${dir}_dir`;
         tasks.push({
@@ -7144,6 +7201,7 @@ const generateDeterministicNodeProjectTasks = (goalPrompt, effectiveDestination)
         'middlewares/auth.js',
         'middlewares/validate.js',
         `models/${entityName}Model.js`,
+        `services/${entityName}Service.js`,
         `controllers/${entityName}Controller.js`,
         `routes/${entityName}Routes.js`,
         'schema.sql',
@@ -7169,11 +7227,12 @@ const generateDeterministicNodeProjectTasks = (goalPrompt, effectiveDestination)
         });
     }
 
+    const packageTaskKey = 'create_package_json';
     tasks.push({
         nodeKey: 'npm_install_deps',
         title: 'Install dependencies',
         instruction: 'Run npm install to install project dependencies.',
-        dependencies: [rootTaskKey],
+        dependencies: [packageTaskKey],
         assignedTool: 'executeCommand',
         toolInput: {
             command: 'npm install',

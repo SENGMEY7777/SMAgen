@@ -6411,33 +6411,6 @@ Escape literal backslashes correctly for JSON.
         }, {goalPrompt});
     }
 
-            dynamicTasks.push({
-                nodeKey: getUniqueNodeKey([
-                    ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                    ...dynamicTasks,
-                ], `complete_${path.basename(filePath).replace(/[^A-Za-z0-9]+/g, '_').toLowerCase()}`),
-                title: `Create ${filePath}`,
-                instruction: `Create ${filePath} with production-grade implementation in Desktop/${projectRoot}.`,
-                dependencies: [],
-                assignedTool: 'fileManager',
-                toolInput: {
-                    action: 'createDesktopFile',
-                    mode: 'create',
-                    path: filePath,
-                    content,
-                },
-            });
-        }
-
-        workingPlan = normalizePlan({
-            ...workingPlan,
-            tasks: [
-                ...(Array.isArray(workingPlan.tasks) ? workingPlan.tasks : []),
-                ...dynamicTasks,
-            ],
-        }, {goalPrompt});
-    }
-
     // Safety guarantee pass: ensure ZERO missing files remain
     let remainingMissing = getMissingProjectTreeFiles(workingPlan, goalPrompt);
     if (remainingMissing.length > 0) {

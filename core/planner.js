@@ -6415,7 +6415,17 @@ const completeExplicitProjectTreePlan = async ({
     runId,
     io,
     generateStructure = generateStructureClient,
+    isAborted = null,
 }) => {
+    const throwIfAborted = () => {
+        if (typeof isAborted === 'function' && isAborted()) {
+            const error = new Error('Workflow planning was cancelled by the client.');
+            error.code = 'WORKFLOW_ABORTED';
+            throw error;
+        }
+    };
+
+    throwIfAborted();
     let projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
     );
@@ -6461,6 +6471,7 @@ Escape literal backslashes correctly for JSON.
         let completedBatches = 0;
 
         while (missingFiles.length > 0 && completedBatches < maxBatches) {
+            throwIfAborted();
             const pendingFiles = [...missingFiles];
             const batches = [];
             for (let index = 0; index < maxParallelBatches && index * nextBatchSize < pendingFiles.length; index += 1) {
@@ -6471,6 +6482,7 @@ Escape literal backslashes correctly for JSON.
             completedBatches += batches.length;
 
             const results = await Promise.allSettled(batches.map(async (requestedBatch) => {
+                throwIfAborted();
                 const completionPrompt = `
 Goal:
 ${goalPrompt}
@@ -6491,6 +6503,7 @@ ${requestedBatch.map((filePath) => `- ${filePath}`).join('\n')}
                     maxOutputTokens: 8192,
                 });
             }));
+            throwIfAborted();
 
             const completedTasks = [];
             for (const [resultIndex, result] of results.entries()) {
@@ -7285,7 +7298,17 @@ const planWorkflowRun = async ({
     userId,
     io = null,
     scheduler = null,
+    isAborted = null,
 }) => {
+    const throwIfAborted = () => {
+        if (typeof isAborted === 'function' && isAborted()) {
+            const error = new Error('Workflow planning was cancelled by the client.');
+            error.code = 'WORKFLOW_ABORTED';
+            throw error;
+        }
+    };
+
+    throwIfAborted();
     console.log(`\n🧠 [Planner 1.0] Starting Goal Decomposition for Run: ${runId}`);
 
     emitWorkflowEvent({
@@ -7369,6 +7392,7 @@ const planWorkflowRun = async ({
             effectiveDestination = await findMatchingDesktopProject(goalPrompt);
         }
     }
+    throwIfAborted();
     const hasImages = Array.isArray(images) && images.length > 0;
     const explicitTreeFiles = extractProjectTreeLayout(goalPrompt).files;
     const useExplicitTreeFastPath = !hasImages
@@ -7379,6 +7403,7 @@ const planWorkflowRun = async ({
     let validatedPlan = null;
 
     if (useExplicitTreeFastPath) {
+        throwIfAborted();
         console.log(`⚡ [Planner Fast Path] Building ${explicitTreeFiles.length} explicit project-file tasks without an initial full-plan LLM call.`);
         planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
         const deterministicPlan = buildDeterministicExplicitProjectTreePlan(
@@ -7398,7 +7423,9 @@ const planWorkflowRun = async ({
     }
 
     if (!planningGoalPrompt) {
+        throwIfAborted();
         diagnosticSnapshot = await buildLocalProjectDiagnosticSnapshot(effectiveDestination, goalPrompt, {hasImages});
+        throwIfAborted();
         planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination, diagnosticSnapshot);
     }
     const cacheKey = getCacheKey(planningGoalPrompt);
@@ -7506,6 +7533,7 @@ ${largeTreeInstruction}
 
         while (attempts < maxAttempts) {
             attempts++;
+            throwIfAborted();
 
             try {
                 console.log(`📡 [Planner] Invoking LLM Planner (Attempt ${attempts}/${maxAttempts})...`);
@@ -7517,6 +7545,7 @@ ${largeTreeInstruction}
                     runId,
                     io,
                 });
+                throwIfAborted();
 
                 const parsed = validatePlan(rawResult.data, {
                     goalPrompt: planningGoalPrompt,
@@ -7542,6 +7571,7 @@ ${largeTreeInstruction}
                                 goalPrompt: planningGoalPrompt,
                                 runId,
                                 io,
+                                isAborted,
                             });
                             const completedValidation = validatePlan(completedPlan, {
                                 goalPrompt: planningGoalPrompt,
@@ -7601,6 +7631,9 @@ ${largeTreeInstruction}
                 }
                 break;
             } catch (error) {
+                if (error?.code === 'WORKFLOW_ABORTED') {
+                    throw error;
+                }
                 lastPlannerError = error;
                 console.error(`❌ [Planner Attempt Error]:`, error.message);
                 const errorCode = Number(error.code);
@@ -7675,6 +7708,8 @@ ${largeTreeInstruction}
             throw error;
         }
     }
+
+    throwIfAborted();
 
     const taskNodeRecords = validatedPlan.tasks.map((task) => ({
         id: crypto.randomUUID(),

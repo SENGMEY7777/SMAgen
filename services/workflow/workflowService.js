@@ -32,7 +32,7 @@ const list = async (userId) => {
     return workflowModel.listWorkflowsByUser(userId);
 }
 
-const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectContext, localDestination, userId, io = null}) => {
+const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectContext, localDestination, userId, io = null, isAborted = null}) => {
     let executionRun;
 
     if (runId) {
@@ -117,14 +117,37 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectC
         io,
     });
 
-    setImmediate(() => {
-        startScheduler(executionRun.id, io).catch((error) => {
-            console.error(`❌ [Workflow Execution Error] ${executionRun.id}:`, error.message);
-        });
+    if (typeof isAborted === 'function' && isAborted()) {
+        console.log(`🛑 [Workflow Service] Run ${executionRun.id} was aborted before scheduler started.`);
+        await workflowModel.cancelExecutionRun(executionRun.id, userId, 'Client aborted workflow planning');
+        return {
+            ...plan,
+            runId: executionRun.id,
+            status: 'CANCELLED',
+            phase: 'CANCELLED',
+            executionStarted: false,
+            execution: null,
+        };
+    }
+
+    setImmediate(async () => {
+        try {
+            const currentRun = await workflowModel.getExecutionById(executionRun.id, userId);
+            if (currentRun?.status === 'CANCELLED') {
+                console.log(`🛑 [Workflow Service] Run ${executionRun.id} is CANCELLED. Skipping scheduler.`);
+                return;
+            }
+            startScheduler(executionRun.id, io).catch((error) => {
+                console.error(`❌ [Workflow Execution Error] ${executionRun.id}:`, error.message);
+            });
+        } catch (checkErr) {
+            console.error(`❌ [Workflow Pre-Scheduler Error] ${executionRun.id}:`, checkErr.message);
+        }
     });
 
     return {
         ...plan,
+        runId: executionRun.id,
         status: 'RUNNING',
         phase: 'EXECUTION',
         executionStarted: true,

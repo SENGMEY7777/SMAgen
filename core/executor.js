@@ -2004,9 +2004,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
     }
 
     // Shell operators outside quotes are disallowed; inside quotes they are string literals
-    const unquotedCommand = command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
-    if (/[;&|`]|\$\(|>|<|\n/.test(unquotedCommand)) {
-        throw new Error('Shell operators and command chaining are not allowed; run each command as a separate workflow task');
+    const isNodeEval = /^node\s+(?:-e|--eval)\s+/i.test(command);
+    if (!isNodeEval) {
+        const unquotedCommand = command.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+        if (/[;&|`]|\$\(|>|<|\n/.test(unquotedCommand)) {
+            throw new Error('Shell operators and command chaining are not allowed; run each command as a separate workflow task');
+        }
     }
 
     const [commandName, ...args] = tokenizeCommand(command);
@@ -2431,6 +2434,30 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                     }
                 }
             } catch (_) {}
+        }
+
+        if (commandName === 'npm' && (args[0] === 'install' || args[0] === 'i') && effectiveCwd) {
+            const pkgPath = path.resolve(effectiveCwd, 'package.json');
+            const hasPkg = await readExistingPathStats(pkgPath);
+            if (!hasPkg) {
+                const folderName = path.basename(effectiveCwd) || 'project';
+                const defaultPkg = {
+                    name: folderName.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
+                    version: '1.0.0',
+                    description: `${folderName} API Backend`,
+                    main: 'server.js',
+                    scripts: {
+                        start: 'node server.js',
+                        dev: 'nodemon server.js',
+                    },
+                    dependencies: {
+                        express: '^4.19.2',
+                        cors: '^2.8.5',
+                        dotenv: '^16.4.5',
+                    },
+                };
+                await fs.writeFile(pkgPath, JSON.stringify(defaultPkg, null, 2), 'utf8');
+            }
         }
 
         const result = await execFileAsync(commandName, args, {

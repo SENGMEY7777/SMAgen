@@ -1500,8 +1500,18 @@ const ensureHomepageContent = (tasks, goalPrompt) => {
     return tasks;
 };
 
+const isRuntimeCrashOrErrorReport = (text) => {
+    const raw = String(text || '');
+    return /\b(?:EADDRINUSE|address\s+already\s+in\s+use|MODULE_NOT_FOUND|Cannot\s+find\s+module|app\s+crashed|Unhandled\s+'error'|throw\s+er;|still\s+eror|still\s+error|node:events|code:\s*['"][A-Z0-9_-]+['"]|errno:\s*-\d+|fatal\s+error|crashed|stack\s+trace)\b/i.test(raw)
+        || /(?:^|\n)\s*at\s+[\w\s.<>]+\s*\([^)]+:\d+:\d+\)/.test(raw)
+        || /\b(?:nodemon|node)\b[^\n]*\b(?:app|server)\b[^\n]*\berror\b/i.test(raw);
+};
+
 const extractDesktopFileNames = (goalPrompt) => {
     const text = String(goalPrompt || '');
+    if (isRuntimeCrashOrErrorReport(text)) {
+        return [];
+    }
     const candidates = new Set();
     const filePattern = /\b[A-Za-z0-9][A-Za-z0-9._-]*\.(?:html?|css|js|mjs|cjs|ts|tsx|jsx|json|java|py|go|rs|md|txt|vue|xml|yml|yaml|sql)\b/gi;
 
@@ -1517,11 +1527,15 @@ const extractDesktopFileNames = (goalPrompt) => {
     return [...candidates]
         .map((candidate) => cleanRelativeFilePath(candidate))
         .filter((candidate) => candidate && !candidate.includes('/'))
-        .filter((candidate) => !/^(?:node|express|vue|react|next)\.js$/i.test(candidate))
+        .filter((candidate) => !/^(?:node|express|vue|react|next|application|object)\.js$/i.test(candidate))
+        .filter((candidate) => !candidate.includes('node_modules'))
         .filter((candidate, index, all) => all.indexOf(candidate) === index);
 };
 
 const extractProjectTreeLayout = (goalPrompt) => {
+    if (isRuntimeCrashOrErrorReport(goalPrompt)) {
+        return { rootName: null, directories: [], files: [] };
+    }
     const directories = new Set();
     const files = new Set();
     const directoryStack = [];
@@ -1969,6 +1983,10 @@ const isNodeProjectSetupRequest = (goalPrompt) => {
         return false;
     }
 
+    if (isRuntimeCrashOrErrorReport(goalPrompt)) {
+        return false;
+    }
+
     if (isExplicitExistingProjectUpdateRequest(goalPrompt)) {
         return false;
     }
@@ -2046,6 +2064,9 @@ const normalizeIdempotentDesktopSetupTasks = (tasks, goalPrompt) => {
 
 const isExplicitExistingProjectUpdateRequest = (goalPrompt) => {
     const text = String(goalPrompt || '');
+    if (isRuntimeCrashOrErrorReport(text)) {
+        return true;
+    }
     const userGoal = getUserGoalText(text);
     const hasFollowUpContext = /\[Follow-up execution context:\s*(?:continue working in the existing local|Target local folder is\s+"Desktop[\\/])/i.test(text);
     const hasFollowUpIntent = /\b(?:add|install|configure|fix|repair|debug|patch|update|modify|edit|extend|refactor|build|create|generate|scaffold)\b/i.test(userGoal);
@@ -4709,6 +4730,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
             if (!/^[A-Za-z]/.test(cleanKey)) {
                 cleanKey = `task_${cleanKey}`;
             }
+            if (cleanKey.length > 55) {
+                cleanKey = `${cleanKey.slice(0, 48)}_${idx + 1}`;
+            }
 
             keyMap.set(rawKey, cleanKey);
             keyMap.set(String(idx + 1), cleanKey);
@@ -4904,6 +4928,9 @@ const normalizePlan = (rawPlan, {goalPrompt = '', localDestination = ''} = {}) =
 };
 
 const getMissingProjectTreeFiles = (plan, goalPrompt) => {
+    if (isRuntimeCrashOrErrorReport(goalPrompt)) {
+        return [];
+    }
     const layout = extractProjectTreeLayout(goalPrompt);
     if (!layout.files.length) {
         return [];
@@ -6542,6 +6569,9 @@ const completeExplicitProjectTreePlan = async ({
     };
 
     throwIfAborted();
+    if (isRuntimeCrashOrErrorReport(goalPrompt)) {
+        return normalizePlan(basePlan, {goalPrompt});
+    }
     let projectRoot = cleanRelativeDirectoryPath(
         inferDirectoryPath({title: '', instruction: ''}, {}, goalPrompt),
     );
@@ -7062,11 +7092,24 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
     }
 
     const brokenImports = [];
+    const requiredNpmPackages = new Set();
+    const NODE_BUILTIN_MODULES = new Set([
+        'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console',
+        'constants', 'crypto', 'dgram', 'diagnostics_channel', 'dns', 'domain',
+        'events', 'fs', 'fs/promises', 'http', 'http2', 'https', 'inspector',
+        'module', 'net', 'os', 'path', 'perf_hooks', 'process', 'punycode',
+        'querystring', 'readline', 'repl', 'stream', 'stream/promises',
+        'stream/web', 'string_decoder', 'timers', 'timers/promises', 'tls',
+        'trace_events', 'tty', 'url', 'util', 'util/types', 'v8', 'vm', 'wasi',
+        'worker_threads', 'zlib',
+    ]);
+
     for (const relJs of jsFiles.slice(0, 45)) {
         try {
             const content = await fs.readFile(path.join(projectRoot, relJs), 'utf8');
             const lines = content.split(/\r?\n/);
             lines.forEach((line, idx) => {
+                // Check relative imports
                 const reqMatches = line.matchAll(/require\(\s*['"](\.[^'"]+)['"]\s*\)/g);
                 for (const m of reqMatches) {
                     const spec = m[1];
@@ -7094,8 +7137,42 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
                         brokenImports.push(`${relJs}:${idx + 1} require('${spec}') -> NOT FOUND${hint}`);
                     }
                 }
+
+                // Check 3rd-party npm package imports
+                const npmMatches = line.matchAll(/(?:require\s*\(\s*['"]|from\s+['"]|import\s*\(\s*['"])([^'"]+)['"]/g);
+                for (const m of npmMatches) {
+                    const rawSpec = m[1].trim();
+                    if (rawSpec.startsWith('.') || rawSpec.startsWith('/') || rawSpec.startsWith('\\')) continue;
+                    let pkg = rawSpec.startsWith('@') ? rawSpec.split('/').slice(0, 2).join('/') : rawSpec.split('/')[0];
+                    if (pkg && !NODE_BUILTIN_MODULES.has(pkg)) {
+                        requiredNpmPackages.add(pkg);
+                    }
+                }
             });
         } catch (_) {}
+    }
+
+    let knownDependencies = new Set();
+    try {
+        const pkgJsonRaw = await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8');
+        const parsedPkg = JSON.parse(pkgJsonRaw);
+        const allDeps = {
+            ...(parsedPkg.dependencies || {}),
+            ...(parsedPkg.devDependencies || {}),
+        };
+        knownDependencies = new Set(Object.keys(allDeps));
+    } catch (_) {}
+
+    const missingNpmPackages = [];
+    const uninstalledPackages = [];
+    for (const pkg of requiredNpmPackages) {
+        if (!knownDependencies.has(pkg)) {
+            missingNpmPackages.push(pkg);
+        }
+        const pkgDir = path.join(projectRoot, 'node_modules', pkg);
+        if (!fsSync.existsSync(pkgDir)) {
+            uninstalledPackages.push(pkg);
+        }
     }
 
     const snippets = [];
@@ -7132,6 +7209,12 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
 
     if (brokenImports.length) {
         parts.push(`Broken relative require() imports detected (${brokenImports.length}):\n- ${brokenImports.slice(0, 20).join('\n- ')}`);
+    }
+
+    if (missingNpmPackages.length) {
+        parts.push(`Missing NPM dependencies in package.json (${missingNpmPackages.length}):\n- ${missingNpmPackages.join(', ')}\n(Action required: Add these dependencies to package.json and run npm install)`);
+    } else if (uninstalledPackages.length) {
+        parts.push(`NPM packages missing from node_modules (${uninstalledPackages.length}):\n- ${uninstalledPackages.join(', ')}\n(Action required: Run "npm install" to ensure all modules are installed locally)`);
     }
 
     if (snippets.length) {
@@ -7619,7 +7702,7 @@ Rules:
 - If the HTML request asks for remote or generated images, use placeholders such as {{imageUrl:homepage_product_image_1}} in toolInput.content. Use one sequential placeholder per distinct image and create matching imageGenerator tasks; never hardcode stock image URLs.
 - For a Vue page with multiple components, use fileManager action 'createFiles' with a files array of {path, content} objects; do not invent createFile, writeFile, or writefile actions.
 - When modifying or adding files/folders to an existing local project (e.g. 'Api-Productions/Sample-RESTful-API-'): Always inspect and follow the project's existing directory structure. If the project places its code folders (such as controllers/, routes/, models/) directly at the project root, place new folders (like validation/) directly at the project root matching the existing pattern. NEVER prepend or create an unneeded 'src/' folder, NEVER create subfolders named 'desktops', and NEVER duplicate existing files into 'src/'.
-- When a [Local Project Diagnostic Snapshot] is included in the goal for a local bug fix or runtime crash: Diagnose ALL reported root causes using the inspected files and broken relative require() list. Update existing broken files in-place using fileManager with action 'createDesktopFile' and mode 'update' (e.g. fix package.json "main"/"scripts" to match server.js or src/app.js, fix mismatched relative require paths such as ../configs/env -> ../config/env, remove duplicate app.listen() calls when an entry file already listens), and finish with an executeCommand syntax check ('node -c <entry>' with cwd='Desktop/<project>', desktop=true). NEVER invent an unrelated standalone dummy app.js listening on port 3000 when server.js or src/app.js already exists, and NEVER add exportWorkspaceToDownloads. For EADDRINUSE errors: NEVER run 'npx kill-port', 'kill', or 'lsof' (commands run inside an isolated container and cannot kill processes on the user's Mac host); instead update the project code/port (.env, package.json, app.js/server.js) to use a non-conflicting port (e.g. 5000) or clean delegation + EADDRINUSE error handling.
+- When a [Local Project Diagnostic Snapshot] is included in the goal for a local bug fix or runtime crash: Diagnose ALL reported root causes using the inspected files, broken relative require() list, and missing/uninstalled npm packages list. Update existing broken files in-place using fileManager with action 'createDesktopFile' and mode 'update' (e.g. fix package.json dependencies to include missing npm packages like helmet, express, cors, dotenv, and fix package.json "main"/"scripts" to match server.js or src/app.js; fix mismatched relative require paths such as ../configs/env -> ../config/env; remove duplicate app.listen() calls when an entry file already listens). When missing/uninstalled npm packages are reported, add an executeCommand task running 'npm install' (cwd='Desktop/<project>', desktop=true) before the verification task. Finally, finish with an executeCommand syntax/startup verification ('node -c <entry>' with cwd='Desktop/<project>', desktop=true). NEVER invent an unrelated standalone dummy app.js listening on port 3000 when server.js or src/app.js already exists, and NEVER add exportWorkspaceToDownloads. For EADDRINUSE errors: NEVER run 'npx kill-port', 'kill', or 'lsof' (commands run inside an isolated container and cannot kill processes on the user's Mac host); instead update the project code/port (.env, package.json, app.js/server.js) to use a non-conflicting port (e.g. 5000) or clean delegation + EADDRINUSE error handling.
 - When asked to add validation to routes, do not merely create a validator file; also update the existing router/controller files to import and apply the validation middleware to the routes so the validation is actually active.
 - PROJECT STRUCTURE CLEANUP RULE: When the user requests to clean, organize, or modify a project structure (e.g. 'modify structure project to clean', 'clean up project structure', 'remove unused folders', 'clean redundant folder', 'remove already but it still have'):
   - Inspect the project's layout and remove redundant or unneeded directories in-place using fileManager with action 'deleteDesktopPath' (e.g., {"action":"deleteDesktopPath","path":"<project>/src","kind":"directory"}).

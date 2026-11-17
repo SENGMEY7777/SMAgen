@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS execution_runs (
 CREATE TABLE IF NOT EXISTS task_nodes (
   id                CHAR(36)         NOT NULL DEFAULT (UUID()),
   run_id            CHAR(36)         NOT NULL,
-  node_key          VARCHAR(64)      NOT NULL,
+  node_key          VARCHAR(191)     NOT NULL,
   title             VARCHAR(255)     NOT NULL,
   instruction       TEXT             NOT NULL,
   dependencies      JSON             NOT NULL,

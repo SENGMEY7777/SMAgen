@@ -327,18 +327,24 @@ const bulkInsertTaskNodes = async (tasks) => {
     }
 
     const placeholders = tasks.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-    const values = tasks.flatMap((task) => [
-        task.id,
-        task.runId,
-        task.nodeKey,
-        task.title,
-        task.instruction,
-        JSON.stringify(task.dependencies || []),
-        task.assignedTool,
-        JSON.stringify(task.toolInput || {}),
-        task.status || 'PENDING',
-        task.retryCount || 0,
-    ]);
+    const values = tasks.flatMap((task, idx) => {
+        let safeKey = String(task.nodeKey || `task_${idx + 1}`).trim();
+        if (safeKey.length > 64) {
+            safeKey = `${safeKey.slice(0, 56)}_${idx + 1}`;
+        }
+        return [
+            task.id,
+            task.runId,
+            safeKey,
+            String(task.title || `Task ${idx + 1}`).slice(0, 255),
+            String(task.instruction || ''),
+            JSON.stringify(task.dependencies || []),
+            String(task.assignedTool || 'executeCommand').slice(0, 64),
+            JSON.stringify(task.toolInput || {}),
+            task.status || 'PENDING',
+            task.retryCount || 0,
+        ];
+    });
 
     const sql = `
         INSERT INTO task_nodes (

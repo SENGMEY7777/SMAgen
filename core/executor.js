@@ -41,6 +41,56 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
     Number.parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '10000', 10) || 10000,
 );
 const execFileAsync = promisify(execFile);
+const NODE_BUILTIN_MODULES = new Set([
+    'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console',
+    'constants', 'crypto', 'dgram', 'diagnostics_channel', 'dns', 'domain',
+    'events', 'fs', 'fs/promises', 'http', 'http2', 'https', 'inspector',
+    'module', 'net', 'os', 'path', 'perf_hooks', 'process', 'punycode',
+    'querystring', 'readline', 'repl', 'stream', 'stream/promises',
+    'stream/web', 'string_decoder', 'timers', 'timers/promises', 'tls',
+    'trace_events', 'tty', 'url', 'util', 'util/types', 'v8', 'vm', 'wasi',
+    'worker_threads', 'zlib',
+]);
+
+const scanProjectRequiredNpmPackages = async (dirPath) => {
+    const requiredPkgs = new Set();
+    const ignoreDirs = new Set(['node_modules', '.git', 'dist', 'build', '.vscode', '.next', '.nuxt', '.vercel']);
+
+    const scanDir = async (currentDir, depth = 0) => {
+        if (depth > 5) return;
+        let entries = [];
+        try {
+            entries = await fs.readdir(currentDir, { withFileTypes: true });
+        } catch (_) {
+            return;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(currentDir, entry.name);
+            if (entry.isDirectory()) {
+                if (!ignoreDirs.has(entry.name)) {
+                    await scanDir(fullPath, depth + 1);
+                }
+            } else if (entry.isFile() && /\.(?:js|mjs|cjs|ts)$/i.test(entry.name)) {
+                try {
+                    const content = await fs.readFile(fullPath, 'utf8');
+                    const reqMatches = content.matchAll(/(?:require\s*\(\s*['"]|from\s+['"]|import\s*\(\s*['"])([^'"]+)['"]/g);
+                    for (const m of reqMatches) {
+                        const spec = m[1].trim();
+                        if (spec.startsWith('.') || spec.startsWith('/') || spec.startsWith('\\')) continue;
+                        let pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+                        if (pkg && !NODE_BUILTIN_MODULES.has(pkg)) {
+                            requiredPkgs.add(pkg);
+                        }
+                    }
+                } catch (_) {}
+            }
+        }
+    };
+
+    await scanDir(dirPath);
+    return Array.from(requiredPkgs);
+};
 const SAFE_COMMANDS = new Set([
     'cat', 'head', 'tail', 'grep', 'ls', 'pwd', 'find', 'wc', 'mkdir',
     'node', 'npm', 'npx', 'git', 'gh', 'pnpm', 'yarn', 'bun', 'python', 'python3',
@@ -2439,9 +2489,10 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
         if (commandName === 'npm' && (args[0] === 'install' || args[0] === 'i') && effectiveCwd) {
             const pkgPath = path.resolve(effectiveCwd, 'package.json');
             const hasPkg = await readExistingPathStats(pkgPath);
+            let pkg = null;
             if (!hasPkg) {
                 const folderName = path.basename(effectiveCwd) || 'project';
-                const defaultPkg = {
+                pkg = {
                     name: folderName.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
                     version: '1.0.0',
                     description: `${folderName} API Backend`,
@@ -2456,7 +2507,29 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         dotenv: '^16.4.5',
                     },
                 };
-                await fs.writeFile(pkgPath, JSON.stringify(defaultPkg, null, 2), 'utf8');
+            } else {
+                try {
+                    pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
+                } catch (_) {}
+            }
+
+            if (pkg) {
+                if (!pkg.dependencies || typeof pkg.dependencies !== 'object') {
+                    pkg.dependencies = {};
+                }
+                try {
+                    const scannedPkgs = await scanProjectRequiredNpmPackages(effectiveCwd);
+                    let pkgChanged = false;
+                    for (const p of scannedPkgs) {
+                        if (!pkg.dependencies[p] && (!pkg.devDependencies || !pkg.devDependencies[p])) {
+                            pkg.dependencies[p] = 'latest';
+                            pkgChanged = true;
+                        }
+                    }
+                    if (pkgChanged || !hasPkg) {
+                        await fs.writeFile(pkgPath, JSON.stringify(pkg, null, 2), 'utf8');
+                    }
+                } catch (_) {}
             }
         }
 
@@ -2472,6 +2545,50 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                 CI: 'true',
             },
         });
+
+        // If checking syntax with node -c, also verify required npm packages are actually installed
+        if (commandName === 'node' && args[0] === '-c' && effectiveCwd && args[1]) {
+            try {
+                const targetFilePath = path.resolve(effectiveCwd, args[1]);
+                if (fsSync.existsSync(targetFilePath)) {
+                    const targetContent = fsSync.readFileSync(targetFilePath, 'utf8');
+                    const targetMatches = targetContent.matchAll(/(?:require\s*\(\s*['"]|from\s+['"]|import\s*\(\s*['"])([^'"]+)['"]/g);
+                    const missingPkgs = [];
+                    for (const m of targetMatches) {
+                        const rawSpec = m[1].trim();
+                        if (rawSpec.startsWith('.') || rawSpec.startsWith('/') || rawSpec.startsWith('\\')) continue;
+                        const pkg = rawSpec.startsWith('@') ? rawSpec.split('/').slice(0, 2).join('/') : rawSpec.split('/')[0];
+                        if (pkg && !NODE_BUILTIN_MODULES.has(pkg)) {
+                            const modDir = path.join(effectiveCwd, 'node_modules', pkg);
+                            if (!fsSync.existsSync(modDir)) {
+                                missingPkgs.push(pkg);
+                            }
+                        }
+                    }
+                    if (missingPkgs.length > 0) {
+                        const pkgPath = path.resolve(effectiveCwd, 'package.json');
+                        try {
+                            if (fsSync.existsSync(pkgPath)) {
+                                const pkg = JSON.parse(fsSync.readFileSync(pkgPath, 'utf8'));
+                                if (!pkg.dependencies) pkg.dependencies = {};
+                                missingPkgs.forEach((p) => { pkg.dependencies[p] = 'latest'; });
+                                fsSync.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf8');
+                            }
+                        } catch (_) {}
+                        await execFileAsync('npm', ['install', ...missingPkgs], {
+                            cwd: effectiveCwd,
+                            timeout: COMMAND_TIMEOUT_MS,
+                            env: {
+                                ...gitExecEnv,
+                                npm_config_yes: 'true',
+                                CI: 'true',
+                            },
+                        });
+                        result.stdout += `\n[Kairo Auto-Fix: Auto-installed missing dependencies: ${missingPkgs.join(', ')}]`;
+                    }
+                }
+            } catch (_) {}
+        }
 
         return {
             command,
@@ -2620,6 +2737,65 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                 stderr: '',
                 exitCode: 0,
             };
+        }
+
+        // Autonomous Self-Healing for node commands failing with MODULE_NOT_FOUND
+        if (commandName === 'node' && effectiveCwd) {
+            const combinedError = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
+            const missingModMatch = combinedError.match(/Cannot find module ['"]([^'"]+)['"]/);
+            if (missingModMatch) {
+                const rawMod = missingModMatch[1].trim();
+                if (!rawMod.startsWith('.') && !rawMod.startsWith('/') && !rawMod.startsWith('\\')) {
+                    const pkgName = rawMod.startsWith('@') ? rawMod.split('/').slice(0, 2).join('/') : rawMod.split('/')[0];
+                    if (!NODE_BUILTIN_MODULES.has(pkgName)) {
+                        console.log(`⚡ [Kairo Auto-Fix] Detected missing package "${pkgName}". Auto-installing...`);
+                        try {
+                            const pkgPath = path.resolve(effectiveCwd, 'package.json');
+                            try {
+                                if (fsSync.existsSync(pkgPath)) {
+                                    const pkg = JSON.parse(fsSync.readFileSync(pkgPath, 'utf8'));
+                                    if (!pkg.dependencies) pkg.dependencies = {};
+                                    pkg.dependencies[pkgName] = 'latest';
+                                    fsSync.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2), 'utf8');
+                                }
+                            } catch (_) {}
+
+                            await execFileAsync('npm', ['install', pkgName], {
+                                cwd: effectiveCwd,
+                                timeout: COMMAND_TIMEOUT_MS,
+                                env: {
+                                    ...gitExecEnv,
+                                    npm_config_yes: 'true',
+                                    CI: 'true',
+                                },
+                            });
+
+                            const retryResult = await execFileAsync(commandName, args, {
+                                cwd: effectiveCwd,
+                                timeout: COMMAND_TIMEOUT_MS,
+                                signal: options.signal,
+                                maxBuffer: MAX_COMMAND_OUTPUT,
+                                shell: false,
+                                env: {
+                                    ...gitExecEnv,
+                                    npm_config_yes: 'true',
+                                    CI: 'true',
+                                },
+                            });
+
+                            return {
+                                command,
+                                cwd: effectiveCwd,
+                                stdout: `[Kairo Auto-Fix: Auto-installed missing dependency "${pkgName}"]\n${retryResult.stdout}`,
+                                stderr: retryResult.stderr,
+                                exitCode: 0,
+                            };
+                        } catch (autoFixErr) {
+                            console.error(`[Kairo Auto-Fix Error]: ${autoFixErr.message}`);
+                        }
+                    }
+                }
+            }
         }
 
         return {

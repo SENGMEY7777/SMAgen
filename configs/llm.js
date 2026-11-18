@@ -107,13 +107,13 @@ const LLM_TIMEOUT_MS = Number.isInteger(configuredTimeout) && configuredTimeout 
 const configuredMaxModelAttempts = Number(process.env.GEMINI_MAX_MODEL_ATTEMPTS);
 const MAX_MODEL_ATTEMPTS = Number.isInteger(configuredMaxModelAttempts)
     && configuredMaxModelAttempts >= 1
-    ? Math.min(configuredMaxModelAttempts, 3)
-    : 2;
+    ? Math.min(Math.max(configuredMaxModelAttempts, 3), 6)
+    : 4;
 
 const configuredTransientRetries = Number(process.env.GEMINI_TRANSIENT_RETRIES);
 const GEMINI_TRANSIENT_RETRIES = Number.isInteger(configuredTransientRetries)
     && configuredTransientRetries >= 0
-    ? Math.min(configuredTransientRetries, 2)
+    ? Math.min(Math.max(configuredTransientRetries, 1), 3)
     : 1;
 
 const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
@@ -136,13 +136,15 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
 
 const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
     const candidates = [
-        DEFAULT_MODEL,
         model,
         process.env.GEMINI_MODEL,
+        DEFAULT_MODEL,
         process.env.GEMINI_FALLBACK_MODEL,
         'gemini-3.5-flash',
-        'gemini-3.1-flash-lite',
+        'gemini-2.5-flash',
         'gemini-2.5-flash-lite',
+        'gemini-2.0-flash',
+        'gemini-3.1-flash-lite',
         ...String(process.env.GEMINI_EXTRA_MODELS || '')
             .split(',')
             .map((candidate) => candidate.trim())

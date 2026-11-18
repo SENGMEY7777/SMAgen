@@ -349,3 +349,57 @@ Folder structure:
     assert.equal(calls.some((paths) => paths.length === 3), true);
     assert.equal(calls.filter((paths) => paths.length === 1).length, 3);
 });
+
+test('creates package.json before npm install for a new Desktop Node project', () => {
+    const goalPrompt = 'Create a new Node.js project from scratch directly on my Desktop in a folder named "Staff".';
+    const normalized = normalizePlan({
+        workflowTitle: 'Staff project',
+        summary: 'Create the project.',
+        tasks: [
+            {
+                nodeKey: 'create_staff',
+                title: 'Create Staff directory',
+                instruction: 'Create the Staff directory on the Desktop.',
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopDirectory',
+                    path: 'Staff',
+                },
+            },
+            {
+                nodeKey: 'create_server',
+                title: 'Create server.js',
+                instruction: 'Create server.js.',
+                dependencies: ['create_staff'],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopFile',
+                    path: 'Staff/server.js',
+                    content: 'console.log("ready");',
+                },
+            },
+            {
+                nodeKey: 'install_dependencies',
+                title: 'Install dependencies',
+                instruction: 'Install dependencies.',
+                dependencies: ['create_staff'],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: 'npm install',
+                    cwd: 'Staff',
+                    desktop: true,
+                },
+            },
+        ],
+    }, {goalPrompt});
+
+    const packageTask = normalized.tasks.find((task) => (
+        String(task.toolInput?.path || '').toLowerCase() === 'staff/package.json'
+    ));
+    const installTask = normalized.tasks.find((task) => task.nodeKey === 'install_dependencies');
+
+    assert.ok(packageTask);
+    assert.ok(installTask);
+    assert.equal(installTask.dependencies.includes(packageTask.nodeKey), true);
+});

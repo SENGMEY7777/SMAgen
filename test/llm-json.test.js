@@ -34,10 +34,10 @@ test('preserves valid JSON escapes while repairing an invalid escape in the same
     });
 });
 
-test('does not select retired Gemini 1.5 or 2.5 models', () => {
+test('normalizes model names and keeps current Gemini fallbacks', () => {
     const candidates = getModelCandidates('models/gemini-2.5-flash-lite', 10);
 
-    assert.equal(candidates.includes('gemini-2.5-flash-lite'), false);
+    assert.equal(candidates[0], 'gemini-3.5-flash-lite');
     assert.equal(candidates.includes('gemini-1.5-flash'), false);
-    assert.equal(candidates.includes('gemini-3.5-flash-lite'), true);
+    assert.equal(candidates.includes('gemini-3.5-flash'), true);
 });

@@ -186,9 +186,22 @@ const inferDirectoryPath = (task, toolInput, goalPrompt = '') => {
     }
 
     const stripFileTail = (relPath) => {
-        const cleaned = cleanRelativeDirectoryPath(String(relPath || '').replace(/[.,;!?]+$/, ''));
+        const sanitized = String(relPath || '')
+            .replace(/:\d+(?::\d+)?\)*$/g, '')
+            .replace(/[),;!?]+$/, '');
+        const cleaned = cleanRelativeDirectoryPath(sanitized);
         if (!cleaned) return null;
         const segments = cleaned.split(/[\\/]/).filter(Boolean);
+        // Strip node_modules or internal code folders so stack traces like
+        // /Users/user/Desktop/POS/node_modules/express/lib/application.js:635:24
+        // always resolve to the actual project root ("POS").
+        const internalCutoffIdx = segments.findIndex((seg, idx) => (
+            idx > 0
+            && /^(?:node_modules|src|controllers?|routes?|models?|services?|middlewares?|configs?|config|utils?|helpers?|validators?|schemas?|database|migrations|seeders|tests?|public|dist|build)$/i.test(seg)
+        ));
+        if (internalCutoffIdx > 0) {
+            return segments.slice(0, internalCutoffIdx).join('/');
+        }
         if (segments.length >= 2 && /\.[A-Za-z0-9]{1,8}$/.test(segments[segments.length - 1])) {
             return segments.slice(0, -1).join('/');
         }
@@ -5155,18 +5168,41 @@ const validatePlan = (rawPlan, options = {}) => {
         };
     }
 
+    const writesIntoNodeModules = plan.tasks.some((t) => {
+        if (String(t.assignedTool || '').toLowerCase() !== 'filemanager') return false;
+        const action = String(t.toolInput?.action || '').toLowerCase();
+        if (['read', 'list', 'search', 'get', 'listdesktopdirectory'].includes(action)) return false;
+        const paths = [];
+        if (t.toolInput?.path) paths.push(String(t.toolInput.path));
+        if (Array.isArray(t.toolInput?.files)) {
+            t.toolInput.files.forEach((f) => {
+                if (typeof f === 'string') paths.push(f);
+                else if (f?.path || f?.fileName) paths.push(String(f.path || f.fileName));
+            });
+        }
+        return paths.some((p) => /(?:^|[\\/])node_modules(?:[\\/]|$)/i.test(p));
+    });
+    if (writesIntoNodeModules) {
+        return {
+            success: false,
+            error: {
+                message: 'Never write or modify files inside node_modules/. Target the actual project source files at the project root (for example POS/app.js or POS/.env).',
+            },
+        };
+    }
+
     const goalText = String(options.goalPrompt || '');
     if (/\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(goalText)) {
         const hasKillPortOnly = plan.tasks.some((t) => (
             t.assignedTool === 'executeCommand'
             && /\b(?:kill-port|pkill|killall|lsof\b|fuser\b|\bkill\s+-)\b/i.test(String(t.toolInput?.command || ''))
         ));
-        const hasCodeFix = plan.tasks.some((t) => t.assignedTool === 'fileManager' && ['create', 'update', 'write', 'createdesktopfile', 'createdesktopfiles'].includes(String(t.toolInput?.action || '').toLowerCase()));
+        const hasCodeFix = plan.tasks.some((t) => t.assignedTool === 'fileManager' && ['create', 'update', 'write', 'createdesktopfile', 'createdesktopfiles', 'updatedesktopfile', 'writedesktopfile'].includes(String(t.toolInput?.action || '').toLowerCase()));
         if (hasKillPortOnly || !hasCodeFix) {
             return {
                 success: false,
                 error: {
-                    message: 'Do not use kill-port or host process-kill commands to fix EADDRINUSE: commands run inside an isolated container and cannot free ports on the user Mac host. Fix the project source files in-place using fileManager (e.g. update app.js/package.json to use the real entry point or non-conflicting port 5000, add EADDRINUSE port fallback, and fix any broken relative require imports from the diagnostic snapshot).',
+                    message: 'Do not use kill-port or host process-kill commands to fix EADDRINUSE: commands run inside an isolated container and cannot free ports on the user Mac host. Fix the project source files in-place using fileManager (update .env to a non-conflicting port like 5001, preserve all existing routes/middleware in app.js/server.js while adding recursive EADDRINUSE port fallback, and fix any broken relative require imports from the diagnostic snapshot).',
                 },
             };
         }
@@ -5468,7 +5504,7 @@ CREATE TABLE IF NOT EXISTS payments (
 
     if (lowerPath.endsWith('.env') || lowerPath.endsWith('.example')) {
         return `# Environment Configuration for ${projectRoot || 'API'}
-PORT=5000
+PORT=5001
 NODE_ENV=development
 
 # MySQL Database Configuration
@@ -5607,7 +5643,7 @@ module.exports = pool;
 require('dotenv').config();
 
 const env = {
-    port: Number(process.env.PORT) || 5000,
+    port: Number(process.env.PORT) || 5001,
     nodeEnv: process.env.NODE_ENV || 'development',
     db: {
         host: process.env.DB_HOST || 'localhost',
@@ -6442,21 +6478,25 @@ module.exports = {
         return `require('dotenv').config();
 const app = require('./src/app');
 
-const PORT = Number(process.env.PORT) || 5000;
+const INITIAL_PORT = Number(process.env.PORT) || 5001;
 
-const server = app.listen(PORT, () => {
-    console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
-});
+const startServer = (port) => {
+    const server = app.listen(port, () => {
+        console.log(\`🚀 Server running on http://localhost:\${port}\`);
+    });
 
-server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        const nextPort = PORT + 1;
-        console.warn(\`⚠️ Port \${PORT} is in use, retrying on port \${nextPort}...\`);
-        server.listen(nextPort);
-    } else {
-        console.error('Server error:', err);
-    }
-});
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            const nextPort = port + 1;
+            console.warn(\`⚠️ Port \${port} is in use, retrying on port \${nextPort}...\`);
+            startServer(nextPort);
+        } else {
+            console.error('Server error:', err);
+        }
+    });
+};
+
+startServer(INITIAL_PORT);
 `;
     }
 
@@ -6465,20 +6505,24 @@ server.on('error', (err) => {
         const shouldListenHere = !(isInsideSrc && entryFile === 'server.js');
         const listenBlock = shouldListenHere
             ? `
-if (require.main === module) {
-    const server = app.listen(PORT, () => {
-        console.log(\`🚀 Server running on http://localhost:\${PORT}\`);
+const startServer = (port) => {
+    const server = app.listen(port, () => {
+        console.log(\`🚀 Server running on http://localhost:\${port}\`);
     });
 
     server.on('error', (err) => {
         if (err.code === 'EADDRINUSE') {
-            const nextPort = PORT + 1;
-            console.warn(\`⚠️ Port \${PORT} is in use, retrying on port \${nextPort}...\`);
-            server.listen(nextPort);
+            const nextPort = port + 1;
+            console.warn(\`⚠️ Port \${port} is in use, retrying on port \${nextPort}...\`);
+            startServer(nextPort);
         } else {
             console.error('Server error:', err);
         }
     });
+};
+
+if (require.main === module) {
+    startServer(PORT);
 }
 `
             : '';
@@ -6488,7 +6532,7 @@ const helmet = require('helmet');
 require('dotenv').config();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 5000;
+const PORT = Number(process.env.PORT) || 5001;
 
 app.disable('x-powered-by');
 app.use(helmet());
@@ -6859,18 +6903,29 @@ const normalizeLocalDestination = (value) => {
     // Strip leading home/tilde or absolute desktop/downloads path
     raw = raw.replace(/^.*?\/(Desktop|Downloads)\//i, '$1/');
     raw = raw.replace(/^~[\\/]+/i, '');
+    // Strip trailing line/column numbers (e.g. app.js:38:9) and node_modules subpaths
+    raw = raw.replace(/:\d+(?::\d+)?\)*$/g, '');
+    raw = raw.replace(/\/node_modules(?:\/.*)?$/i, '');
+
+    const stripTailFile = (rel) => {
+        const segs = String(rel || '').split('/').filter(Boolean);
+        if (segs.length >= 2 && /\.[A-Za-z0-9]{1,8}$/.test(segs[segs.length - 1])) {
+            return segs.slice(0, -1).join('/');
+        }
+        return rel;
+    };
 
     const match = raw.match(/^(desktop|downloads?)\/(.+)$/i);
     if (match) {
         const location = /^downloads?$/i.test(match[1]) ? 'Downloads' : 'Desktop';
-        const relativePath = cleanRelativeDirectoryPath(match[2].replace(/[.,;!?]+$/, ''));
+        const relativePath = cleanRelativeDirectoryPath(stripTailFile(match[2].replace(/[.,;!?]+$/, '')));
         if (relativePath) {
             return {location, relativePath};
         }
     }
 
     // Bare project name or relative path like "smart-parking-system"
-    const cleaned = cleanRelativeDirectoryPath(raw.replace(/^[\\/]+/, '').replace(/[.,;!?]+$/, ''));
+    const cleaned = cleanRelativeDirectoryPath(stripTailFile(raw.replace(/^[\\/]+/, '').replace(/[.,;!?]+$/, '')));
     if (cleaned && !['api', 'v1', 'the', 'my', 'a', 'this', 'run'].includes(cleaned.toLowerCase())) {
         return {location: 'Desktop', relativePath: cleaned};
     }
@@ -7039,7 +7094,8 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
 
     const text = String(goalPrompt || '');
     const isDebugOrFix = hasImages
-        || /\b(?:fix|bug|error|crash|repair|debug|troubleshoot|broken|cannot\s+find\s+module|module_not_found|eaddrinuse|enoent|typeerror|syntaxerror|referenceerror|exception|stack|failed)\b/i.test(text);
+        || isRuntimeCrashOrErrorReport(text)
+        || /\b(?:fix|bug|error|crash|repair|debug|troubleshoot|broken|cannot\s+find\s+module|module_not_found|eaddrinuse|enoent|typeerror|syntaxerror|referenceerror|exception|stack|failed|analy[sz]e|inspect|review|check|audit|diagnos[ei])\b/i.test(text);
     if (!isDebugOrFix) {
         return '';
     }
@@ -7193,7 +7249,7 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
     }
 
     const mentionedRelPaths = text.matchAll(/(?:^|[\s'"`(])((?:src|routes?|controllers?|models?|middlewares?|configs?|config|schemas?|validators?|utils?|services?)[\\/][A-Za-z0-9_.\-\\/]+\.(?:js|cjs|mjs|json))/gi);
-    const seenMentioned = new Set();
+    const seenMentioned = new Set(['package.json', '.env', '.env.example', 'server.js', 'app.js', 'index.js', 'src/app.js', 'src/server.js']);
     for (const m of mentionedRelPaths) {
         const rel = m[1].replace(/\\/g, '/');
         if (!seenMentioned.has(rel)) {
@@ -7202,10 +7258,38 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
         }
     }
 
+    // Also inspect any non-node_modules project file referenced in a pasted stack trace
+    const escapedRoot = destination.relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const stackFileRegex = new RegExp(`Desktop[\\\\/]${escapedRoot}[\\\\/]([^\\s:'"\\)\\]]+\\.(?:js|cjs|mjs|json))(?::(\\d+))?`, 'gi');
+    const stackFrames = [];
+    for (const m of text.matchAll(stackFileRegex)) {
+        const rel = m[1].replace(/\\/g, '/');
+        if (/(?:^|\/)node_modules(?:\/|$)/i.test(rel)) continue;
+        stackFrames.push(m[2] ? `${rel}:${m[2]}` : rel);
+        if (!seenMentioned.has(rel)) {
+            seenMentioned.add(rel);
+            await readSnippet(rel, 1600);
+        }
+    }
+
     const parts = [
         `[Local Project Diagnostic Snapshot for ${destination.location}/${destination.relativePath}]`,
         `Project files (${relativeFiles.length}): ${relativeFiles.join(', ') || '(empty)'}`,
     ];
+
+    if (stackFrames.length) {
+        parts.push(`Stack trace project frames (excluding node_modules): ${[...new Set(stackFrames)].join(', ')}`);
+    }
+
+    if (/\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(text)) {
+        const portMatch = text.match(/(?:address\s+already\s+in\s+use\s+(?:[^:\s]*:)+|port:\s*)(\d{2,5})/i);
+        const busyPort = portMatch ? Number(portMatch[1]) : 5000;
+        const safePort = busyPort === 5000 ? 5001 : (busyPort === 3000 ? 3001 : busyPort + 1);
+        parts.push(
+            `EADDRINUSE diagnosis: Port ${busyPort} is already occupied on the host (on macOS, AirPlay Receiver permanently occupies port 5000). `
+            + `Action required: Preserve all existing routes/middlewares in the crashing entry file, update .env PORT to ${safePort}, update default fallback port to ${safePort}, and wrap app.listen() with recursive EADDRINUSE retry (startServer(port) -> port + 1). Never write files into node_modules/.`,
+        );
+    }
 
     if (brokenImports.length) {
         parts.push(`Broken relative require() imports detected (${brokenImports.length}):\n- ${brokenImports.slice(0, 20).join('\n- ')}`);
@@ -7218,10 +7302,270 @@ const buildLocalProjectDiagnosticSnapshot = async (localDestination, goalPrompt,
     }
 
     if (snippets.length) {
-        parts.push(`Key inspected file contents:\n${snippets.slice(0, 7).join('\n\n')}`);
+        parts.push(`Key inspected file contents:\n${snippets.slice(0, 8).join('\n\n')}`);
     }
 
     return parts.join('\n\n');
+};
+
+const patchListenBlockForEaddrinuse = (sourceCode, safePort) => {
+    let updated = String(sourceCode || '');
+    // Update hardcoded fallback ports like `|| 5000` or `|| 3000`
+    updated = updated.replace(
+        /((?:const|let|var)\s+PORT\s*=\s*(?:Number\()?process\.env\.PORT(?:\))?\s*\|\|\s*)(?:3000|5000)\b/g,
+        `$1${safePort}`,
+    );
+
+    // Already has recursive startServer + EADDRINUSE handler?
+    if (/server\.on\(\s*['"]error['"]/.test(updated) && /EADDRINUSE/.test(updated) && /startServer\s*\(/.test(updated)) {
+        return updated;
+    }
+
+    const startServerHelper = `const startServer = (port) => {
+    const server = app.listen(port, () => {
+        console.log(\`🚀 Server running on http://localhost:\${port}\`);
+    });
+
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            const nextPort = port + 1;
+            console.warn(\`⚠️ Port \${port} is in use, retrying on port \${nextPort}...\`);
+            startServer(nextPort);
+        } else {
+            console.error('Server error:', err);
+        }
+    });
+};`;
+
+    // Replace existing `if (require.main === module) { ... app.listen(...); ... }` block
+    const guardedListenRegex = /if\s*\(\s*require\.main\s*===\s*module\s*\)\s*\{[\s\S]*?app\.listen\([\s\S]*?\}\s*\)\s*;?[\s\S]*?\}/;
+    if (guardedListenRegex.test(updated)) {
+        return updated.replace(
+            guardedListenRegex,
+            `${startServerHelper}\n\nif (require.main === module) {\n    startServer(PORT);\n}`,
+        );
+    }
+
+    // Replace standalone `const server = app.listen(...)` or `app.listen(...)`
+    const standaloneListenRegex = /(?:const\s+\w+\s*=\s*)?app\.listen\s*\([\s\S]*?\)\s*;/;
+    if (standaloneListenRegex.test(updated)) {
+        return updated.replace(
+            standaloneListenRegex,
+            `${startServerHelper}\n\nstartServer(typeof PORT !== 'undefined' ? PORT : ${safePort});`,
+        );
+    }
+
+    return updated;
+};
+
+const buildDeterministicLocalBugFixPlan = async (goalPrompt, effectiveDestination) => {
+    if (!LOCAL_DESKTOP_OUTPUT_ENABLED) return null;
+    const text = String(goalPrompt || '');
+    if (!isRuntimeCrashOrErrorReport(text) && !/\b(?:fix|bug|error|crash|repair|debug|eaddrinuse|cannot\s+find\s+module|module_not_found)\b/i.test(text)) {
+        return null;
+    }
+
+    const destination = normalizeLocalDestination(effectiveDestination);
+    if (!destination || destination.location !== 'Desktop' || !destination.relativePath) {
+        return null;
+    }
+
+    const desktopRoot = path.join(os.homedir(), 'Desktop');
+    const projectRoot = path.resolve(desktopRoot, destination.relativePath);
+    if (!projectRoot.startsWith(desktopRoot + path.sep)) {
+        return null;
+    }
+
+    try {
+        const stats = await fs.stat(projectRoot);
+        if (!stats.isDirectory()) return null;
+    } catch (_) {
+        return null;
+    }
+
+    const projRel = destination.relativePath;
+    const tasks = [];
+    const fileTaskKeys = [];
+    const readIfExists = async (rel) => {
+        try {
+            return await fs.readFile(path.join(projectRoot, rel), 'utf8');
+        } catch (_) {
+            return null;
+        }
+    };
+
+    const isEaddrinuse = /\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(text);
+    const isModuleNotFound = /\b(?:MODULE_NOT_FOUND|Cannot\s+find\s+module)\b/i.test(text);
+
+    // 1. Diagnose and fix EADDRINUSE in-place (preserving real project code!)
+    if (isEaddrinuse) {
+        const portMatch = text.match(/(?:address\s+already\s+in\s+use\s+(?:[^:\s]*:)+|port:\s*)(\d{2,5})/i);
+        const busyPort = portMatch ? Number(portMatch[1]) : 5000;
+        const safePort = busyPort === 5000 ? 5001 : (busyPort === 3000 ? 3001 : busyPort + 1);
+
+        // Update .env and .env.example PORT if they point to the busy port
+        for (const envFile of ['.env', '.env.example']) {
+            const envContent = await readIfExists(envFile);
+            if (envContent !== null) {
+                const updatedEnv = /^\s*PORT\s*=/m.test(envContent)
+                    ? envContent.replace(/^\s*PORT\s*=\s*\d+/m, `PORT=${safePort}`)
+                    : `PORT=${safePort}\n${envContent}`;
+                if (updatedEnv !== envContent) {
+                    const nodeKey = getUniqueNodeKey(tasks, `fix_${envFile.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`);
+                    tasks.push({
+                        nodeKey,
+                        title: `Update PORT in ${projRel}/${envFile} to ${safePort}`,
+                        instruction: `Update ${projRel}/${envFile} to use non-conflicting PORT=${safePort} instead of busy port ${busyPort}.`,
+                        dependencies: [],
+                        assignedTool: 'fileManager',
+                        toolInput: {
+                            action: 'createDesktopFile',
+                            mode: 'update',
+                            path: `${projRel}/${envFile}`,
+                            content: updatedEnv,
+                        },
+                    });
+                    fileTaskKeys.push(nodeKey);
+                }
+            }
+        }
+
+        // Update entry files (app.js, server.js, src/app.js, src/server.js) in-place with recursive EADDRINUSE retry
+        const entryCandidates = ['app.js', 'server.js', 'index.js', 'src/app.js', 'src/server.js'];
+        for (const entryRel of entryCandidates) {
+            const content = await readIfExists(entryRel);
+            if (content !== null && /app\.listen\s*\(/.test(content)) {
+                const patched = patchListenBlockForEaddrinuse(content, safePort);
+                if (patched !== content) {
+                    const nodeKey = getUniqueNodeKey(tasks, `fix_${entryRel.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`);
+                    tasks.push({
+                        nodeKey,
+                        title: `Add automatic EADDRINUSE port fallback in ${projRel}/${entryRel}`,
+                        instruction: `Preserve all existing code in ${projRel}/${entryRel} and add recursive startServer(port) EADDRINUSE handling with safe default port ${safePort}.`,
+                        dependencies: [],
+                        assignedTool: 'fileManager',
+                        toolInput: {
+                            action: 'createDesktopFile',
+                            mode: 'update',
+                            path: `${projRel}/${entryRel}`,
+                            content: patched,
+                        },
+                    });
+                    fileTaskKeys.push(nodeKey);
+                }
+            }
+        }
+    }
+
+    // 2. Diagnose and fix missing relative modules or uninstalled npm packages
+    const missingModuleMatch = text.match(/Cannot\s+find\s+module\s+['"]([^'"]+)['"]/i);
+    let needsNpmInstall = false;
+    if (isModuleNotFound && missingModuleMatch) {
+        const missingSpec = missingModuleMatch[1].trim();
+        if (!missingSpec.startsWith('.') && !missingSpec.startsWith('/')) {
+            // Missing third-party npm package!
+            const pkgName = missingSpec.startsWith('@')
+                ? missingSpec.split('/').slice(0, 2).join('/')
+                : missingSpec.split('/')[0];
+            const pkgRaw = await readIfExists('package.json');
+            if (pkgRaw) {
+                try {
+                    const pkgObj = JSON.parse(pkgRaw);
+                    pkgObj.dependencies = pkgObj.dependencies || {};
+                    if (!pkgObj.dependencies[pkgName]) {
+                        pkgObj.dependencies[pkgName] = 'latest';
+                        const nodeKey = getUniqueNodeKey(tasks, 'update_package_json_deps');
+                        tasks.push({
+                            nodeKey,
+                            title: `Add missing dependency "${pkgName}" to ${projRel}/package.json`,
+                            instruction: `Add "${pkgName}" to dependencies in ${projRel}/package.json.`,
+                            dependencies: [],
+                            assignedTool: 'fileManager',
+                            toolInput: {
+                                action: 'createDesktopFile',
+                                mode: 'update',
+                                path: `${projRel}/package.json`,
+                                content: JSON.stringify(pkgObj, null, 2) + '\n',
+                            },
+                        });
+                        fileTaskKeys.push(nodeKey);
+                    }
+                } catch (_) {}
+            }
+            needsNpmInstall = true;
+        } else {
+            // Missing relative file (e.g. ../services/itemService) -> create it using production generator
+            const escapedRoot = projRel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const callerMatch = text.match(new RegExp(`Desktop[\\\\/]${escapedRoot}[\\\\/]([^\\s:'"\\)\\]]+\\.js)`, 'i'));
+            const callerRel = callerMatch && !/node_modules/i.test(callerMatch[1]) ? callerMatch[1].replace(/\\/g, '/') : 'app.js';
+            const resolvedTarget = path.resolve(projectRoot, path.dirname(callerRel), missingSpec);
+            const targetWithExt = /\.js$/i.test(resolvedTarget) ? resolvedTarget : `${resolvedTarget}.js`;
+            if (targetWithExt.startsWith(projectRoot + path.sep) && !fsSync.existsSync(targetWithExt)) {
+                const targetRel = path.relative(projectRoot, targetWithExt).replace(/\\/g, '/');
+                const fullRel = `${projRel}/${targetRel}`;
+                const nodeKey = getUniqueNodeKey(tasks, `create_${targetRel.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`);
+                tasks.push({
+                    nodeKey,
+                    title: `Create missing module ${fullRel}`,
+                    instruction: `Create the missing module ${fullRel} required by ${callerRel}.`,
+                    dependencies: [],
+                    assignedTool: 'fileManager',
+                    toolInput: {
+                        action: 'createDesktopFile',
+                        mode: 'create',
+                        path: fullRel,
+                        content: generateDynamicProductionCode(fullRel, goalPrompt, projRel),
+                    },
+                });
+                fileTaskKeys.push(nodeKey);
+            }
+        }
+    }
+
+    if (!tasks.length && !needsNpmInstall) {
+        return null;
+    }
+
+    let verifyDeps = [...fileTaskKeys];
+    if (needsNpmInstall) {
+        tasks.push({
+            nodeKey: 'npm_install_missing_deps',
+            title: `Install dependencies in ${projRel}`,
+            instruction: `Run npm install inside Desktop/${projRel} to install missing packages.`,
+            dependencies: [...fileTaskKeys],
+            assignedTool: 'executeCommand',
+            toolInput: {
+                command: 'npm install',
+                cwd: `Desktop/${projRel}`,
+                desktop: true,
+            },
+        });
+        verifyDeps = ['npm_install_missing_deps'];
+    }
+
+    // Pick actual existing entry file for syntax check
+    const entryForCheck = (await readIfExists('app.js')) !== null
+        ? 'app.js'
+        : ((await readIfExists('server.js')) !== null ? 'server.js' : 'index.js');
+
+    tasks.push({
+        nodeKey: 'verify_local_fix_syntax',
+        title: `Verify ${projRel}/${entryForCheck} syntax`,
+        instruction: `Verify JavaScript syntax of ${entryForCheck} inside Desktop/${projRel}.`,
+        dependencies: verifyDeps,
+        assignedTool: 'executeCommand',
+        toolInput: {
+            command: `node -c ${entryForCheck}`,
+            cwd: `Desktop/${projRel}`,
+            desktop: true,
+        },
+    });
+
+    return {
+        workflowTitle: `Diagnose and Fix ${projRel}`,
+        summary: `Analyzed local project Desktop/${projRel} in-place, patched the detected runtime error without overwriting existing project logic, and verified syntax.`,
+        tasks,
+    };
 };
 
 const generateDeterministicNodeProjectTasks = (goalPrompt, effectiveDestination) => {
@@ -7552,6 +7896,19 @@ const planWorkflowRun = async ({
         ]);
 
         const explicitTree = extractProjectTreeLayout(goalPrompt);
+        const stackDesktopMatch = String(goalPrompt || '').match(
+            /(?:\/Users\/[^/\s]+\/|\/home\/[^/\s]+\/|~\/|\b)Desktop[\\/]([A-Za-z0-9._-]+)(?:[\\/]|[\s:'"`)\]]|$)/i,
+        );
+        const terminalPromptMatch = String(goalPrompt || '').match(
+            /[A-Za-z0-9._-]+@[A-Za-z0-9._-]+\s+([A-Za-z0-9._-]+)\s+[%$#]/,
+        );
+        const stackProjectCandidate = stackDesktopMatch?.[1] || terminalPromptMatch?.[1] || null;
+        const stackProjectName = (
+            stackProjectCandidate
+            && !IGNORED_PROJECT_WORDS.has(stackProjectCandidate.toLowerCase())
+            && !GENERIC_SUBFOLDER_NAMES.has(stackProjectCandidate.toLowerCase())
+        ) ? stackProjectCandidate : null;
+
         const namedFolderMatch = String(goalPrompt || '').match(
             /\b(?:folder|directory|project)\s+(?:named|called|name(?:\s+is|['’]s)?)\s*[:=-]?\s*["'`*]?([A-Za-z0-9][A-Za-z0-9._-]{1,})["'`*]?/i,
         );
@@ -7580,7 +7937,7 @@ const planWorkflowRun = async ({
             && !GENERIC_SUBFOLDER_NAMES.has(firstTreeDir.toLowerCase())
         ) ? firstTreeDir : null;
 
-        const explicitProjectName = proseProjectName || treeRootHeader || treeProjectName;
+        const explicitProjectName = stackProjectName || proseProjectName || treeRootHeader || treeProjectName;
 
         if (explicitProjectName) {
             const explicitNorm = explicitProjectName.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -7603,7 +7960,25 @@ const planWorkflowRun = async ({
     let planningGoalPrompt = '';
     let validatedPlan = null;
 
-    if (useExplicitTreeFastPath) {
+    // Fast path for deterministic local runtime crashes (EADDRINUSE / MODULE_NOT_FOUND)
+    // Inspects real local files on Desktop and patches them in-place without overwriting project code.
+    if (!hasImages && effectiveDestination && /\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(String(goalPrompt || ''))) {
+        throwIfAborted();
+        const localBugFixPlan = await buildDeterministicLocalBugFixPlan(goalPrompt, effectiveDestination);
+        if (localBugFixPlan && localBugFixPlan.tasks?.length) {
+            planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
+            const localFixValidation = validatePlan(localBugFixPlan, {
+                goalPrompt: planningGoalPrompt,
+                localDestination: effectiveDestination,
+            });
+            if (localFixValidation.success) {
+                validatedPlan = localFixValidation.data;
+                console.log(`⚡ [Planner Local Bug-Fix Fast Path] Prepared ${validatedPlan.tasks.length} in-place repair tasks for ${effectiveDestination}.`);
+            }
+        }
+    }
+
+    if (!validatedPlan && useExplicitTreeFastPath) {
         throwIfAborted();
         console.log(`⚡ [Planner Fast Path] Building ${explicitTreeFiles.length} explicit project-file tasks without an initial full-plan LLM call.`);
         planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
@@ -7857,6 +8232,15 @@ ${largeTreeInstruction}
         }
 
         if (!validatedPlan) {
+            // First try deterministic local project analysis & bug-fix fallback if a Desktop project crash/bug was reported
+            const localBugFallback = await buildDeterministicLocalBugFixPlan(goalPrompt, effectiveDestination);
+            if (localBugFallback && localBugFallback.tasks?.length) {
+                console.log(`🛡️ [Planner Resilience] Using deterministic local bug-fix plan for ${effectiveDestination || goalPrompt}`);
+                validatedPlan = localBugFallback;
+            }
+        }
+
+        if (!validatedPlan) {
             let fallbackTasks = normalizeServerReviewAndFixTasks([], goalPrompt, effectiveDestination);
             if (!fallbackTasks || !fallbackTasks.length) {
                 fallbackTasks = normalizeGitPushWorkflowTasks([], goalPrompt, effectiveDestination);
@@ -7975,6 +8359,8 @@ ${largeTreeInstruction}
 
 module.exports = {
     buildDeterministicExplicitProjectTreePlan,
+    buildDeterministicLocalBugFixPlan,
+    buildLocalProjectDiagnosticSnapshot,
     completeExplicitProjectTreePlan,
     validateAcyclicGraph,
     normalizePlan,
@@ -7983,4 +8369,5 @@ module.exports = {
     extractProjectTreeLayout,
     getMissingProjectTreeFiles,
     isNodeProjectSetupRequest,
+    inferDirectoryPath,
 };

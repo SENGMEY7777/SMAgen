@@ -2492,14 +2492,23 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             let pkg = null;
             if (!hasPkg) {
                 const folderName = path.basename(effectiveCwd) || 'project';
+                const entryFile = [
+                    'src/server.js',
+                    'server.js',
+                    'src/app.js',
+                    'app.js',
+                    'src/index.js',
+                    'index.js',
+                    'main.js',
+                ].find((candidate) => fsSync.existsSync(path.resolve(effectiveCwd, candidate))) || 'server.js';
                 pkg = {
                     name: folderName.toLowerCase().replace(/[^a-z0-9_-]/g, '-'),
                     version: '1.0.0',
                     description: `${folderName} API Backend`,
-                    main: 'server.js',
+                    main: entryFile,
                     scripts: {
-                        start: 'node server.js',
-                        dev: 'nodemon server.js',
+                        start: `node ${entryFile}`,
+                        dev: `nodemon ${entryFile}`,
                     },
                     dependencies: {
                         express: '^4.19.2',

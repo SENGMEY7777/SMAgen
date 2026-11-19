@@ -112,6 +112,7 @@ const runWorkflowStream = async (req, res) => {
     res.flushHeaders?.();
 
     const sendEvent = (event, data) => {
+        if (res.writableEnded || res.destroyed) return;
         res.write(`data: ${JSON.stringify({ event, data, timestamp: new Date().toISOString() })}\n\n`);
     };
 
@@ -148,18 +149,19 @@ const runWorkflowStream = async (req, res) => {
             io: streamIo,
         });
 
-        sendEvent('plan_created', {
+        sendEvent('run_started', {
             runId: result.runId,
             status: result.status,
             phase: result.phase,
             tasksCreated: result.tasksCreated,
-            plan: result.plan,
         });
 
         sendEvent('done', {
             success: true,
             runId: result.runId,
-            message: 'Workflow plan created and running in background',
+            status: result.status,
+            phase: result.phase,
+            message: 'Workflow accepted; planning continues in background',
         });
 
         res.end();

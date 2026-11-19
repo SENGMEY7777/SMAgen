@@ -4279,7 +4279,8 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     if (!isFixOrReviewRequest) return tasks;
 
     let projectPath = null;
-    const urlDomain = (targetUrl.match(/https?:\/\/([a-z0-9_-]+)/i)?.[1] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const rawUrlDomain = (targetUrl.match(/https?:\/\/([a-z0-9_-]+)/i)?.[1] || '').toLowerCase();
+    const urlDomain = rawUrlDomain.replace(/-[a-z0-9]{4}$/i, '').replace(/[^a-z0-9]/g, '');
     const cleanSuffix = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '').replace(/(?:self|app|api|backend|frontend|web|live|prod|production|stage|staging|client|server)$/g, '');
     const cleanUrl = cleanSuffix(urlDomain);
 
@@ -6987,7 +6988,15 @@ const findMatchingDesktopProject = async (goalPrompt) => {
             const parsed = new URL(urlStr);
             const hostParts = parsed.hostname.split('.');
             if (hostParts.length >= 2) {
-                candidates.push(hostParts[0]);
+                const deploymentName = hostParts[0];
+                candidates.push(deploymentName);
+                // Vercel deployment hostnames commonly append a short
+                // project suffix, e.g. computer-shop-backend-z5ow. Also
+                // compare the stable project slug without that suffix.
+                const stableDeploymentName = deploymentName.replace(/-[a-z0-9]{4}$/i, '');
+                if (stableDeploymentName !== deploymentName) {
+                    candidates.push(stableDeploymentName);
+                }
             }
         } catch (_) {}
     }

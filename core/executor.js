@@ -41,6 +41,51 @@ const HTTP_REQUEST_TIMEOUT_MS = Math.max(
     Number.parseInt(process.env.HTTP_REQUEST_TIMEOUT_MS || '10000', 10) || 10000,
 );
 const execFileAsync = promisify(execFile);
+const verifyGitPush = async ({cwd, remote = 'origin', branch = '', env}) => {
+    const resolvedBranch = branch && branch !== 'HEAD'
+        ? branch
+        : await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+            cwd,
+            timeout: 3000,
+            env,
+        }).then((result) => result.stdout.trim())
+            .catch(() => '');
+
+    if (!resolvedBranch || resolvedBranch === 'HEAD') {
+        const error = new Error('Git push verification failed: the repository has no active branch.');
+        error.code = 'GIT_PUSH_VERIFICATION_FAILED';
+        throw error;
+    }
+
+    const localHash = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd,
+        timeout: 3000,
+        env,
+    }).then((result) => result.stdout.trim())
+        .catch(() => '');
+    const remoteResult = await execFileAsync('git', ['ls-remote', remote, `refs/heads/${resolvedBranch}`], {
+        cwd,
+        timeout: 10000,
+        env,
+    });
+    const remoteHash = String(remoteResult.stdout || '').trim().split(/\s+/)[0] || '';
+
+    if (!localHash || !remoteHash || localHash !== remoteHash) {
+        const error = new Error(
+            `Git push verification failed: local ${localHash || 'no commit'} does not match ${remote}/${resolvedBranch} ${remoteHash || 'no remote commit'}.`,
+        );
+        error.code = 'GIT_PUSH_VERIFICATION_FAILED';
+        error.status = 502;
+        throw error;
+    }
+
+    return {
+        commitHash: localHash,
+        remote,
+        branch: resolvedBranch,
+        pushVerified: true,
+    };
+};
 const NODE_BUILTIN_MODULES = new Set([
     'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console',
     'constants', 'crypto', 'dgram', 'diagnostics_channel', 'dns', 'domain',
@@ -2414,6 +2459,23 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             ...gitEnv,
         };
 
+        const verifyPushResult = async (pushArgs = args) => {
+            const pushTargets = pushArgs
+                .slice(1)
+                .filter((argument) => !String(argument).startsWith('-'));
+            const remote = pushTargets[0] || 'origin';
+            let branch = pushTargets[1] || '';
+            if (branch.includes(':')) {
+                branch = branch.split(':').pop();
+            }
+            return verifyGitPush({
+                cwd: effectiveCwd,
+                remote,
+                branch,
+                env: gitExecEnv,
+            });
+        };
+
         if (commandName === 'git' && effectiveCwd && !args.includes('clone') && !args.includes('init')) {
             try {
                 await execFileAsync('git', ['rev-parse', '--is-inside-work-tree'], {
@@ -2620,24 +2682,38 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
             } catch (_) {}
         }
 
+        const commitMetadata = commandName === 'git' && args[0] === 'commit'
+            ? {
+                commitHash: await execFileAsync('git', ['rev-parse', 'HEAD'], {
+                    cwd: effectiveCwd,
+                    timeout: 3000,
+                    env: gitExecEnv,
+                }).then((commitResult) => commitResult.stdout.trim()).catch(() => ''),
+            }
+            : {};
+        const pushMetadata = commandName === 'git' && args[0] === 'push'
+            ? await verifyPushResult(args)
+            : {};
+
         return {
             command,
             cwd: effectiveCwd,
             stdout: result.stdout,
             stderr: result.stderr,
             exitCode: 0,
+            ...commitMetadata,
+            ...pushMetadata,
         };
     } catch (error) {
         if (commandName === 'git' && args[0] === 'commit') {
             const combined = `${error.stdout || ''} ${error.stderr || ''} ${error.message || ''}`;
             if (/nothing to commit|working tree clean|no changes added to commit/i.test(combined)) {
-                return {
-                    command,
-                    cwd: effectiveCwd,
-                    stdout: error.stdout || 'nothing to commit, working tree clean',
-                    stderr: '',
-                    exitCode: 0,
-                };
+                const noCommitError = new Error(
+                    `Git commit was not created in ${effectiveCwd}: nothing to commit; the requested file changes are not present in this project.`,
+                );
+                noCommitError.code = 'GIT_NO_CHANGES_TO_COMMIT';
+                noCommitError.status = 409;
+                throw noCommitError;
             }
         }
 
@@ -2668,6 +2744,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         stdout: retryResult.stdout,
                         stderr: retryResult.stderr,
                         exitCode: 0,
+                        ...(await verifyGitPush({
+                            cwd: effectiveCwd,
+                            remote: pushRemote,
+                            branch: targetBranch,
+                            env: gitExecEnv,
+                        })),
                     };
                 } catch (_) {}
             }
@@ -2690,6 +2772,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                         stdout: retryResult.stdout,
                         stderr: retryResult.stderr,
                         exitCode: 0,
+                        ...(await verifyGitPush({
+                            cwd: effectiveCwd,
+                            remote: pushRemote,
+                            branch: targetBranch,
+                            env: gitExecEnv,
+                        })),
                     };
                 } catch (_) {}
             }
@@ -2726,6 +2814,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                                 stdout: retryResult.stdout,
                                 stderr: retryResult.stderr,
                                 exitCode: 0,
+                                ...(await verifyGitPush({
+                                    cwd: effectiveCwd,
+                                    remote: pushRemote,
+                                    branch: targetBranch,
+                                    env: gitExecEnv,
+                                })),
                             };
                         }
 
@@ -2743,6 +2837,12 @@ const executeCommand = async (input, workspacePath, task, options = {}) => {
                                 stdout: retryResult.stdout,
                                 stderr: retryResult.stderr,
                                 exitCode: 0,
+                                ...(await verifyGitPush({
+                                    cwd: effectiveCwd,
+                                    remote: pushRemote,
+                                    branch: targetBranch,
+                                    env: gitExecEnv,
+                                })),
                             };
                         }
                     }

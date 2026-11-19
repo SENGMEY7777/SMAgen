@@ -598,6 +598,29 @@ const SOURCE_TEXT_EXTENSIONS = new Set([
     '.json', '.md', '.py', '.sql', '.txt', '.xml', '.yaml', '.yml',
 ]);
 
+const MAX_REVIEW_CONTENT_SIZE = 512 * 1024;
+
+const isReviewableFile = (requestedPath) => {
+    const normalizedPath = String(requestedPath || '').replace(/\\/g, '/');
+    const baseName = path.basename(normalizedPath);
+    if (!SOURCE_TEXT_EXTENSIONS.has(path.extname(baseName).toLowerCase())) return false;
+    if (/^\.env(?:\.|$)/i.test(baseName)) return false;
+    if (/(?:secret|credential|token|password|private[-_]?key)/i.test(baseName)) return false;
+    return true;
+};
+
+const addReviewContent = (result, requestedPath, content) => {
+    if (!isReviewableFile(requestedPath) || typeof content !== 'string') return result;
+    if (Buffer.byteLength(content, 'utf8') > MAX_REVIEW_CONTENT_SIZE) {
+        return {...result, contentAvailable: false};
+    }
+    return {
+        ...result,
+        content,
+        contentAvailable: true,
+    };
+};
+
 const normalizeGeneratedSourceContent = (content, requestedPath = '') => {
     if (typeof content !== 'string' || !SOURCE_TEXT_EXTENSIONS.has(path.extname(String(requestedPath)).toLowerCase())) {
         return content;
@@ -1127,11 +1150,11 @@ const fileManager = async (input, workspacePath, task = {}) => {
                 flag: input.overwrite === true || ['write', 'update'].includes(mode) ? 'w' : 'wx',
             });
 
-            return {
+            return addReviewContent({
                 path: requestedFilePath,
                 bytesWritten: Buffer.byteLength(content, 'utf8'),
                 created: true,
-            };
+            }, requestedFilePath, content);
         }));
 
         return {
@@ -1410,13 +1433,13 @@ const fileManager = async (input, workspacePath, task = {}) => {
         await fs.appendFile(filePath, content, 'utf8');
     }
 
-    return {
+    return addReviewContent({
         action: desktopFileAction ? 'createDesktopFile' : action,
         path: input.path,
         ...(desktopFileAction ? {location: 'local Desktop'} : {}),
         bytesWritten: Buffer.byteLength(content, 'utf8'),
         created: writeAction === 'create',
-    };
+    }, input.path, content);
 };
 
 const decodeHtml = (value) => {

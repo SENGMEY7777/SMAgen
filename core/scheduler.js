@@ -193,6 +193,7 @@ const finalizeTasksAfterSchedulerError = async (runId, error, io) => {
 
 const activeSchedulers = new Map();
 const activeRunControllers = new Map();
+const queuedResumes = new Map();
 
 const isRunCancelled = async (runId, signal) => {
     if (signal?.aborted) return true;
@@ -209,8 +210,32 @@ const cancelActiveRun = (runId) => {
 
 const triggerScheduler = async (runId, options = {}) => {
     if (activeSchedulers.has(runId)) {
-        console.log(`⏳ [Scheduler] Run ${runId} is already running an active scheduler. Reusing promise.`);
-        return activeSchedulers.get(runId);
+        const activeScheduler = activeSchedulers.get(runId);
+
+        if (!options.resumeAfterActive) {
+            console.log(`⏳ [Scheduler] Run ${runId} is already running an active scheduler. Reusing promise.`);
+            return activeScheduler;
+        }
+
+        // An approval can arrive during the final microtask of the scheduler
+        // that created the approval gate. Reusing that promise would return
+        // WAITING again without evaluating the newly approved task. Queue one
+        // deduplicated resume after the active scheduler has fully unwound.
+        if (!queuedResumes.has(runId)) {
+            const resumePromise = activeScheduler
+                .then(() => new Promise((resolve) => setImmediate(resolve)))
+                .then(() => triggerScheduler(runId, {
+                    ...options,
+                    resumeAfterActive: false,
+                }))
+                .finally(() => {
+                    queuedResumes.delete(runId);
+                });
+            queuedResumes.set(runId, resumePromise);
+        }
+
+        console.log(`⏳ [Scheduler] Run ${runId} has an active pass. Queued one approval resume.`);
+        return queuedResumes.get(runId);
     }
 
     const cancellationController = new AbortController();
@@ -238,10 +263,10 @@ const triggerScheduler = async (runId, options = {}) => {
 
     try {
         const initialRun = await getExecutionById(runId);
-        if (!initialRun || initialRun.status === 'CANCELLED') {
+        if (!initialRun || ['CANCELLED', 'COMPLETED', 'FAILED'].includes(initialRun.status)) {
             return {
                 runId,
-                status: 'CANCELLED',
+                status: initialRun?.status || 'CANCELLED',
                 tasksProcessed,
             };
         }

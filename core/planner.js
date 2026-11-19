@@ -7077,6 +7077,30 @@ const findMatchingDesktopProject = async (goalPrompt) => {
                 const gitConfig = await fs.readFile(gitConfigPath, 'utf8');
                 const match = gitConfig.match(/url\s*=\s*.*\/([^\s\/]+?)(?:\.git)?\s*$/m);
                 if (match) {
+                    const rawRepoName = match[1].replace(/\.git$/i, '');
+                    for (const candidate of candidates) {
+                        // Prefer an exact repository/project match before applying
+                        // suffix cleanup. `computer-shop` and
+                        // `computer-shop-backend` both normalize to `computershop`,
+                        // so suffix matching alone can select the wrong folder.
+                        const candidateNorm = normalize(candidate);
+                        const repoNorm = normalize(rawRepoName);
+                        if (candidateNorm && repoNorm && candidateNorm === repoNorm) {
+                            return `Desktop/${dir.relativePath}`;
+                        }
+                    }
+                }
+            } catch (_) {}
+        }
+
+        // Pass 0b: fall back to cleaned remote names only after every exact
+        // remote match has been checked.
+        for (const dir of directories) {
+            try {
+                const gitConfigPath = path.join(desktopRoot, dir.relativePath, '.git', 'config');
+                const gitConfig = await fs.readFile(gitConfigPath, 'utf8');
+                const match = gitConfig.match(/url\s*=\s*.*\/([^\s\/]+?)(?:\.git)?\s*$/m);
+                if (match) {
                     const repoName = cleanSuffix(match[1]);
                     for (const candidate of candidates) {
                         const candClean = cleanSuffix(candidate);

@@ -3,10 +3,14 @@ const { v4: uuidv4 } = require('uuid');
 const { planWorkflowRun } = require('../../core/planner');
 const { triggerScheduler, cancelActiveRun } = require('../../core/scheduler');
 const { executeTaskNode } = require('../../core/executor');
+const { emitWorkflowEvent } = require('../../core/telemetry');
 
-const startScheduler = (runId, io = null) => triggerScheduler(runId, {
+const activePlanningRuns = new Map();
+
+const startScheduler = (runId, io = null, options = {}) => triggerScheduler(runId, {
     io,
     executor: executeTaskNode,
+    ...options,
 });
 
 const waitForClientAbort = (isAborted) => {
@@ -53,6 +57,86 @@ const cancelledPlanningResult = (runId, userId) => ({
     execution: null,
 });
 
+const cancelPlanningRun = (runId) => {
+    const controller = activePlanningRuns.get(String(runId));
+    if (!controller) return false;
+    controller.abort();
+    return true;
+};
+
+const startPlanningInBackground = ({
+    executionRun,
+    images,
+    localDestination,
+    userId,
+    io,
+    isAborted,
+}) => {
+    const runKey = String(executionRun.id);
+    const planningController = new AbortController();
+    activePlanningRuns.set(runKey, planningController);
+
+    const planningIsAborted = () => (
+        planningController.signal.aborted
+        || (typeof isAborted === 'function' && isAborted())
+    );
+
+    setImmediate(async () => {
+        try {
+            await planWorkflowRun({
+                runId: executionRun.id,
+                goalPrompt: executionRun.goal_prompt,
+                images,
+                localDestination,
+                userId,
+                io,
+                isAborted: planningIsAborted,
+            });
+
+            const currentRun = await workflowModel.getExecutionById(executionRun.id, userId);
+            if (!currentRun || currentRun.status === 'CANCELLED') {
+                console.log(`🛑 [Workflow Service] Run ${executionRun.id} was cancelled before scheduler started.`);
+                return;
+            }
+
+            startScheduler(executionRun.id, io).catch((error) => {
+                console.error(`❌ [Workflow Execution Error] ${executionRun.id}:`, error.message);
+            });
+        } catch (error) {
+            const currentRun = await workflowModel.getExecutionById(executionRun.id, userId).catch(() => null);
+            if (!currentRun || currentRun.status === 'CANCELLED') return;
+
+            await workflowModel.updateExecutionRunStatus(executionRun.id, 'FAILED').catch(() => {});
+            await workflowModel.createExecutionLog({
+                id: uuidv4(),
+                runId: executionRun.id,
+                level: 'ERROR',
+                source: 'PLANNER',
+                message: JSON.stringify({
+                    event: 'planning_failed',
+                    code: error.code || 'PLANNER_ERROR',
+                    message: error.message || 'Workflow planning failed',
+                }),
+            }).catch(() => {});
+
+            emitWorkflowEvent({
+                io,
+                runId: executionRun.id,
+                event: 'run_finished',
+                source: 'PLANNER',
+                payload: {
+                    runId: executionRun.id,
+                    status: 'FAILED',
+                    error: error.message || 'Workflow planning failed',
+                    completedAt: new Date(),
+                },
+            });
+        } finally {
+            activePlanningRuns.delete(runKey);
+        }
+    });
+};
+
 const create = async ({title, description, systemPrompt, userId}) => {
     if (!title || !systemPrompt || !userId) {
         const error = new Error('Title, system prompt, and user ID are required');
@@ -98,7 +182,7 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectC
 
         if (existingTasks.length > 0) {
             setImmediate(() => {
-                startScheduler(runId, io).catch((error) => {
+                startScheduler(runId, io, {resumeAfterActive: true}).catch((error) => {
                     console.error(`❌ [Workflow Resume Error] ${runId}:`, error.message);
                 });
             });
@@ -155,9 +239,8 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectC
                 || (projectContext?.name ? `Desktop/${projectContext.name}` : '')
                 || (typeof projectContext === 'string' ? `Desktop/${projectContext}` : ''));
 
-    const planningPromise = planWorkflowRun({
-        runId: executionRun.id,
-        goalPrompt: executionRun.goal_prompt,
+    startPlanningInBackground({
+        executionRun,
         images,
         localDestination: resolvedLocalDestination,
         userId,
@@ -165,73 +248,11 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectC
         isAborted,
     });
 
-    const abortWatcher = waitForClientAbort(isAborted);
-    let plan;
-    try {
-        const result = abortWatcher.promise
-            ? await Promise.race([
-                planningPromise.then((value) => ({type: 'planned', value})),
-                abortWatcher.promise.then(() => ({type: 'aborted'})),
-            ])
-            : {type: 'planned', value: await planningPromise};
-
-        if (result.type === 'aborted') {
-            // The planner may still be waiting for an upstream model timeout.
-            // It receives isAborted and will stop before persisting tasks; keep
-            // its eventual rejection from becoming an unhandled promise.
-            planningPromise.catch(() => {});
-            await workflowModel.cancelExecutionRun(
-                executionRun.id,
-                userId,
-                'Client aborted workflow planning',
-            );
-            return cancelledPlanningResult(executionRun.id, userId);
-        }
-
-        plan = result.value;
-    } catch (error) {
-        if (typeof isAborted === 'function' && isAborted()) {
-            await workflowModel.cancelExecutionRun(
-                executionRun.id,
-                userId,
-                'Client aborted workflow planning',
-            ).catch(() => {});
-            return cancelledPlanningResult(executionRun.id, userId);
-        }
-        throw error;
-    } finally {
-        abortWatcher.cleanup();
-    }
-
-    if (typeof isAborted === 'function' && isAborted()) {
-        console.log(`🛑 [Workflow Service] Run ${executionRun.id} was aborted before scheduler started.`);
-        await workflowModel.cancelExecutionRun(executionRun.id, userId, 'Client aborted workflow planning');
-        return {
-            ...plan,
-            ...cancelledPlanningResult(executionRun.id, userId),
-        };
-    }
-
-    setImmediate(async () => {
-        try {
-            const currentRun = await workflowModel.getExecutionById(executionRun.id, userId);
-            if (currentRun?.status === 'CANCELLED') {
-                console.log(`🛑 [Workflow Service] Run ${executionRun.id} is CANCELLED. Skipping scheduler.`);
-                return;
-            }
-            startScheduler(executionRun.id, io).catch((error) => {
-                console.error(`❌ [Workflow Execution Error] ${executionRun.id}:`, error.message);
-            });
-        } catch (checkErr) {
-            console.error(`❌ [Workflow Pre-Scheduler Error] ${executionRun.id}:`, checkErr.message);
-        }
-    });
-
     return {
-        ...plan,
+        success: true,
         runId: executionRun.id,
-        status: 'RUNNING',
-        phase: 'EXECUTION',
+        status: 'PLANNING',
+        phase: 'PLANNING',
         executionStarted: true,
         execution: null,
     };
@@ -274,6 +295,7 @@ const cancelRun = async ({runId, userId, reason = 'Workflow cancelled by user'})
     }
 
     if (result.updated) {
+        cancelPlanningRun(runId);
         cancelActiveRun(runId);
     }
 

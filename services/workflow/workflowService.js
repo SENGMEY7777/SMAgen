@@ -147,10 +147,13 @@ const runWorkflow = async ({runId, workflowId, goalPrompt, images = [], projectC
         });
     }
 
+    const hasRemoteProjectUrl = /https?:\/\/[^\s]+/i.test(String(executionRun.goal_prompt || goalPrompt || ''));
     const resolvedLocalDestination = localDestination
-        || (projectContext?.workspacePath)
-        || (projectContext?.name ? `Desktop/${projectContext.name}` : '')
-        || (typeof projectContext === 'string' ? `Desktop/${projectContext}` : '');
+        || (hasRemoteProjectUrl
+            ? ''
+            : projectContext?.workspacePath
+                || (projectContext?.name ? `Desktop/${projectContext.name}` : '')
+                || (typeof projectContext === 'string' ? `Desktop/${projectContext}` : ''));
 
     const planningPromise = planWorkflowRun({
         runId: executionRun.id,

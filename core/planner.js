@@ -4288,16 +4288,47 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     const destNorm = String(dest?.relativePath || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const cleanDest = cleanSuffix(destNorm);
 
-    // Accept localDestination if it actually matches the URL domain directly or via cleaned suffix
-    if (dest?.relativePath && cleanUrl && cleanDest && (cleanUrl === cleanDest || (cleanUrl.length >= 4 && cleanDest.includes(cleanUrl)) || (cleanDest.length >= 4 && cleanUrl.includes(cleanDest)))) {
+    const isDesktopProject = (relativePath) => {
+        if (!relativePath) return false;
+        const absolutePath = path.join(os.homedir(), 'Desktop', relativePath);
+        try {
+            return fsSync.existsSync(absolutePath)
+                && (fsSync.existsSync(path.join(absolutePath, 'package.json'))
+                    || fsSync.existsSync(path.join(absolutePath, '.git')));
+        } catch (_) {
+            return false;
+        }
+    };
+
+    // The active project selected in the UI is authoritative. Deployment URLs
+    // commonly contain random Vercel suffixes, so requiring a literal hostname
+    // match can silently bind the repair to no project at all.
+    if (dest?.relativePath && isDesktopProject(dest.relativePath)
+        && (cleanUrl === cleanDest
+            || (cleanUrl.length >= 4 && cleanDest.includes(cleanUrl))
+            || (cleanDest.length >= 4 && cleanUrl.includes(cleanDest))
+            || Boolean(localDestination))) {
         projectPath = dest.relativePath;
     } else {
         for (const t of tasks) {
-            const candidate = t.toolInput?.cwd || t.toolInput?.path;
-            if (typeof candidate === 'string' && candidate.toLowerCase().includes('sample-res-tful-api')) {
-                projectPath = candidate.replace(/^desktop[\\/]+/i, '').replace(/[\\/]+$/, '');
-                break;
+            const candidates = [t.toolInput?.cwd, t.toolInput?.path, t.toolInput?.filePath]
+                .filter((candidate) => typeof candidate === 'string');
+            for (const candidate of candidates) {
+                const normalizedCandidate = candidate
+                    .replace(/^.*?[\\/]Desktop[\\/]+/i, '')
+                    .replace(/^desktop[\\/]+/i, '')
+                    .replace(/[\\/]+$/, '');
+                const segments = normalizedCandidate.split(/[\\/]/).filter(Boolean);
+                for (let index = 1; index <= segments.length; index += 1) {
+                    const candidateProject = segments.slice(0, index).join('/');
+                    if (isDesktopProject(candidateProject)) {
+                        projectPath = candidateProject;
+                        break;
+                    }
+                }
+                if (projectPath) break;
             }
+            if (projectPath) break;
         }
         if (!projectPath && /sample-res-tful-api/i.test(targetUrl)) {
             projectPath = 'Api-Productions/Sample-RESTful-API-';
@@ -4337,20 +4368,32 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     const normalizedExistingTasks = tasks.map(fixVercelApiEntryTask);
 
     const hasHttpTask = normalizedExistingTasks.some((t) => t.assignedTool === 'httpRequester');
-    const hasCodeUpdateTask = normalizedExistingTasks.some((t) => {
+    const hasServerCodeUpdateTask = normalizedExistingTasks.some((t) => {
         const action = String(t.toolInput?.action || '').toLowerCase();
-        return (t.assignedTool === 'fileManager' && ['create', 'update', 'createdesktopfile', 'write'].includes(action) && !action.includes('directory'));
+        const requestedPath = String(t.toolInput?.path || '').replace(/\\/g, '/');
+        const isProjectMetadata = /(?:^|\/)(?:package(?:-lock)?\.json)$/i.test(requestedPath);
+        return t.assignedTool === 'fileManager'
+            && (['create', 'update', 'createdesktopfile', 'write', 'ensureRootRoute', 'ensurerootroute'].includes(action)
+                || /(?:^|\/)(?:api\/index\.js|vercel\.json)$/i.test(requestedPath))
+            && !action.includes('directory')
+            && !isProjectMetadata;
     });
     const hasPushTask = normalizedExistingTasks.some((t) => {
         const cmd = String(t.toolInput?.command || '').toLowerCase();
         return t.assignedTool === 'executeCommand' && (cmd.includes('git push') || cmd.includes('push origin'));
     });
+    const hasLiveVerificationTask = normalizedExistingTasks.some((t) => (
+        t.assignedTool === 'httpRequester'
+        && (String(t.nodeKey || '').toLowerCase().includes('verify')
+            || String(t.title || '').toLowerCase().includes('verify'))
+        && t.toolInput?.expectedStatus
+    ));
 
-    if (hasHttpTask && hasCodeUpdateTask && hasPushTask) {
+    if (hasHttpTask && hasServerCodeUpdateTask && hasPushTask && hasLiveVerificationTask) {
         return normalizedExistingTasks;
     }
 
-    if (hasCodeUpdateTask && !hasPushTask) {
+    if (hasServerCodeUpdateTask && !hasPushTask) {
         const updatedTasks = [...normalizedExistingTasks];
         const lastTask = normalizedExistingTasks[normalizedExistingTasks.length - 1];
         const targetBranch = extractDynamicTargetBranch(goalPrompt);
@@ -4431,6 +4474,22 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
             },
         });
 
+        updatedTasks.push({
+            nodeKey: 'verify_live_endpoint',
+            title: 'Verify live API endpoint',
+            instruction: `Verify ${targetUrl} returns HTTP 200 after the deployment is pushed.`,
+            dependencies: ['git_push_deploy'],
+            assignedTool: 'httpRequester',
+            toolInput: {
+                method: 'GET',
+                url: targetUrl,
+                expectedStatus: 200,
+                failOnStatus: true,
+                retryAttempts: 5,
+                retryDelayMs: 4000,
+            },
+        });
+
         return updatedTasks;
     }
 
@@ -4453,17 +4512,31 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
     newTasks.push({
         nodeKey: 'inspect_server_entry',
         title: 'Inspect server entry file',
-        instruction: `Read package.json in ${cleanRelativePath} to inspect existing routes and configuration.`,
+        instruction: `Read ${detectedExpressEntry} in ${cleanRelativePath} to inspect existing routes and configuration.`,
         dependencies: ['test_live_endpoint'],
         assignedTool: 'fileManager',
         toolInput: {
             action: 'readDesktopFile',
-            path: `${cleanRelativePath}/package.json`,
+            path: `${cleanRelativePath}/${detectedExpressEntry}`,
             desktop: true,
         },
     });
 
     let prevDep = 'inspect_server_entry';
+
+    newTasks.push({
+        nodeKey: 'ensure_root_route',
+        title: 'Ensure root API route',
+        instruction: `Ensure ${detectedExpressEntry} responds to GET / with a JSON API status response.`,
+        dependencies: [prevDep],
+        assignedTool: 'fileManager',
+        toolInput: {
+            action: 'ensureRootRoute',
+            path: `${cleanRelativePath}/${detectedExpressEntry}`,
+            desktop: true,
+        },
+    });
+    prevDep = 'ensure_root_route';
 
     // If deploying to Vercel, configure api/index.js and vercel.json serverless routing
     if (/vercel\.app/i.test(targetUrl)) {
@@ -4592,6 +4665,22 @@ const normalizeServerReviewAndFixTasks = (tasks, goalPrompt, localDestination) =
             command: standardPushCmd,
             cwd: desktopProjectPath,
             desktop: true,
+        },
+    });
+
+    newTasks.push({
+        nodeKey: 'verify_live_endpoint',
+        title: 'Verify live API endpoint',
+        instruction: `Verify ${targetUrl} returns HTTP 200 after the deployment is pushed.`,
+        dependencies: ['git_push_deploy'],
+        assignedTool: 'httpRequester',
+        toolInput: {
+            method: 'GET',
+            url: targetUrl,
+            expectedStatus: 200,
+            failOnStatus: true,
+            retryAttempts: 5,
+            retryDelayMs: 4000,
         },
     });
 

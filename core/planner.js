@@ -7404,6 +7404,7 @@ const buildDeterministicLocalBugFixPlan = async (goalPrompt, effectiveDestinatio
     const projRel = destination.relativePath;
     const tasks = [];
     const fileTaskKeys = [];
+    let packageUpdateTask = null;
     const readIfExists = async (rel) => {
         try {
             return await fs.readFile(path.join(projectRoot, rel), 'utf8');
@@ -7411,6 +7412,139 @@ const buildDeterministicLocalBugFixPlan = async (goalPrompt, effectiveDestinatio
             return null;
         }
     };
+
+    // Resolve the entry file from the project that is actually on the Desktop.
+    // A generated verification task must not assume `server.js` when the project
+    // uses a `src/server.js` layout; that mismatch is what made Kairo report a
+    // successful repair while `npm run dev` still crashed locally.
+    const hasProjectFile = async (relativePath) => {
+        if (!relativePath || path.isAbsolute(relativePath)) return false;
+        try {
+            const stats = await fs.stat(path.resolve(projectRoot, relativePath));
+            return stats.isFile();
+        } catch (_) {
+            return false;
+        }
+    };
+    const extractScriptEntry = (script) => {
+        const match = String(script || '').match(/\b(?:node|nodemon)\s+(?:(?:--[^\s]+)\s+)*["']?([^"'\s;&|]+\.(?:c?js|mjs))["']?/i);
+        return match ? match[1].replace(/\\/g, '/') : '';
+    };
+
+    let packageJson = null;
+    const packageJsonRaw = await readIfExists('package.json');
+    if (packageJsonRaw) {
+        try {
+            packageJson = JSON.parse(packageJsonRaw);
+        } catch (_) {
+            packageJson = null;
+        }
+    }
+
+    const entryCandidates = [
+        packageJson?.main,
+        extractScriptEntry(packageJson?.scripts?.start),
+        extractScriptEntry(packageJson?.scripts?.dev),
+        'src/server.js',
+        'server.js',
+        'src/app.js',
+        'app.js',
+        'src/index.js',
+        'index.js',
+        'main.js',
+    ].filter(Boolean);
+    const uniqueEntryCandidates = [...new Set(entryCandidates)];
+    const existingEntryCandidates = [];
+    for (const candidate of uniqueEntryCandidates) {
+        if (await hasProjectFile(candidate)) existingEntryCandidates.push(candidate);
+    }
+
+    const entryHasListener = async (candidate) => {
+        const source = await readIfExists(candidate);
+        return source !== null && /\.listen\s*\(/.test(source);
+    };
+    let entryForCheck = '';
+    for (const candidate of existingEntryCandidates) {
+        if (await entryHasListener(candidate)) {
+            entryForCheck = candidate;
+            break;
+        }
+    }
+
+    // Some generated projects contain only an exported Express app in
+    // src/server.js or src/app.js. Create the missing root runtime entry once,
+    // instead of claiming that a syntax-only check means the app can start.
+    let runtimeWrapperTaskKey = null;
+    if (!entryForCheck && existingEntryCandidates.length && !(await hasProjectFile('server.js'))) {
+        const appModule = existingEntryCandidates.find((candidate) => /(?:^|\/)(?:app|server|index)\.(?:c?js|mjs)$/i.test(candidate))
+            || existingEntryCandidates[0];
+        const requirePath = `./${appModule.replace(/\.(?:c?js|mjs)$/i, '')}`;
+        entryForCheck = 'server.js';
+        runtimeWrapperTaskKey = getUniqueNodeKey(tasks, 'create_server_runtime_entry');
+        tasks.push({
+            nodeKey: runtimeWrapperTaskKey,
+            title: `Create ${projRel}/server.js runtime entry`,
+            instruction: `Create a small CommonJS runtime entry that imports the existing Express app from ${appModule} and starts it on process.env.PORT or 5001 without changing the app module.`,
+            dependencies: [],
+            assignedTool: 'fileManager',
+            toolInput: {
+                action: 'createDesktopFile',
+                mode: 'create',
+                path: `${projRel}/server.js`,
+                content: `require('dotenv').config();
+const importedApp = require('${requirePath}');
+const app = importedApp?.default || importedApp?.app || importedApp;
+const PORT = Number(process.env.PORT) || 5001;
+
+if (!app || typeof app.listen !== 'function') {
+    throw new TypeError('The Express app module must export an app with a listen() method.');
+}
+
+const server = app.listen(PORT, () => {
+    console.log(\`Server running on http://localhost:\${PORT}\`);
+});
+
+module.exports = server;
+`,
+            },
+        });
+        fileTaskKeys.push(runtimeWrapperTaskKey);
+    }
+
+    if (!entryForCheck) entryForCheck = existingEntryCandidates[0] || 'index.js';
+
+    if (packageJson && ((await hasProjectFile(entryForCheck)) || runtimeWrapperTaskKey)) {
+        const packageUpdate = {...packageJson};
+        const startEntry = extractScriptEntry(packageJson.scripts?.start);
+        const devEntry = extractScriptEntry(packageJson.scripts?.dev);
+        const needsMainUpdate = packageJson.main !== entryForCheck || !(await hasProjectFile(packageJson.main));
+        const needsStartUpdate = !packageJson.scripts?.start || startEntry !== entryForCheck || !(await hasProjectFile(startEntry));
+        const needsDevUpdate = !packageJson.scripts?.dev || devEntry !== entryForCheck || !(await hasProjectFile(devEntry));
+
+        if (needsMainUpdate || needsStartUpdate || needsDevUpdate) {
+            packageUpdate.main = entryForCheck;
+            packageUpdate.scripts = {...(packageUpdate.scripts || {})};
+            if (needsStartUpdate) packageUpdate.scripts.start = `node ${entryForCheck}`;
+            if (needsDevUpdate) packageUpdate.scripts.dev = `nodemon ${entryForCheck}`;
+
+            const nodeKey = getUniqueNodeKey(tasks, 'fix_package_json_entrypoint');
+            packageUpdateTask = {
+                nodeKey,
+                title: `Fix ${projRel}/package.json entrypoint and scripts`,
+                instruction: `Keep all existing package.json settings, but point main, start, and dev to the runnable ${entryForCheck} entry file.`,
+                dependencies: runtimeWrapperTaskKey ? [runtimeWrapperTaskKey] : [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopFile',
+                    mode: 'update',
+                    path: `${projRel}/package.json`,
+                    content: JSON.stringify(packageUpdate, null, 2) + '\n',
+                },
+            };
+            tasks.push(packageUpdateTask);
+            fileTaskKeys.push(nodeKey);
+        }
+    }
 
     const isEaddrinuse = /\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(text);
     const isModuleNotFound = /\b(?:MODULE_NOT_FOUND|Cannot\s+find\s+module)\b/i.test(text);
@@ -7488,25 +7622,33 @@ const buildDeterministicLocalBugFixPlan = async (goalPrompt, effectiveDestinatio
             const pkgRaw = await readIfExists('package.json');
             if (pkgRaw) {
                 try {
-                    const pkgObj = JSON.parse(pkgRaw);
+                    const pkgObj = packageUpdateTask
+                        ? JSON.parse(packageUpdateTask.toolInput.content)
+                        : JSON.parse(pkgRaw);
                     pkgObj.dependencies = pkgObj.dependencies || {};
                     if (!pkgObj.dependencies[pkgName]) {
                         pkgObj.dependencies[pkgName] = 'latest';
-                        const nodeKey = getUniqueNodeKey(tasks, 'update_package_json_deps');
-                        tasks.push({
-                            nodeKey,
-                            title: `Add missing dependency "${pkgName}" to ${projRel}/package.json`,
-                            instruction: `Add "${pkgName}" to dependencies in ${projRel}/package.json.`,
-                            dependencies: [],
-                            assignedTool: 'fileManager',
-                            toolInput: {
-                                action: 'createDesktopFile',
-                                mode: 'update',
-                                path: `${projRel}/package.json`,
-                                content: JSON.stringify(pkgObj, null, 2) + '\n',
-                            },
-                        });
-                        fileTaskKeys.push(nodeKey);
+                        if (packageUpdateTask) {
+                            packageUpdateTask.title = `Fix ${projRel}/package.json entrypoint, scripts, and dependencies`;
+                            packageUpdateTask.instruction = `Keep existing package.json settings, point main/start/dev to the runnable ${entryForCheck} entry file, and add the missing dependency "${pkgName}".`;
+                            packageUpdateTask.toolInput.content = JSON.stringify(pkgObj, null, 2) + '\n';
+                        } else {
+                            const nodeKey = getUniqueNodeKey(tasks, 'update_package_json_deps');
+                            tasks.push({
+                                nodeKey,
+                                title: `Add missing dependency "${pkgName}" to ${projRel}/package.json`,
+                                instruction: `Add "${pkgName}" to dependencies in ${projRel}/package.json.`,
+                                dependencies: [],
+                                assignedTool: 'fileManager',
+                                toolInput: {
+                                    action: 'createDesktopFile',
+                                    mode: 'update',
+                                    path: `${projRel}/package.json`,
+                                    content: JSON.stringify(pkgObj, null, 2) + '\n',
+                                },
+                            });
+                            fileTaskKeys.push(nodeKey);
+                        }
                     }
                 } catch (_) {}
             }
@@ -7518,7 +7660,9 @@ const buildDeterministicLocalBugFixPlan = async (goalPrompt, effectiveDestinatio
             const callerRel = callerMatch && !/node_modules/i.test(callerMatch[1]) ? callerMatch[1].replace(/\\/g, '/') : 'app.js';
             const resolvedTarget = path.resolve(projectRoot, path.dirname(callerRel), missingSpec);
             const targetWithExt = /\.js$/i.test(resolvedTarget) ? resolvedTarget : `${resolvedTarget}.js`;
-            if (targetWithExt.startsWith(projectRoot + path.sep) && !fsSync.existsSync(targetWithExt)) {
+            const isPlannedRuntimeEntry = runtimeWrapperTaskKey
+                && path.resolve(targetWithExt) === path.resolve(projectRoot, 'server.js');
+            if (targetWithExt.startsWith(projectRoot + path.sep) && !fsSync.existsSync(targetWithExt) && !isPlannedRuntimeEntry) {
                 const targetRel = path.relative(projectRoot, targetWithExt).replace(/\\/g, '/');
                 const fullRel = `${projRel}/${targetRel}`;
                 const nodeKey = getUniqueNodeKey(tasks, `create_${targetRel.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`);
@@ -7560,11 +7704,6 @@ const buildDeterministicLocalBugFixPlan = async (goalPrompt, effectiveDestinatio
         });
         verifyDeps = ['npm_install_missing_deps'];
     }
-
-    // Pick actual existing entry file for syntax check
-    const entryForCheck = (await readIfExists('app.js')) !== null
-        ? 'app.js'
-        : ((await readIfExists('server.js')) !== null ? 'server.js' : 'index.js');
 
     tasks.push({
         nodeKey: 'verify_local_fix_syntax',
@@ -7978,9 +8117,10 @@ const planWorkflowRun = async ({
     let planningGoalPrompt = '';
     let validatedPlan = null;
 
-    // Fast path for deterministic local runtime crashes (EADDRINUSE / MODULE_NOT_FOUND)
-    // Inspects real local files on Desktop and patches them in-place without overwriting project code.
-    if (!hasImages && effectiveDestination && /\b(?:EADDRINUSE|address\s+already\s+in\s+use)\b/i.test(String(goalPrompt || ''))) {
+    // Fast path for deterministic local runtime crashes (including MODULE_NOT_FOUND)
+    // Inspects real local files on Desktop and patches them in-place without
+    // spending several LLM attempts on a problem that can be verified locally.
+    if (effectiveDestination && isRuntimeCrashOrErrorReport(String(goalPrompt || ''))) {
         throwIfAborted();
         const localBugFixPlan = await buildDeterministicLocalBugFixPlan(goalPrompt, effectiveDestination);
         if (localBugFixPlan && localBugFixPlan.tasks?.length) {

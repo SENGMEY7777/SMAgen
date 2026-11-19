@@ -247,7 +247,11 @@ const getWorkflowRun = async (runId, userId) => {
         throw error;
     }
 
-    const tasks = await workflowModel.listLatestTaskNodesByRunId(runId);
+    // A completed run can contain multiple task batches (for example, the
+    // original plan plus self-healing or verification tasks). Returning only
+    // the latest batch hides earlier file-manager tasks from the client, so
+    // the workflow review cannot list or display every updated file.
+    const tasks = await workflowModel.listTaskNodesByRunId(runId);
     const logs = await workflowModel.listExecutionLogsByRunId(runId);
 
     return {

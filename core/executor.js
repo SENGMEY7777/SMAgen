@@ -822,8 +822,11 @@ const fileManager = async (input, workspacePath, task = {}) => {
             if (error.code !== 'ENOENT') {
                 throw error;
             }
-            // ENOENT on direct path
-            if (input.ignoreMissing === true || /\b(?:duplicate|deplicate|temp|stale|unused)\b/i.test(requestedPath)) {
+            // ENOENT on direct path. For a scoped path, continue searching so
+            // singular/plural matches such as Computer-Shop/test -> tests can
+            // still resolve to the real entry on disk.
+            const hasScopedPath = requestedPath.includes('/') || requestedPath.includes('\\');
+            if (!hasScopedPath && (input.ignoreMissing === true || /\b(?:duplicate|deplicate|temp|stale|unused)\b/i.test(requestedPath))) {
                 return {
                     action,
                     path: requestedPath,
@@ -833,15 +836,10 @@ const fileManager = async (input, workspacePath, task = {}) => {
                     message: 'Path does not exist on disk.',
                 };
             }
-            // If requestedPath is a structured path containing slashes, never search across other subfolders!
-            if (requestedPath.includes('/') || requestedPath.includes('\\')) {
-                const notFoundError = new Error(
-                    'The requested Desktop path \'' + requestedPath + '\' was not found',
-                );
-                notFoundError.code = 'LOCAL_DESKTOP_PATH_NOT_FOUND';
-                notFoundError.status = 404;
-                throw notFoundError;
-            }
+            // A structured path can still have a harmless singular/plural
+            // mismatch, such as Computer-Shop/test when the actual folder is
+            // Computer-Shop/tests. Continue into the scoped search below;
+            // searchScope keeps the lookup inside the named project.
         }
 
         // Search for matches in project folder, searchPath, or entire Desktop

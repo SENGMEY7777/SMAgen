@@ -532,6 +532,28 @@ const normalizeRemovalPlan = (tasks, goalPrompt, localDestination = '') => {
     }];
 };
 
+const buildDeterministicRemovalPlan = (goalPrompt, localDestination = '') => {
+    const userGoal = getUserGoalText(goalPrompt);
+    const targetPath = extractRemovalTarget(userGoal);
+    if (!targetPath || !isRemovalRequest(userGoal)) {
+        return null;
+    }
+
+    const tasks = normalizeRemovalPlan([], userGoal, localDestination);
+    if (!tasks.length) {
+        return null;
+    }
+
+    return normalizePlan({
+        workflowTitle: 'Remove ' + targetPath,
+        summary: 'Remove only the requested target ' + targetPath + '.',
+        tasks,
+    }, {
+        goalPrompt: userGoal,
+        localDestination,
+    });
+};
+
 const isDesktopExportRequest = (value) => {
     const text = String(value || '');
 
@@ -8116,6 +8138,30 @@ const planWorkflowRun = async ({
     let diagnosticSnapshot = '';
     let planningGoalPrompt = '';
     let validatedPlan = null;
+
+    // Explicit removals are deterministic and must not wait for the LLM
+    // planner or project diagnostics. This also prevents a delete request
+    // from remaining in a loading state while unrelated planning retries run.
+    if (!validatedPlan && isRemovalRequest(goalPrompt) && extractRemovalTarget(goalPrompt)) {
+        throwIfAborted();
+        planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
+        const deterministicRemovalPlan = buildDeterministicRemovalPlan(
+            planningGoalPrompt,
+            effectiveDestination,
+        );
+        if (deterministicRemovalPlan) {
+            const removalValidation = validatePlan(deterministicRemovalPlan, {
+                goalPrompt: planningGoalPrompt,
+                localDestination: effectiveDestination,
+            });
+            if (removalValidation.success) {
+                validatedPlan = removalValidation.data;
+                console.log('⚡ [Planner Removal Fast Path] Prepared ' + validatedPlan.tasks.length + ' delete task.');
+            } else {
+                console.warn('⚠️ [Planner Removal Fast Path] Falling back to the regular planner:', removalValidation.error.message);
+            }
+        }
+    }
 
     // Fast path for deterministic local runtime crashes (including MODULE_NOT_FOUND)
     // Inspects real local files on Desktop and patches them in-place without

@@ -4,6 +4,8 @@ const sendResponse = require('../../utils/responseHelper');
 const logger = require('../../utils/logger');
 const {emitWorkflowEvent} = require('../../core/telemetry');
 
+const hasRemoteProjectUrl = (goalPrompt) => /https?:\/\/[^\s]+/i.test(String(goalPrompt || ''));
+
 const create = async (req, res, next) => {
     try {
         const body = req.body || {};
@@ -54,8 +56,10 @@ const runWorkflow = async (req, res, next) => {
             images: body.images || [],
             projectContext: body.projectContext,
             localDestination: body.localDestination
-                || body.projectContext?.workspacePath
-                || (body.projectContext?.name ? `Desktop/${body.projectContext.name}` : '')
+                || (hasRemoteProjectUrl(body.goalPrompt)
+                    ? ''
+                    : body.projectContext?.workspacePath
+                        || (body.projectContext?.name ? `Desktop/${body.projectContext.name}` : ''))
                 || (body.projectName ? `Desktop/${body.projectName}` : ''),
             userId: req.user.id,
             io: req.app.get('io'),
@@ -135,8 +139,10 @@ const runWorkflowStream = async (req, res) => {
             images: body.images || [],
             projectContext: body.projectContext,
             localDestination: body.localDestination
-                || body.projectContext?.workspacePath
-                || (body.projectContext?.name ? `Desktop/${body.projectContext.name}` : '')
+                || (hasRemoteProjectUrl(body.goalPrompt)
+                    ? ''
+                    : body.projectContext?.workspacePath
+                        || (body.projectContext?.name ? `Desktop/${body.projectContext.name}` : ''))
                 || (body.projectName ? `Desktop/${body.projectName}` : ''),
             userId: req.user.id,
             io: streamIo,

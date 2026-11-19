@@ -80,6 +80,7 @@ const decide = async (req, res, next) => {
             triggerScheduler(approval.run_id, {
                 io,
                 executor: executeTaskNode,
+                resumeAfterActive: true,
             }).catch((scheduleError) => {
                 logger.error('Approval resume scheduler failed', {
                     runId: approval.run_id,

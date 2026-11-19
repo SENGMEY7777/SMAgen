@@ -4609,12 +4609,30 @@ const normalizeGitPushWorkflowTasks = (tasks, goalPrompt, localDestination) => {
     const pushBranchRef = targetBranch || gitState.branch || 'main';
     const standardPushCmd = formatStandardGitPushCommand(pushBranchRef, targetBranch ? false : gitState.hasUpstream);
 
+    // Preserve the requested repair/test work. Previously this normalizer
+    // returned only the Git tasks, so a combined "fix and push" request could
+    // silently discard the actual file fixes before publishing.
+    const gitLifecyclePattern = /^git\s+(?:status|add|commit|push)\b|^git\s+(?:branch\s+-M|checkout|switch)\b/i;
+    const removedGitTaskKeys = new Set(
+        (Array.isArray(tasks) ? tasks : [])
+            .filter((task) => gitLifecyclePattern.test(String(task.toolInput?.command || '').trim()))
+            .map((task) => task.nodeKey),
+    );
+    const preservedTasks = (Array.isArray(tasks) ? tasks : [])
+        .filter((task) => !removedGitTaskKeys.has(task.nodeKey))
+        .map((task) => ({
+            ...task,
+            dependencies: (task.dependencies || []).filter((dependency) => !removedGitTaskKeys.has(dependency)),
+        }));
+    const preservedTaskKeys = preservedTasks.map((task) => task.nodeKey).filter(Boolean);
+
     const workflowTasks = [
+        ...preservedTasks,
         {
             nodeKey: 'git_status_check',
             title: `Check git status in ${projectPath}`,
             instruction: 'Check git status in the project directory to inspect modified and untracked files.',
-            dependencies: [],
+            dependencies: preservedTaskKeys,
             assignedTool: 'executeCommand',
             toolInput: {
                 command: 'git status',

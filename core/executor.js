@@ -174,6 +174,7 @@ const WORKSPACE_WRITE_ACTIONS = new Set([
     'createDesktopDirectory',
     'createDesktopFile',
     'createDesktopFiles',
+    'ensureRootRoute',
     'updateDesktopFile',
     'updateDesktopFiles',
     'writeDesktopFile',
@@ -793,6 +794,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
             || requestedAction === 'inspectdesktopfile' || requestedAction === 'inspect_desktop_file'
             || requestedAction === 'catdesktopfile' || requestedAction === 'cat_desktop_file'
             ? 'readDesktopFile'
+        : requestedAction === 'ensurerootroute' || requestedAction === 'ensure_root_route'
+            ? 'ensureRootRoute'
         : requestedAction;
 
     assertServerFileWriteAccess(action);
@@ -1210,7 +1213,8 @@ const fileManager = async (input, workspacePath, task = {}) => {
 
     const isDesktopAction = action === 'createDesktopFile'
         || action === 'readDesktopFile'
-        || action === 'listDesktopDirectory';
+        || action === 'listDesktopDirectory'
+        || action === 'ensureRootRoute';
 
     const isExplicitDesktop = LOCAL_DESKTOP_OUTPUT_ENABLED && (
         isDesktopAction
@@ -1396,6 +1400,37 @@ const fileManager = async (input, workspacePath, task = {}) => {
             })),
             ...(isDesktopTarget ? {location: 'local Desktop'} : {}),
         };
+    }
+
+    if (action === 'ensureRootRoute') {
+        const source = await fs.readFile(filePath, 'utf8');
+        const appIdentifier = source.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*express\s*\(/)?.[1] || 'app';
+        const rootRoutePattern = new RegExp(`\\b${appIdentifier}\\s*\\.\\s*(?:get|all|use)\\s*\\(\\s*[\\\"']\\/[\\\"']`, 'm');
+
+        if (rootRoutePattern.test(source)) {
+            return {
+                action,
+                path: input.path,
+                ...(isDesktopTarget ? {location: 'local Desktop'} : {}),
+                updated: false,
+                existing: true,
+            };
+        }
+
+        const route = `\n\n${appIdentifier}.get('/', (req, res) => {\n    res.json({\n        name: 'API',\n        status: 'online',\n        health: '/health'\n    });\n});\n`;
+        const exportIndex = source.search(/\nmodule\.exports\s*=/);
+        const updatedSource = exportIndex >= 0
+            ? `${source.slice(0, exportIndex)}${route}${source.slice(exportIndex)}`
+            : `${source.trimEnd()}${route}`;
+
+        await fs.writeFile(filePath, normalizeGeneratedSourceContent(updatedSource, input.path), 'utf8');
+        return addReviewContent({
+            action,
+            path: input.path,
+            ...(isDesktopTarget ? {location: 'local Desktop'} : {}),
+            updated: true,
+            bytesWritten: Buffer.byteLength(updatedSource, 'utf8'),
+        }, input.path, updatedSource);
     }
 
     if (action === 'delete' || action === 'remove') {
@@ -1738,20 +1773,38 @@ const httpRequester = async (input, workspacePath, task, options = {}) => {
         30000,
         Math.max(1000, Number(input.timeout) || HTTP_REQUEST_TIMEOUT_MS),
     );
-    const response = await axios.request({
-        method,
-        url,
-        headers,
-        params: input.params,
-        data: input.data,
-        timeout,
-        signal: options.signal,
-        maxContentLength: 5 * 1024 * 1024,
-        maxBodyLength: 5 * 1024 * 1024,
-        validateStatus: () => true,
-    });
+    const expectedStatus = input.expectedStatus === undefined || input.expectedStatus === null
+        ? null
+        : Number(input.expectedStatus);
+    const retryAttempts = Math.min(5, Math.max(0, Number(input.retryAttempts) || 0));
+    const retryDelayMs = Math.min(10000, Math.max(250, Number(input.retryDelayMs) || 1000));
+    let response;
 
-    const ok = response.status >= 200 && response.status < 400;
+    for (let attempt = 0; attempt <= retryAttempts; attempt += 1) {
+        response = await axios.request({
+            method,
+            url,
+            headers,
+            params: input.params,
+            data: input.data,
+            timeout,
+            signal: options.signal,
+            maxContentLength: 5 * 1024 * 1024,
+            maxBodyLength: 5 * 1024 * 1024,
+            validateStatus: () => true,
+        });
+
+        const statusMatches = expectedStatus === null || response.status === expectedStatus;
+        const statusIsSuccessful = response.status >= 200 && response.status < 400;
+        if (statusMatches && statusIsSuccessful) break;
+        if (attempt < retryAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        }
+    }
+
+    const ok = expectedStatus === null
+        ? response.status >= 200 && response.status < 400
+        : response.status === expectedStatus;
     // When inspecting, reviewing, or testing URLs, any HTTP response status (200-599) is a valid diagnostic response, not a tool failure
     const allowFailure = input.allowFailure === true || input.expectFailure === true || input.inspect === true || !input.failOnStatus;
 
@@ -1766,7 +1819,7 @@ const httpRequester = async (input, workspacePath, task, options = {}) => {
         ok,
         exitCode: ok || allowFailure ? 0 : 1,
         stdout: typeof response.data === 'string' ? response.data.slice(0, 1000) : JSON.stringify(response.data || {}).slice(0, 1000),
-        stderr: ok || allowFailure ? '' : `HTTP ${method} ${url} failed with status ${response.status} (${response.statusText || 'Error'}): ${typeof response.data === 'string' ? response.data.slice(0, 500) : JSON.stringify(response.data || {}).slice(0, 500)}`,
+        stderr: ok || allowFailure ? '' : `HTTP ${method} ${url} failed with status ${response.status}${expectedStatus === null ? '' : ` (expected ${expectedStatus})`} (${response.statusText || 'Error'}): ${typeof response.data === 'string' ? response.data.slice(0, 500) : JSON.stringify(response.data || {}).slice(0, 500)}`,
     };
 };
 

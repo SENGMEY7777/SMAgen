@@ -8257,6 +8257,10 @@ const planWorkflowRun = async ({
     const useExplicitTreeFastPath = !hasImages
         && isNodeProjectSetupRequest(goalPrompt)
         && explicitTreeFiles.length >= 12;
+    const hasRemoteUrlRepairIntent = Boolean(
+        String(goalPrompt || '').match(/https?:\/\/[^\s]+/i)
+        && /\b(?:review|modify|fix|update|repair|troubleshoot|debug|solve|check|cannot\s+get|404|error)\b/i.test(String(goalPrompt || '')),
+    );
     let diagnosticSnapshot = '';
     let planningGoalPrompt = '';
     let validatedPlan = null;
@@ -8300,6 +8304,38 @@ const planWorkflowRun = async ({
             if (localFixValidation.success) {
                 validatedPlan = localFixValidation.data;
                 console.log(`⚡ [Planner Local Bug-Fix Fast Path] Prepared ${validatedPlan.tasks.length} in-place repair tasks for ${effectiveDestination}.`);
+            }
+        }
+    }
+
+    // URL repair requests already have a bounded, verifiable workflow shape.
+    // Do not spend multiple Gemini attempts discovering the same route-fix,
+    // Vercel-routing, syntax-check, Git, and live-HTTP verification steps.
+    if (!validatedPlan && hasRemoteUrlRepairIntent) {
+        throwIfAborted();
+        planningGoalPrompt = buildPlanningGoalPrompt(goalPrompt, effectiveDestination);
+        const deterministicServerTasks = normalizeServerReviewAndFixTasks(
+            [],
+            planningGoalPrompt,
+            effectiveDestination,
+        );
+
+        if (deterministicServerTasks?.length) {
+            const deterministicServerPlan = {
+                workflowTitle: 'Repair and verify deployed server',
+                summary: `Diagnose ${String(goalPrompt).match(/https?:\/\/[^\s]+/i)?.[0] || 'the live endpoint'}, repair the local server configuration, and verify the deployed HTTP response.`,
+                tasks: deterministicServerTasks,
+            };
+            const deterministicValidation = validatePlan(deterministicServerPlan, {
+                goalPrompt: planningGoalPrompt,
+                localDestination: effectiveDestination,
+            });
+
+            if (deterministicValidation.success) {
+                validatedPlan = deterministicValidation.data;
+                console.log(`⚡ [Planner URL Fast Path] Prepared ${validatedPlan.tasks.length} repair and verification tasks without an LLM call.`);
+            } else {
+                console.warn('⚠️ [Planner URL Fast Path] Falling back to the regular planner:', deterministicValidation.error.message);
             }
         }
     }

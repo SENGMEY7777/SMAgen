@@ -403,3 +403,49 @@ test('creates package.json before npm install for a new Desktop Node project', (
     assert.ok(installTask);
     assert.equal(installTask.dependencies.includes(packageTask.nodeKey), true);
 });
+
+test('preserves repair tasks when the user explicitly requests a GitHub push', () => {
+    const goalPrompt = 'Fix the bug in Desktop/Testing-Kairo, run the tests, then push the changes directly to GitHub.';
+    const normalized = normalizePlan({
+        workflowTitle: 'Fix and publish Testing-Kairo',
+        summary: 'Repair the project and publish the fix.',
+        tasks: [
+            {
+                nodeKey: 'fix_auth',
+                title: 'Fix auth middleware',
+                instruction: 'Repair the broken auth middleware imports.',
+                dependencies: [],
+                assignedTool: 'fileManager',
+                toolInput: {
+                    action: 'createDesktopFile',
+                    mode: 'update',
+                    path: 'Testing-Kairo/auth.middleware.js',
+                    content: 'module.exports = {};',
+                },
+            },
+            {
+                nodeKey: 'verify_tests',
+                title: 'Run tests',
+                instruction: 'Run the project tests.',
+                dependencies: ['fix_auth'],
+                assignedTool: 'executeCommand',
+                toolInput: {
+                    command: 'npm test',
+                    cwd: 'Testing-Kairo',
+                    desktop: true,
+                },
+            },
+        ],
+    }, {goalPrompt, localDestination: 'Desktop/Testing-Kairo'});
+
+    const taskKeys = new Set(normalized.tasks.map((task) => task.nodeKey));
+    const pushTask = normalized.tasks.find((task) => String(task.toolInput?.command || '').includes('git push'));
+    const statusTask = normalized.tasks.find((task) => task.nodeKey === 'git_status_check');
+
+    assert.equal(taskKeys.has('fix_auth'), true);
+    assert.equal(taskKeys.has('verify_tests'), true);
+    assert.ok(statusTask);
+    assert.ok(pushTask);
+    assert.equal(statusTask.dependencies.includes('verify_tests'), true);
+    assert.equal(pushTask.dependencies.includes('git_commit_changes'), true);
+});

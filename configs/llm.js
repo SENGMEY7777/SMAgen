@@ -136,8 +136,8 @@ const withTimeout = (promise, timeoutMs = LLM_TIMEOUT_MS) => {
 
 const getModelCandidates = (model, maxAttempts = MAX_MODEL_ATTEMPTS) => {
     const candidates = [
-        model,
         process.env.GEMINI_MODEL,
+        model,
         DEFAULT_MODEL,
         process.env.GEMINI_FALLBACK_MODEL,
         'gemini-3.5-flash',
@@ -170,7 +170,7 @@ const createLlmFailure = (lastError, operation = 'Gemini request') => {
     } else if (providerStatus === 404) {
         code = 'LLM_UNAVAILABLE';
         status = 503;
-        message = 'No usable Gemini model is available. Set GEMINI_MODEL=gemini-3.5-flash-lite, then restart the backend.';
+        message = 'The configured Gemini models are unavailable. Check GEMINI_MODEL, GEMINI_FALLBACK_MODEL, API-key access, billing, and quota, then restart the backend.';
     } else if (providerStatus && providerStatus < 500) {
         code = 'LLM_ERROR';
         status = 503;
@@ -304,16 +304,17 @@ const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
     const ai = getAiClient();
     const models = getModelCandidates(model || process.env.GEMINI_MODEL || DEFAULT_MODEL);
     let lastError;
+    let nonStreamingFallbackAttempted = false;
 
     for (const currentModel of models) {
+        let fullText = '';
+
         try {
             const stream = await ai.models.generateContentStream({
                 model: currentModel,
                 contents,
                 config,
             });
-
-            let fullText = '';
 
             for await (const chunk of stream) {
                 const chunkText = getResponseText(chunk);
@@ -333,13 +334,50 @@ const skGeminiStream = async (contents, {model, config, onChunk} = {}) => {
 
             return fullText.trim();
         } catch (error) {
+            if (fullText.trim()) {
+                console.warn(
+                    `⚠️ Gemini Stream on model '${currentModel}' ended after receiving text `
+                    + `(${error?.message || 'stream parser error'}). Returning the received response.`,
+                );
+                return fullText.trim();
+            }
+
             lastError = error;
             const code = getErrorCode(error);
             console.warn(`⚠️ Gemini Stream on model '${currentModel}' failed (${code || error.message}). Trying fallback model...`);
 
-            if (isRetryableError(error)) {
-                await wait(200);
+            if (!nonStreamingFallbackAttempted) {
+                nonStreamingFallbackAttempted = true;
+
+                try {
+                    const response = await generateContentWithRetry({
+                        model: currentModel,
+                        contents,
+                        config,
+                        maxModelAttempts: models.length,
+                    });
+                    const fallbackText = getResponseText(response);
+
+                    if (typeof fallbackText !== 'string' || !fallbackText.trim()) {
+                        const emptyResponseError = new Error('Gemini returned an empty fallback response');
+                        emptyResponseError.code = 'LLM_EMPTY_RESPONSE';
+                        throw emptyResponseError;
+                    }
+
+                    if (typeof onChunk === 'function') {
+                        onChunk(fallbackText);
+                    }
+
+                    return fallbackText.trim();
+                } catch (fallbackError) {
+                    lastError = fallbackError;
+                    console.warn(
+                        `⚠️ Gemini non-stream fallback failed (${getErrorCode(fallbackError) || fallbackError.message}).`,
+                    );
+                }
             }
+
+            break;
         }
     }
 
